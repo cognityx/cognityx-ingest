@@ -22,7 +22,7 @@ Install the `inference` extra only when constructing a `SectionEnhancer` with
 ## Quick start
 
 ```bash
-cognityx-ingest report.pdf --storage-root /tmp/cognityx-storage
+cognityx-ingest ingest report.pdf --storage-root /tmp/cognityx-storage
 ```
 
 ```python
@@ -34,4 +34,6 @@ result = IngestService(storage).ingest("report.pdf")
 print(result.document.document_id)
 ```
 
-See the [documentation](docs/index.md) for artifact and provenance details.
+The legacy short CLI form, `cognityx-ingest report.pdf --storage-root ...`, remains supported.
+
+See the [documentation](docs/index.md) for the complete CLI and Python API examples.

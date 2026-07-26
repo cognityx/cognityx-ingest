@@ -3,7 +3,58 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from enum import StrEnum
 from typing import Any
+
+
+CANONICAL_SCHEMA = "cognityx.ingest.document"
+
+
+class IngestJobState(StrEnum):
+    """Ingest-owned lifecycle states, independent of a jobs backend."""
+
+    SUBMITTED = "submitted"
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionContext:
+    """Small caller-supplied governance and cross-service tracing context."""
+
+    run_id: str
+    correlation_id: str
+    principal_id: str | None = None
+    tenant_id: str | None = None
+    project_id: str | None = None
+    workspace_id: str | None = None
+    scopes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class UsageReport:
+    """Facts measured by the ingest execution rather than policy assertions."""
+
+    run_id: str
+    job_id: str | None = None
+    documents: int = 0
+    pages: int | None = None
+    input_bytes: int = 0
+    output_bytes: int = 0
+    duration_ms: int = 0
+    service: str = "cognityx-ingest"
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactRef:
+    """Stable artifact identity and logical storage location."""
+
+    artifact_id: str
+    uri: str
+    media_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +103,11 @@ class CanonicalDocument:
     title: str
     sections: tuple[Section, ...]
     enhancement: dict[str, Any] | None = None
+    schema: str = CANONICAL_SCHEMA
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "schema": self.schema,
             "document_id": self.document_id,
             "schema_version": self.schema_version,
             "source": self.source.to_dict(),
@@ -71,3 +124,7 @@ class IngestResult:
     manifest_key: str
     document_key: str
     evidence_key: str
+    run_id: str = ""
+    job_id: str | None = None
+    artifacts: tuple[ArtifactRef, ...] = ()
+    usage: UsageReport | None = None

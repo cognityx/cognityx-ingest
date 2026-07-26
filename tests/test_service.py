@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 
 import pytest
+from pypdf import PdfWriter
 
+from cognityx_ingest.control import ControlDecision, IngestAuthorizationError, IngestLimitError
+from cognityx_ingest.models import ExecutionContext, UsageReport
 from cognityx_ingest.parser import ExtractedPage, UnsupportedInputError
 from cognityx_ingest.service import IngestService
 from cognityx_jobs import JobRepository
@@ -14,6 +17,20 @@ from cognityx_storage import LocalStorageBackend, StorageClient
 class StubExtractor:
     def extract(self, path: Path) -> tuple[ExtractedPage, ...]:
         return (ExtractedPage(1, "First page."), ExtractedPage(2, "Second page."))
+
+
+class RecordingControl:
+    def __init__(self, decision: ControlDecision) -> None:
+        self.decision = decision
+        self.actions: list[str] = []
+        self.usage: list[UsageReport] = []
+
+    def authorize(self, context: ExecutionContext, action: str, resource: object | None = None, request: object | None = None) -> ControlDecision:
+        self.actions.append(action)
+        return self.decision
+
+    def report_usage(self, context: ExecutionContext, usage: UsageReport) -> None:
+        self.usage.append(usage)
 
 
 @pytest.fixture
@@ -34,7 +51,8 @@ def test_ingest_persists_canonical_provenance_artifacts(service: IngestService, 
     storage = service._storage
     assert storage.exists(result.document.source.storage_key)
     manifest = json.load(storage.open(result.manifest_key))
-    assert manifest["artifacts"]["evidence"] == result.evidence_key
+    assert manifest["schema"] == "cognityx.ingest.document"
+    assert manifest["artifacts"]["evidence"]["uri"].startswith("storage://")
     assert storage.open(result.evidence_key).read().decode().count("\n") == 2
 
 
@@ -84,4 +102,48 @@ def test_records_job_events_for_successful_ingest(tmp_path: Path) -> None:
 
     record = jobs.list_for_owner("alex")[0]
     assert record.state == "completed"
-    assert [event["event"] for event in jobs.events(record.job_id)] == ["ingest_started", "ingest_completed"]
+    assert [event["event"] for event in jobs.events(record.job_id)] == ["ingest_submitted", "ingest_queued", "ingest_started", "ingest_completed"]
+
+
+def test_control_authorizes_limits_and_receives_measured_usage(tmp_path: Path) -> None:
+    source = tmp_path / "sample.pdf"
+    source.write_bytes(b"%PDF-1.4 test")
+    control = RecordingControl(ControlDecision(allowed=True, limits={"max_document_size": 100, "max_pages": 2}))
+    storage = StorageClient(LocalStorageBackend(tmp_path / "storage")).for_shared_data()
+    context = ExecutionContext(run_id="run-1", correlation_id="correlation-1", principal_id="alex")
+
+    result = IngestService(storage, extractor=StubExtractor(), control=control).ingest(source, context=context)
+
+    assert control.actions == ["ingest.job.submit"]
+    assert result.run_id == "run-1"
+    assert result.usage is control.usage[0]
+    assert control.usage[0].pages == 2
+    assert control.usage[0].input_bytes == len(source.read_bytes())
+    assert all(artifact.artifact_id.startswith("art-pdf-") for artifact in result.artifacts)
+
+
+def test_control_rejection_and_limits_stop_ingestion(tmp_path: Path) -> None:
+    source = tmp_path / "sample.pdf"
+    source.write_bytes(b"%PDF-1.4 test")
+    storage = StorageClient(LocalStorageBackend(tmp_path / "storage")).for_shared_data()
+
+    with pytest.raises(IngestAuthorizationError, match="denied"):
+        IngestService(storage, extractor=StubExtractor(), control=RecordingControl(ControlDecision(False, reason="denied"))).ingest(source)
+    with pytest.raises(IngestLimitError, match="max_pages"):
+        IngestService(storage, extractor=StubExtractor(), control=RecordingControl(ControlDecision(True, limits={"max_pages": 1}))).ingest(source)
+
+
+def test_cli_end_to_end_uses_real_pdf_parser_and_local_storage(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    from cognityx_ingest.cli import main
+
+    source = tmp_path / "real.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    with source.open("wb") as stream:
+        writer.write(stream)
+
+    assert main(["ingest", str(source), "--storage-root", str(tmp_path / "storage")]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result[0]["run_id"]
+    assert result[0]["document_id"].startswith("pdf-")
+    assert result[0]["artifacts"][0]["uri"].startswith("storage://")
