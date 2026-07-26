@@ -1,0 +1,15 @@
+site_name: Cognityx Ingest
+site_description: Canonical provenance-preserving PDF ingestion for Cognityx.
+theme:
+  name: material
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+strict: true
+nav:
+  - Overview: index.md
+  - Contract: contract.md
+  - API: api.md

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cognityx-ingest"
+version = "0.1.0"
+description = "Canonical, provenance-preserving document ingestion for Cognityx."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "Cognityx" }]
+dependencies = [
+  "cognityx-storage",
+  "cognityx-jobs",
+  "pypdf>=5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "mkdocs-material>=9.5", "mkdocstrings-python>=1.12"]
+inference = ["cognityx-inference"]
+
+[project.scripts]
+cognityx-ingest = "cognityx_ingest.cli:main"
+
+[tool.uv.sources]
+cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git" }
+cognityx-jobs = { git = "https://github.com/cognityx/cognityx-jobs.git" }
+cognityx-inference = { git = "https://github.com/cognityx/llm-benchmark.git" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cognityx_ingest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
