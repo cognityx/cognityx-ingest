@@ -9,6 +9,9 @@ from cognityx_ingest.models import ExecutionContext, UsageReport
 
 
 INGEST_JOB_SUBMIT = "ingest.job.submit"
+INGEST_JOB_CANCEL = "ingest.job.cancel"
+INGEST_RESULT_READ = "ingest.result.read"
+INGEST_DOCUMENT_DELETE = "ingest.document.delete"
 
 
 @dataclass(frozen=True, slots=True)

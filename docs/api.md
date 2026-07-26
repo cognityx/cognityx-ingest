@@ -6,4 +6,6 @@
 
 ::: cognityx_ingest.control
 
+::: cognityx_ingest.management
+
 ::: cognityx_ingest.parser

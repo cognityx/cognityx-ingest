@@ -22,6 +22,37 @@ The command prints each run ID, optional job ID, document ID, manifest key, and
 logical `storage://` artifact references. The `ingest` word is optional for
 backward compatibility.
 
+## Lifecycle And Artifacts
+
+The CLI stores jobs in `<storage-root>/.cognityx-ingest/jobs.sqlite3` by
+default. Use `--jobs-database /path/to/jobs.sqlite3` to select another durable
+SQLite database.
+
+```bash
+# Submit an ingest and copy document_id/job_id from the JSON output.
+cognityx-ingest ingest ./policy.pdf --storage-root /tmp/cognityx-storage --owner-id alex
+
+# View only alex's jobs, then view one record and its ordered events.
+cognityx-ingest jobs list --storage-root /tmp/cognityx-storage --owner-id alex
+cognityx-ingest jobs show <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
+
+# Request cancellation of a queued or running job.
+cognityx-ingest jobs cancel <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
+
+# Inspect generated canonical data and read one artifact as JSON-safe output.
+cognityx-ingest documents list --storage-root /tmp/cognityx-storage
+cognityx-ingest documents show <document-id> --storage-root /tmp/cognityx-storage
+cognityx-ingest artifacts read <document-id> evidence --storage-root /tmp/cognityx-storage
+
+# Permanently delete only this document's source and generated artifacts.
+cognityx-ingest documents delete <document-id> --yes --storage-root /tmp/cognityx-storage
+```
+
+`jobs cancel` records a durable cancellation request. The current local
+synchronous parser does not yet check for cancellation while parsing, so it
+cannot interrupt work that has already completed. Document deletion retains
+the durable job history and requires `--yes`.
+
 ## Python API
 
 ```python
@@ -44,6 +75,26 @@ for artifact in result.artifacts:
     print(artifact.artifact_id, artifact.uri)
 ```
 
+## Lifecycle Management API
+
+```python
+from cognityx_ingest import ExecutionContext, IngestManager
+from cognityx_jobs import JobRepository
+
+jobs = JobRepository("/tmp/cognityx-storage/.cognityx-ingest/jobs.sqlite3")
+manager = IngestManager(storage, jobs)
+context = ExecutionContext(run_id="run-789", correlation_id="request-999", principal_id="alex")
+
+for job in manager.list_jobs(context, owner_id="alex"):
+    print(job["job_id"], job["state"])
+
+details = manager.show_document(context, "pdf-0123456789abcdef")
+evidence_jsonl = manager.read_artifact(context, "pdf-0123456789abcdef", "evidence")
+
+# This is irreversible for the selected document artifacts only.
+manager.delete_document(context, "pdf-0123456789abcdef")
+```
+
 ## Custom Control Client
 
 The local client allows standalone operation. A future deployment can replace
@@ -54,7 +105,7 @@ from cognityx_ingest import ControlDecision, IngestService, UsageReport
 
 class CompanyControl:
     def authorize(self, context, action, resource=None, request=None):
-        assert action == "ingest.job.submit"
+        assert action in {"ingest.job.submit", "ingest.job.cancel", "ingest.result.read", "ingest.document.delete"}
         return ControlDecision(allowed=True, limits={"max_document_size": 100_000_000})
 
     def report_usage(self, context, usage: UsageReport):

@@ -36,4 +36,8 @@ print(result.document.document_id)
 
 The legacy short CLI form, `cognityx-ingest report.pdf --storage-root ...`, remains supported.
 
+Manage local execution with `jobs list`, `jobs show`, `jobs cancel`,
+`documents list`, `documents show`, `artifacts read`, and `documents delete
+--yes`. Full commands and Python API examples are in the documentation.
+
 See the [documentation](docs/index.md) for the complete CLI and Python API examples.

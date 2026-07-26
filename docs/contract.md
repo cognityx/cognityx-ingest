@@ -26,7 +26,15 @@ authorizes `ingest.job.submit` through a `ControlClient` before parsing, then
 reports a measured `UsageReport` after artifacts persist. `LocalControlClient`
 is the default standalone implementation.
 
+Lifecycle and artifact management use the same seam: `ingest.job.cancel`,
+`ingest.result.read`, and `ingest.document.delete`. The local implementation
+allows them in standalone mode; a future Control Plane can make those decisions
+without changing parser or storage code.
+
 Ingest owns `SUBMITTED`, `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`, and
 `CANCELLED` lifecycle semantics. When a `cognityx-jobs` repository is supplied,
 the service records the corresponding submission, queue, start, and completion
 or failure events there.
+
+Deleting a document removes only its `ingest/documents/{document_id}/` storage
+tree through `cognityx-storage`; it does not erase durable job history.
