@@ -4,6 +4,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.models import ExecutionContext
 from cognityx_ingest.sources import SourceRegistry
@@ -67,6 +69,35 @@ def test_dedup_domains_and_logical_metadata(tmp_path: Path, monkeypatch) -> None
     registry.register_file(_context("tenant-d"), source)
     with sqlite3.connect(tmp_path / "storage/.cognityx-ingest/source_catalog.sqlite3") as db:
         assert db.execute("SELECT count(*) FROM blobs").fetchone()[0] == 5
+
+
+def test_tenant_scope_cannot_contradict_tenant_dedup_domain(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "file.txt"
+    source.write_bytes(b"same")
+    registry = _registry(tmp_path)
+    registry.register_file(_context("tenant-a"), source)
+
+    with pytest.raises(ValueError, match=r"reserved: tenant_id"):
+        registry.register_file(
+            ExecutionContext(
+                run_id="r",
+                correlation_id="c",
+                principal_id="alice",
+                tenant_id="tenant-a",
+                scopes={"tenant_id": "tenant-b"},
+            ),
+            source,
+        )
+
+    with sqlite3.connect(
+        tmp_path / "storage/.cognityx-ingest/source_catalog.sqlite3"
+    ) as db:
+        domains = db.execute(
+            "SELECT dedup_domain_id FROM blobs ORDER BY dedup_domain_id"
+        ).fetchall()
+    assert domains == [("tenant-80a707af7dc77ee1228f",)]
 
 
 def test_locate_is_read_only_and_legacy_migration_is_domain_safe(tmp_path: Path) -> None:
