@@ -1,15 +1,26 @@
-# Source Storage
+# Source Assets and Doc Bundles
 
-Source storage registers an external file once and returns a durable Cognityx
-resource identity. After registration, downstream work uses `source_id`; it
-does not need the original filesystem path.
+SourceAsset registration captures an externally supplied digital object and
+returns a durable Cognityx resource identity. After registration, downstream
+work uses `asset_id`; it does not need the original filesystem path.
 
 ```text
-ResourceContext -> ExecutionContext -> Context -> Bundle -> Source -> immutable Blob
+ResourceContext -> ExecutionContext -> SourceAssetContext
+                                      -> DocBundle
+                                      -> SourceAsset
+                                      -> BlobRef
 ```
 
-This capability deliberately does not parse files, create documents, run jobs,
-or build RAG indexes. Those later capabilities will begin from `source_id`.
+Registration accepts any digital file without parsing it. Later capabilities
+may begin from `asset_id`, but not every SourceAsset becomes a parsed document:
+
+```text
+SourceAsset        raw registered input
+ParsedDocument     later structured result for document-like input
+Audio transcript   possible later derivative of an audio SourceAsset
+Image representation possible later derivative of an image SourceAsset
+DatasetRevision    DataForge-owned processed artifact
+```
 
 ## CLI
 
@@ -18,27 +29,38 @@ the Storage profile and role using the standard Cognityx configuration
 precedence.
 
 ```bash
-cognityx-ingest sources add report.pdf
-cognityx-ingest sources add report.pdf --bundle phd/rag
-cognityx-ingest bundles list
-cognityx-ingest bundles create enterprise/policies/hr
-cognityx-ingest sources list --bundle phd/rag
-cognityx-ingest sources show src-... 
-cognityx-ingest sources locate src-...
-cognityx-ingest bundles locate bun-...
+cognityx-ingest assets add report.pdf
+cognityx-ingest assets add recording.mp3 --bundle research/interviews
+cognityx-ingest doc-bundles list
+cognityx-ingest doc-bundles create enterprise/policies/hr
+cognityx-ingest assets list --bundle research/interviews
+cognityx-ingest assets show src-...
+cognityx-ingest assets locate src-...
+cognityx-ingest doc-bundles locate bun-...
 ```
 
-The first add lazily creates the current Context's `default` Bundle. Repeating
-an add with identical bytes in the same Bundle returns the original
-`source_id` and `status: already_registered`. Identical bytes in a different
-Bundle receive a new logical `source_id` while reusing the immutable blob.
+The first add lazily creates the current Context's `default` DocBundle.
+Repeating an add with identical bytes in the same DocBundle returns the
+original `asset_id` and `status: already_registered`. Identical bytes in a
+different DocBundle receive a new logical `src-...` asset identity while
+physical reuse follows the configured Storage dedup policy.
+
+The historical commands remain compatible and write warnings only to stderr:
+
+```bash
+cognityx-ingest sources add report.pdf
+cognityx-ingest bundles list
+```
+
+Compatibility JSON retains `source_id`; canonical `assets` JSON uses
+`asset_id`. Both values are the same stable `src-...` identity.
 
 Use `--storage-root /path/to/storage` when selecting a local storage root.
 This is a local-development shortcut that creates the built-in filesystem
 Storage Runtime. For an explicit runtime configuration, use:
 
 ```bash
-cognityx-ingest sources add report.pdf \
+cognityx-ingest assets add report.pdf \
   --storage-config .cognityx/storage.toml
 ```
 
@@ -58,7 +80,7 @@ not move the catalog into a Storage role.
 Context is optional. The simple local command continues to work:
 
 ```bash
-cognityx-ingest sources add report.pdf
+cognityx-ingest assets add report.pdf
 ```
 
 The effective Context is selected in this order: explicit CLI fields, then one
@@ -84,7 +106,7 @@ The selected JSON file contains only stable governance descriptors:
 They are generated for each command. Override only the fields you need:
 
 ```bash
-cognityx-ingest sources add report.pdf --context context.json \
+cognityx-ingest assets add report.pdf --context context.json \
   --workspace-id testing --scope function=experiment --scope environment=dev
 ```
 
@@ -135,31 +157,31 @@ source-assets/
 `COGNITYX_DEDUP_SCOPE` is deprecated and ignored. It may produce a compatibility
 warning; it does not override Storage Runtime configuration.
 
-The complete Storage `BlobRef` is persisted on every new Source. Its durable
-location is provider-neutral, for example
+The complete Storage `BlobRef` is persisted on every new SourceAsset. Its
+durable location is provider-neutral, for example
 `storage://local-main/source-assets/blob-domains/...`, never a `file://` path.
 Use read-only inspection when an operator needs the local backing path:
 
 ```bash
-cognityx-ingest sources locate src-...
-cognityx-ingest bundles locate bun-...
+cognityx-ingest assets locate src-...
+cognityx-ingest doc-bundles locate bun-...
 ```
 
-`sources locate` returns `source_id`, `blob_id`, `blob_uri`, durable
+`assets locate` returns `asset_id`, `blob_id`, `blob_uri`, durable
 `profile_name`, backend diagnostics and `local_path` when the recorded profile
 is already local. It never downloads, copies or materializes data. A readable
-non-local backend returns `local_path: null`. `bundles locate` identifies the
-logical metadata namespace, not the source-byte location.
+non-local backend returns `local_path: null`. `doc-bundles locate` identifies
+the logical metadata namespace, not the source-byte location.
 
 ## Python API
 
 ```python
-from cognityx_ingest import SourceRegistry
+from cognityx_ingest import SourceAssetRegistry
 from cognityx_resource import ResourceContext, ExecutionContext
 from cognityx_storage import StorageRuntime
 
 runtime = StorageRuntime.load()
-sources = SourceRegistry(
+assets = SourceAssetRegistry(
     runtime,
     "/path/to/source_catalog.sqlite3",
 )
@@ -169,17 +191,20 @@ context = ExecutionContext.create(ResourceContext(
     project_id="research",
 ))
 
-result = sources.register_file(context, "report.pdf", bundle="phd/rag")
-print(result.source_id, result.status)
+result = assets.register_asset(context, "interview.mp3", bundle="research/interviews")
+print(result.asset_id, result.status)
 
-with sources.open(context, result.source_id) as blob:
+asset = assets.show_asset(context, result.asset_id)
+print(asset.asset_id, asset.ref)
+
+with assets.open_asset(context, result.asset_id) as blob:
     assert blob.read()
 ```
 
 For physical inspection only:
 
 ```python
-location = sources.locate_source(context, result.source_id)
+location = assets.locate_asset(context, result.asset_id)
 print(location.blob_uri, location.local_path)
 ```
 
@@ -206,24 +231,25 @@ The ownership boundary is explicit:
 | Ingest owns | Storage owns |
 | --- | --- |
 | Context relationship | `BlobRef` |
-| Bundle and Source records | hashing and SHA-256 |
-| Source catalog and Source-to-BlobRef relationship | CAS keys and Blob IDs |
-| Source/Bundle authorization | dedup scope and domain |
-| same-Bundle logical equality | physical reuse, URI and profile routing |
+| DocBundle and SourceAsset records | hashing and SHA-256 |
+| catalog and SourceAsset-to-BlobRef relationship | CAS keys and Blob IDs |
+| SourceAsset/DocBundle authorization | dedup scope and domain |
+| same-DocBundle logical equality | physical reuse, URI and profile routing |
 
 Registration captures an unpublished snapshot with
 `runtime.blobs("source_asset").prepare_file(...)`. Ingest uses
-`bundle_id + prepared.digest` to create or reuse its logical Source. A duplicate
-Source discards the prepared snapshot without publishing a Blob; an accepted
-Source publishes the exact staged bytes and persists the returned BlobRef.
+`bundle_id + prepared.digest` to create or reuse its logical SourceAsset. A
+duplicate SourceAsset discards the prepared snapshot without publishing a
+Blob; an accepted SourceAsset publishes the exact staged bytes and persists
+the returned BlobRef.
 Ingest does not calculate a second digest, CAS key or dedup domain.
 
 For `dedup_scope = "none"`, the final duplicate check and winning publication
 are arbitrated with the Source catalog write transaction. The potentially
 large caller-file capture occurs before that lock. Concurrent identical
-registrations in one Bundle therefore produce one Source and one referenced
-Blob, while identical content accepted into two different Bundles produces two
-Sources and two physical Blobs.
+registrations in one DocBundle therefore produce one SourceAsset and one
+referenced Blob, while identical content accepted into two different
+DocBundles produces two SourceAssets and two physical Blobs.
 
 Inspectable JSON metadata is written through
 `runtime.for_role("source_asset")`:
@@ -237,9 +263,14 @@ source-assets/
       sources/<source_id>/source.json
 ```
 
-Raw source bytes appear only beneath `blob-domains`. The catalog records the
-durable BlobRef relationship but never uses Blob identity for authorization.
-Source reads remain scoped by current Context and `source_id`.
+Raw SourceAsset bytes appear only beneath `blob-domains`. The catalog records
+the durable BlobRef relationship but never uses Blob identity for
+authorization. Reads remain scoped by current Context and `asset_id`.
+
+The SQLite schema and durable metadata keys intentionally retain the historical
+terms `sources`, `source_id`, `bundles`, `source.json` and `bundle.json`.
+Existing catalogs and immutable metadata therefore need no naming migration;
+the public domain API is SourceAsset and DocBundle.
 
 The source service calls the existing control seam with:
 

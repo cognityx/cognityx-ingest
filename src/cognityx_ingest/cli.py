@@ -20,12 +20,24 @@ from cognityx_storage import (
 from cognityx_ingest.management import IngestManager
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.service import IngestService
-from cognityx_ingest.sources import SourceRegistry
+from cognityx_ingest.source_assets import SourceAssetRegistry
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] not in {"ingest", "jobs", "documents", "artifacts", "bundles", "sources", "-h", "--help"}:
+    known_commands = {
+        "ingest",
+        "jobs",
+        "documents",
+        "artifacts",
+        "assets",
+        "doc-bundles",
+        "sources",
+        "bundles",
+        "-h",
+        "--help",
+    }
+    if arguments and arguments[0] not in known_commands:
         arguments.insert(0, "ingest")
 
     parser = argparse.ArgumentParser(prog="cognityx-ingest")
@@ -59,52 +71,99 @@ def main(argv: list[str] | None = None) -> int:
     read.add_argument("name", choices=("source", "document", "evidence", "manifest"))
     _add_runtime_arguments(read)
 
-    bundles = commands.add_parser("bundles", help="Manage logical source bundles.")
-    bundle_commands = bundles.add_subparsers(dest="bundle_command", required=True)
-    for name in ("list", "create", "locate"):
-        command = bundle_commands.add_parser(name)
-        if name == "create": command.add_argument("path")
-        if name == "locate": command.add_argument("bundle_id")
-        _add_runtime_arguments(command, source_storage=True)
-
-    sources = commands.add_parser("sources", help="Register and inspect durable source files.")
-    source_commands = sources.add_subparsers(dest="source_command", required=True)
-    source_add = source_commands.add_parser("add")
-    source_add.add_argument("file")
-    source_add.add_argument("--bundle")
-    _add_runtime_arguments(source_add, source_storage=True)
-    source_list = source_commands.add_parser("list")
-    source_list.add_argument("--bundle")
-    _add_runtime_arguments(source_list, source_storage=True)
-    source_show = source_commands.add_parser("show")
-    source_show.add_argument("source_id")
-    _add_runtime_arguments(source_show, source_storage=True)
-    source_locate = source_commands.add_parser("locate")
-    source_locate.add_argument("source_id")
-    _add_runtime_arguments(source_locate, source_storage=True)
+    _add_doc_bundle_commands(
+        commands,
+        "doc-bundles",
+        help_text="Manage logical DocBundles.",
+    )
+    _add_asset_commands(
+        commands,
+        "assets",
+        help_text="Register and inspect durable SourceAssets.",
+    )
+    _add_doc_bundle_commands(
+        commands,
+        "bundles",
+        help_text="Compatibility alias for doc-bundles.",
+    )
+    _add_asset_commands(
+        commands,
+        "sources",
+        help_text="Compatibility alias for assets.",
+    )
 
     args = parser.parse_args(arguments)
     context = _context(args)
 
-    if args.command in {"bundles", "sources"}:
+    if args.command in {"doc-bundles", "assets", "bundles", "sources"}:
         runtime = _source_runtime(args)
-        registry = SourceRegistry(runtime, _source_catalog_path(args, runtime))
-        if args.command == "bundles":
+        registry = SourceAssetRegistry(
+            runtime, _source_catalog_path(args, runtime)
+        )
+        canonical = args.command in {"doc-bundles", "assets"}
+        if args.command in {"bundles", "sources"}:
+            replacement = "doc-bundles" if args.command == "bundles" else "assets"
+            print(
+                f"'{args.command}' is retained for compatibility; "
+                f"use '{replacement}'.",
+                file=sys.stderr,
+            )
+        if args.command in {"doc-bundles", "bundles"}:
             if args.bundle_command == "list":
-                _write([_plain(item) for item in registry.list_bundles(context)])
+                items = (
+                    registry.list_doc_bundles(context)
+                    if canonical
+                    else registry.list_bundles(context)
+                )
+                _write([_plain(item) for item in items])
             elif args.bundle_command == "locate":
-                _write(registry.locate_bundle(context, args.bundle_id))
+                value = (
+                    registry.locate_doc_bundle(context, args.bundle_id)
+                    if canonical
+                    else registry.locate_bundle(context, args.bundle_id)
+                )
+                _write(value)
             else:
-                _write(_plain(registry.resolve_bundle(context, args.path, create=True)))
+                value = (
+                    registry.resolve_doc_bundle(context, args.path, create=True)
+                    if canonical
+                    else registry.resolve_bundle(context, args.path, create=True)
+                )
+                _write(_plain(value))
             return 0
-        if args.source_command == "add":
-            _write(_plain(registry.register_file(context, args.file, bundle=args.bundle)))
-        elif args.source_command == "list":
-            _write([_plain(item) for item in registry.list_sources(context, bundle=args.bundle)])
-        elif args.source_command == "show":
-            _write(_plain(registry.show_source(context, args.source_id)))
+        if args.asset_command == "add":
+            value = (
+                registry.register_asset(context, args.file, bundle=args.bundle)
+                if canonical
+                else registry.register_file(context, args.file, bundle=args.bundle)
+            )
+            _write(_asset_plain(value) if canonical else _plain(value))
+        elif args.asset_command == "list":
+            items = (
+                registry.list_assets(context, bundle=args.bundle)
+                if canonical
+                else registry.list_sources(context, bundle=args.bundle)
+            )
+            _write(
+                [
+                    _asset_plain(item) if canonical else _plain(item)
+                    for item in items
+                ]
+            )
+        elif args.asset_command == "show":
+            value = (
+                registry.show_asset(context, args.asset_id)
+                if canonical
+                else registry.show_source(context, args.asset_id)
+            )
+            _write(_asset_plain(value) if canonical else _plain(value))
         else:
-            _write(_plain(registry.locate_source(context, args.source_id)))
+            value = (
+                registry.locate_asset(context, args.asset_id)
+                if canonical
+                else registry.locate_source(context, args.asset_id)
+            )
+            _write(_asset_plain(value) if canonical else _plain(value))
         return 0
 
     storage, repository = _runtime(args)
@@ -137,6 +196,46 @@ def main(argv: list[str] | None = None) -> int:
     payload = manager.read_artifact(context, args.document_id, args.name)
     _write(_artifact_json(args.name, payload))
     return 0
+
+
+def _add_doc_bundle_commands(
+    commands: argparse._SubParsersAction,
+    name: str,
+    *,
+    help_text: str,
+) -> None:
+    group = commands.add_parser(name, help=help_text)
+    subcommands = group.add_subparsers(dest="bundle_command", required=True)
+    for command_name in ("list", "create", "locate"):
+        command = subcommands.add_parser(command_name)
+        if command_name == "create":
+            command.add_argument("path")
+        if command_name == "locate":
+            command.add_argument("bundle_id")
+        _add_runtime_arguments(command, source_storage=True)
+
+
+def _add_asset_commands(
+    commands: argparse._SubParsersAction,
+    name: str,
+    *,
+    help_text: str,
+) -> None:
+    group = commands.add_parser(name, help=help_text)
+    subcommands = group.add_subparsers(dest="asset_command", required=True)
+    add = subcommands.add_parser("add")
+    add.add_argument("file")
+    add.add_argument("--bundle")
+    _add_runtime_arguments(add, source_storage=True)
+    listing = subcommands.add_parser("list")
+    listing.add_argument("--bundle")
+    _add_runtime_arguments(listing, source_storage=True)
+    show = subcommands.add_parser("show")
+    show.add_argument("asset_id")
+    _add_runtime_arguments(show, source_storage=True)
+    locate = subcommands.add_parser("locate")
+    locate.add_argument("asset_id")
+    _add_runtime_arguments(locate, source_storage=True)
 
 
 def _add_runtime_arguments(
@@ -240,6 +339,13 @@ def _plain(value: object) -> object:
     from dataclasses import asdict, is_dataclass
 
     return asdict(value) if is_dataclass(value) else value
+
+
+def _asset_plain(value: object) -> object:
+    result = _plain(value)
+    if isinstance(result, dict) and "source_id" in result:
+        result["asset_id"] = result.pop("source_id")
+    return result
 
 
 if __name__ == "__main__":

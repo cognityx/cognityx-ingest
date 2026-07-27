@@ -11,11 +11,12 @@ LLM assistance is optional and routed only through `cognityx-inference`.
 The optional `inference` package extra installs that client integration; normal
 PDF ingestion does not load a model runtime.
 
-Source registration is also available as a separate first-stage capability.
-It creates Context, Bundle and Source resources over immutable storage bytes
-without parsing the file. Its BlobRef, hashing, CAS layout and deduplication
-are owned by the Cognityx Storage Runtime `source_asset` role. See
-[Source Storage](sources.md).
+SourceAsset registration is also available as a separate first-stage
+capability. It creates Context, DocBundle and SourceAsset resources over
+immutable storage bytes without parsing the file. Any digital file can be
+registered; the current extraction pipeline remains primarily PDF-focused.
+BlobRef, hashing, CAS layout and deduplication are owned by the Cognityx
+Storage Runtime `source_asset` role. See [Source Assets](sources.md).
 
 ## CLI
 

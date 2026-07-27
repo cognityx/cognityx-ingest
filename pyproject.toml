@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cognityx-ingest"
 version = "0.1.0"
-description = "Canonical, provenance-preserving document ingestion for Cognityx."
+description = "Durable SourceAsset registration and provenance-preserving document ingestion for Cognityx."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }

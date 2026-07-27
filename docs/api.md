@@ -2,7 +2,10 @@
 
 ::: cognityx_ingest.service.IngestService
 
-::: cognityx_ingest.sources.SourceRegistry
+::: cognityx_ingest.source_assets.SourceAssetRegistry
+
+`cognityx_ingest.sources.SourceRegistry` remains a compatibility alias to the
+same implementation.
 
 `cognityx_ingest.resolve_execution_context` and
 `cognityx_ingest.ExecutionContext` are compatibility re-exports from

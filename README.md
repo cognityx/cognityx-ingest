@@ -1,8 +1,9 @@
 # Cognityx Ingest
 
-`cognityx-ingest` turns PDFs into canonical Cognityx document artifacts with
-source, page, and text-span provenance. It accepts a file or a directory of
-PDFs; other source types are intentionally not supported yet.
+`cognityx-ingest` durably registers any digital input as a SourceAsset. Its
+current extraction pipeline turns PDFs into canonical Cognityx document
+artifacts with source, page, and text-span provenance. Image, audio, video and
+other modality-specific processing will be added separately.
 
 ## Contract
 
@@ -36,19 +37,21 @@ print(result.document.document_id)
 
 The legacy short CLI form, `cognityx-ingest report.pdf --storage-root ...`, remains supported.
 
-Registering source files independently uses the Storage Runtime `source_asset`
+Registering SourceAssets independently uses the Storage Runtime `source_asset`
 role and persists a durable Storage-owned `BlobRef`:
 
 ```bash
-cognityx-ingest sources add report.pdf
-cognityx-ingest sources add report.pdf --bundle phd/rag \
+cognityx-ingest assets add report.pdf
+cognityx-ingest assets add interview.mp3 --bundle research/interviews \
   --storage-config .cognityx/storage.toml
+cognityx-ingest doc-bundles list
 ```
 
-Ingest owns the Source and Bundle records; `cognityx-storage` owns hashing,
-CAS layout, deduplication, physical Blob reuse and profile routing. See
-[Source Storage](docs/sources.md) for the CLI, Python API and automatic legacy
-catalog migration.
+Ingest owns SourceAsset and DocBundle records; `cognityx-storage` owns
+hashing, CAS layout, deduplication, physical Blob reuse and profile routing.
+The historical `sources` and `bundles` commands remain compatibility aliases.
+See [Source Assets](docs/sources.md) for the CLI, Python API and automatic
+legacy catalog migration.
 
 Manage local execution with `jobs list`, `jobs show`, `jobs cancel`,
 `documents list`, `documents show`, `artifacts read`, and `documents delete

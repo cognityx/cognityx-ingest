@@ -40,11 +40,17 @@ or failure events there.
 Deleting a document removes only its `ingest/documents/{document_id}/` storage
 tree through `cognityx-storage`; it does not erase durable job history.
 
-## Source registration boundary
+## SourceAsset registration boundary
 
-The independent Source Registry persists Context, Bundle, Source and the
-Source-to-BlobRef relationship. `cognityx-storage` owns BlobRef, digest
-calculation, content-addressed layout, deduplication, physical object reuse and
-durable profile routing. Source authorization continues to operate on Context,
-Bundle and Source identities; physical Blob identity is not an authorization
-resource.
+The independent SourceAsset Registry persists SourceAssetContext, DocBundle,
+SourceAsset and the SourceAsset-to-BlobRef relationship. `cognityx-storage`
+owns BlobRef, digest calculation, content-addressed layout, deduplication,
+physical object reuse and durable profile routing. Authorization continues to
+use the existing Context, Bundle and Source action strings for compatibility;
+physical Blob identity is not an authorization resource.
+
+The catalog tables and immutable metadata namespace retain the historical
+names `bundles`, `sources`, `source_id`, `bundle.json` and `source.json`.
+These are durable compatibility identifiers, not the canonical public domain
+vocabulary. New application code uses DocBundle, SourceAsset and `asset_id`;
+the stable underlying asset value remains `src-...`.

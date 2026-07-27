@@ -1,5 +1,5 @@
 site_name: Cognityx Ingest
-site_description: Canonical provenance-preserving PDF ingestion for Cognityx.
+site_description: Durable SourceAsset registration and provenance-preserving document ingestion for Cognityx.
 theme:
   name: material
 plugins:
@@ -11,6 +11,6 @@ plugins:
 strict: true
 nav:
   - Overview: index.md
-  - Source Storage: sources.md
+  - Source Assets: sources.md
   - Contract: contract.md
   - API: api.md

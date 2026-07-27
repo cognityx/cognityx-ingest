@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
-from cognityx_resource import ExecutionContext
+from cognityx_resource import ExecutionContext, ResourceRef
 
 CANONICAL_SCHEMA = "cognityx.ingest.document"
 
@@ -23,8 +23,8 @@ class IngestJobState(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class SourceContext:
-    """Durable governance context for source resources."""
+class SourceAssetContext:
+    """Durable governance context for SourceAsset resources."""
 
     context_id: str
     context_type: str
@@ -33,8 +33,8 @@ class SourceContext:
 
 
 @dataclass(frozen=True, slots=True)
-class SourceBundle:
-    """Durable, named source collection within one context."""
+class DocBundle:
+    """Logical collection of SourceAssets within one Context."""
 
     bundle_id: str
     context_id: str
@@ -45,10 +45,19 @@ class SourceBundle:
     created_at: str
     updated_at: str
 
+    @property
+    def ref(self) -> ResourceRef:
+        """Return the cross-service reference to this DocBundle."""
+        return ResourceRef(
+            resource_type="doc_bundle",
+            resource_id=self.bundle_id,
+            context_id=self.context_id,
+        )
+
 
 @dataclass(frozen=True, slots=True)
-class RegisteredSource:
-    """Logical source resource referring to immutable managed bytes."""
+class SourceAsset:
+    """One registered external digital object backed by immutable bytes."""
 
     source_id: str
     context_id: str
@@ -61,10 +70,24 @@ class RegisteredSource:
     created_by: str | None
     created_at: str
 
+    @property
+    def asset_id(self) -> str:
+        """Return the canonical API name for the stable ``src-...`` ID."""
+        return self.source_id
+
+    @property
+    def ref(self) -> ResourceRef:
+        """Return the cross-service reference to this SourceAsset."""
+        return ResourceRef(
+            resource_type="source_asset",
+            resource_id=self.asset_id,
+            context_id=self.context_id,
+        )
+
 
 @dataclass(frozen=True, slots=True)
-class SourceRegistrationResult:
-    """Outcome of source registration without exposing caller file paths."""
+class SourceAssetRegistrationResult:
+    """Outcome of SourceAsset registration without exposing caller paths."""
 
     context_id: str
     bundle_id: str
@@ -73,15 +96,35 @@ class SourceRegistrationResult:
     size_bytes: int
     status: str
 
+    @property
+    def asset_id(self) -> str:
+        """Return the canonical API name for the stable ``src-...`` ID."""
+        return self.source_id
+
 
 @dataclass(frozen=True, slots=True)
-class SourceLocation:
+class SourceAssetLocation:
+    """Read-only physical-location diagnostics for one SourceAsset."""
+
     source_id: str
     blob_id: str
     blob_uri: str
     backend: str
     local_path: str | None
     profile_name: str | None = None
+
+    @property
+    def asset_id(self) -> str:
+        """Return the canonical API name for the stable ``src-...`` ID."""
+        return self.source_id
+
+
+# Compatibility aliases retain one implementation and stable constructor fields.
+SourceContext = SourceAssetContext
+SourceBundle = DocBundle
+RegisteredSource = SourceAsset
+SourceRegistrationResult = SourceAssetRegistrationResult
+SourceLocation = SourceAssetLocation
 
 
 @dataclass(frozen=True, slots=True)
