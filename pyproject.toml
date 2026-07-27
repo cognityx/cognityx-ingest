@@ -11,6 +11,7 @@ requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [{ name = "Cognityx" }]
 dependencies = [
+  "cognityx-resource",
   "cognityx-storage",
   "cognityx-jobs",
   "pypdf>=5",
@@ -24,6 +25,7 @@ inference = ["cognityx-inference"]
 cognityx-ingest = "cognityx_ingest.cli:main"
 
 [tool.uv.sources]
+cognityx-resource = { path = "../cognityx-resource", editable = true }
 cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git" }
 cognityx-jobs = { git = "https://github.com/cognityx/cognityx-jobs.git" }
 cognityx-inference = { git = "https://github.com/cognityx/llm-benchmark.git" }

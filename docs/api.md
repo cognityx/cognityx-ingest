@@ -4,7 +4,10 @@
 
 ::: cognityx_ingest.sources.SourceRegistry
 
-::: cognityx_ingest.context.resolve_execution_context
+`cognityx_ingest.resolve_execution_context` and
+`cognityx_ingest.ExecutionContext` are compatibility re-exports from
+`cognityx-resource`. New cross-service code should import them directly from
+`cognityx_resource`.
 
 ::: cognityx_ingest.models
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Any
 
+from cognityx_resource import ExecutionContext
 
 CANONICAL_SCHEMA = "cognityx.ingest.document"
 
@@ -19,20 +20,6 @@ class IngestJobState(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionContext:
-    """Small caller-supplied governance and cross-service tracing context."""
-
-    run_id: str
-    correlation_id: str
-    principal_id: str | None = None
-    tenant_id: str | None = None
-    project_id: str | None = None
-    workspace_id: str | None = None
-    scopes: dict[str, str] = field(default_factory=dict)
-    context_type: str = "user"
 
 
 @dataclass(frozen=True, slots=True)

@@ -20,7 +20,8 @@ name `cognityx-inference` and never replaces page evidence.
 
 ## Execution boundary
 
-Every ingestion runs with an `ExecutionContext` containing opaque run and
+Every ingestion runs with a shared `cognityx-resource` `ExecutionContext`
+containing opaque run and
 correlation IDs and optional principal/governance scope fields. `IngestService`
 authorizes `ingest.job.submit` through a `ControlClient` before parsing, then
 reports a measured `UsageReport` after artifacts persist. `LocalControlClient`

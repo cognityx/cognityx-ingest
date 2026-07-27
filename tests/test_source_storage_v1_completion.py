@@ -8,6 +8,7 @@ from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.models import ExecutionContext
 from cognityx_ingest.sources import SourceRegistry
 from cognityx_storage import LocalStorageBackend, StorageClient
+from cognityx_resource import ExecutionContext as SharedExecutionContext
 
 
 def _registry(tmp_path: Path) -> SourceRegistry:
@@ -17,6 +18,10 @@ def _registry(tmp_path: Path) -> SourceRegistry:
 
 def _context(tenant: str | None, principal: str = "alice", **extra: str) -> ExecutionContext:
     return ExecutionContext(run_id="r", correlation_id="c", principal_id=principal, tenant_id=tenant, scopes=extra)
+
+
+def test_ingest_execution_context_is_shared_resource_implementation() -> None:
+    assert ExecutionContext is SharedExecutionContext
 
 
 def test_context_precedence_file_environment_project_and_overrides(tmp_path: Path, monkeypatch) -> None:

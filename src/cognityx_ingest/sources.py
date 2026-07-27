@@ -42,9 +42,9 @@ class SourceRegistry:
         return scope
 
     def resolve_context(self, execution: ExecutionContext) -> SourceContext:
-        descriptors = _context_descriptors(execution)
+        descriptors = execution.context.descriptors()
         canonical = json.dumps(descriptors, sort_keys=True, separators=(",", ":"))
-        context_id = f"ctx-{sha256(canonical.encode()).hexdigest()[:20]}"
+        context_id = execution.context_id
         with self._connection() as db:
             db.execute("INSERT OR IGNORE INTO contexts(context_id, context_type, descriptors_json, created_at) VALUES (?, ?, ?, ?)", (context_id, execution.context_type, canonical, _now()))
             row = db.execute("SELECT * FROM contexts WHERE context_id=?", (context_id,)).fetchone()
@@ -243,11 +243,6 @@ class SourceRegistry:
             raise
         finally: db.close()
 
-
-def _context_descriptors(execution: ExecutionContext) -> dict[str, str]:
-    if execution.context_type not in {"user", "system"}: raise ValueError("Execution context type must be 'user' or 'system'.")
-    values = {"context_type": execution.context_type, **{key: value for key, value in {"tenant_id": execution.tenant_id, "project_id": execution.project_id, "workspace_id": execution.workspace_id, "principal_id": execution.principal_id, **execution.scopes}.items() if value not in {None, ""}}}
-    return dict(sorted(values.items()))
 
 def _bundle_segments(path: str) -> tuple[str, ...]:
     parts = tuple(item.strip() for item in path.strip("/").split("/") if item.strip())

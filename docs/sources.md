@@ -5,7 +5,7 @@ resource identity. After registration, downstream work uses `source_id`; it
 does not need the original filesystem path.
 
 ```text
-ExecutionContext -> Context -> Bundle -> Source -> immutable Blob
+ResourceContext -> ExecutionContext -> Context -> Bundle -> Source -> immutable Blob
 ```
 
 This capability deliberately does not parse files, create documents, run jobs,
@@ -74,6 +74,27 @@ cognityx-ingest sources add report.pdf --context context.json \
 
 `--context-type system` supports service work without a human principal.
 
+The shared definitions come from `cognityx-resource`. `ResourceContext`
+contains stable governance descriptors; `ExecutionContext` identifies one
+operation in that stable Context:
+
+```python
+from cognityx_resource import ResourceContext, ExecutionContext
+
+resource_context = ResourceContext(
+    tenant_id="acme",
+    project_id="genai",
+    principal_id="alice",
+)
+execution = ExecutionContext.create(resource_context)
+
+print(execution.context_id)  # stable
+print(execution.run_id)      # unique to this operation
+```
+
+For compatibility, `from cognityx_ingest import ExecutionContext` continues to
+work and refers to the same shared implementation.
+
 ## Deduplication and locations
 
 `COGNITYX_DEDUP_SCOPE` is deployment configuration, not an upload argument.
@@ -108,19 +129,18 @@ namespace, not the source-byte location.
 ## Python API
 
 ```python
-from cognityx_ingest import ExecutionContext, SourceRegistry
+from cognityx_ingest import SourceRegistry
+from cognityx_resource import ResourceContext, ExecutionContext
 from cognityx_storage import LocalStorageBackend, StorageClient
 
 root = "/tmp/cognityx-storage"
 storage = StorageClient(LocalStorageBackend(root)).for_shared_data()
 sources = SourceRegistry(storage, f"{root}/.cognityx-ingest/source_catalog.sqlite3")
-context = ExecutionContext(
-    run_id="request-1",
-    correlation_id="correlation-1",
+context = ExecutionContext.create(ResourceContext(
     principal_id="alice",
     tenant_id="tenant-a",
     project_id="research",
-)
+))
 
 result = sources.register_file(context, "report.pdf", bundle="phd/rag")
 print(result.source_id, result.status)
