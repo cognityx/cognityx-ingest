@@ -39,3 +39,12 @@ or failure events there.
 
 Deleting a document removes only its `ingest/documents/{document_id}/` storage
 tree through `cognityx-storage`; it does not erase durable job history.
+
+## Source registration boundary
+
+The independent Source Registry persists Context, Bundle, Source and the
+Source-to-BlobRef relationship. `cognityx-storage` owns BlobRef, digest
+calculation, content-addressed layout, deduplication, physical object reuse and
+durable profile routing. Source authorization continues to operate on Context,
+Bundle and Source identities; physical Blob identity is not an authorization
+resource.

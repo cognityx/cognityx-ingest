@@ -8,7 +8,7 @@ import pytest
 from cognityx_ingest.control import ControlDecision
 from cognityx_ingest.models import ExecutionContext
 from cognityx_ingest.sources import SourceRegistry
-from cognityx_storage import LocalStorageBackend, StorageClient
+from cognityx_storage import StorageConfig, StorageRuntime
 
 
 def _context(*, principal: str | None = "alice", tenant: str | None = "tenant-a", system: bool = False) -> ExecutionContext:
@@ -20,8 +20,13 @@ def _context(*, principal: str | None = "alice", tenant: str | None = "tenant-a"
 
 
 def _registry(tmp_path: Path, control=None) -> SourceRegistry:
-    storage = StorageClient(LocalStorageBackend(tmp_path / "storage")).for_shared_data()
-    return SourceRegistry(storage, tmp_path / "storage" / ".cognityx-ingest" / "source_catalog.sqlite3", control=control)
+    root = tmp_path / "storage"
+    runtime = StorageRuntime.from_config(StorageConfig.built_in(root=root))
+    return SourceRegistry(
+        runtime,
+        root / ".cognityx-ingest" / "source_catalog.sqlite3",
+        control=control,
+    )
 
 
 def test_context_is_canonical_and_system_context_is_distinct(tmp_path: Path) -> None:
@@ -71,7 +76,9 @@ def test_source_registration_deduplicates_by_bundle_and_reuses_blob(tmp_path: Pa
     assert other_bundle.sha256 == first.sha256
     with registry.open(_context(), other_bundle.source_id) as stored:
         assert stored.read() == b"same immutable bytes"
-    blobs = list((tmp_path / "storage" / "shared" / "blob-domains").rglob("*"))
+    blobs = list(
+        (tmp_path / "storage" / "source-assets" / "blob-domains").rglob("*")
+    )
     assert len([path for path in blobs if path.is_file()]) == 1
 
 

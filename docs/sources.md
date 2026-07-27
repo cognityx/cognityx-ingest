@@ -13,8 +13,9 @@ or build RAG indexes. Those later capabilities will begin from `source_id`.
 
 ## CLI
 
-The normal starting point needs only a file. The default local storage root is
-used unless `--storage-root` is supplied.
+The normal starting point needs only a file. `StorageRuntime.load()` selects
+the Storage profile and role using the standard Cognityx configuration
+precedence.
 
 ```bash
 cognityx-ingest sources add report.pdf
@@ -33,9 +34,24 @@ an add with identical bytes in the same Bundle returns the original
 Bundle receive a new logical `source_id` while reusing the immutable blob.
 
 Use `--storage-root /path/to/storage` when selecting a local storage root.
+This is a local-development shortcut that creates the built-in filesystem
+Storage Runtime. For an explicit runtime configuration, use:
+
+```bash
+cognityx-ingest sources add report.pdf \
+  --storage-config .cognityx/storage.toml
+```
+
+`--storage-root` and `--storage-config` are mutually exclusive. Storage
+configuration otherwise follows `COGNITYX_STORAGE_CONFIG`, project
+`.cognityx/storage.toml`, user configuration, and the built-in local fallback.
+
 The source catalog is persisted at
 `<storage-root>/.cognityx-ingest/source_catalog.sqlite3`; it is metadata owned
-by Ingest, not a storage-folder index.
+by Ingest, not a storage-folder index. With a non-filesystem profile or a
+configuration whose local root cannot be derived, pass
+`--catalog-path /path/to/source_catalog.sqlite3`. This job deliberately does
+not move the catalog into a Storage role.
 
 ## Context resolution
 
@@ -97,45 +113,56 @@ work and refers to the same shared implementation.
 
 ## Deduplication and locations
 
-`COGNITYX_DEDUP_SCOPE` is deployment configuration, not an upload argument.
-It accepts `tenant` (default), `context`, or `platform`.
+Deduplication is Storage configuration. Configure the `source_asset` role:
 
-```bash
-export COGNITYX_DEDUP_SCOPE=tenant
+```toml
+[storage.roles.source_asset]
+profile = "local-main"
+namespace = "source-assets"
+dedup_scope = "tenant"
 ```
 
+Supported values are `tenant` (default), `context`, `platform`, and `none`.
 Under the default, identical bytes share a Blob only inside the same tenant.
 Contexts with no tenant are isolated by principal; system Contexts are isolated
 from user fallback domains. Blob bytes use the logical namespace:
 
 ```text
-blob-domains/<dedup-domain>/sha256/<first-two>/<next-two>/<sha256>
+source-assets/
+  blob-domains/<dedup-domain>/sha256/<first-two>/<next-two>/<sha256>
 ```
 
-The returned/persisted durable location is provider-neutral, for example
-`storage://shared/blob-domains/...`, never a `file://` path. Use read-only
-inspection when an operator needs the local backing path:
+`COGNITYX_DEDUP_SCOPE` is deprecated and ignored. It may produce a compatibility
+warning; it does not override Storage Runtime configuration.
+
+The complete Storage `BlobRef` is persisted on every new Source. Its durable
+location is provider-neutral, for example
+`storage://local-main/source-assets/blob-domains/...`, never a `file://` path.
+Use read-only inspection when an operator needs the local backing path:
 
 ```bash
 cognityx-ingest sources locate src-...
 cognityx-ingest bundles locate bun-...
 ```
 
-`sources locate` returns `source_id`, `blob_id`, `blob_uri`, backend identity
-and `local_path` when the active backend is already local. It never downloads,
-copies or materializes data. `bundles locate` identifies the logical metadata
-namespace, not the source-byte location.
+`sources locate` returns `source_id`, `blob_id`, `blob_uri`, durable
+`profile_name`, backend diagnostics and `local_path` when the recorded profile
+is already local. It never downloads, copies or materializes data. A readable
+non-local backend returns `local_path: null`. `bundles locate` identifies the
+logical metadata namespace, not the source-byte location.
 
 ## Python API
 
 ```python
 from cognityx_ingest import SourceRegistry
 from cognityx_resource import ResourceContext, ExecutionContext
-from cognityx_storage import LocalStorageBackend, StorageClient
+from cognityx_storage import StorageRuntime
 
-root = "/tmp/cognityx-storage"
-storage = StorageClient(LocalStorageBackend(root)).for_shared_data()
-sources = SourceRegistry(storage, f"{root}/.cognityx-ingest/source_catalog.sqlite3")
+runtime = StorageRuntime.load()
+sources = SourceRegistry(
+    runtime,
+    "/path/to/source_catalog.sqlite3",
+)
 context = ExecutionContext.create(ResourceContext(
     principal_id="alice",
     tenant_id="tenant-a",
@@ -162,12 +189,47 @@ Context identity. Equivalent scope descriptors resolve to the same
 System work can use `context_type="system"` and service descriptors in
 `scopes`.
 
+For a direct local-development root:
+
+```python
+from cognityx_storage import StorageConfig, StorageRuntime
+
+runtime = StorageRuntime.from_config(
+    StorageConfig.built_in(root="/tmp/cognityx-storage")
+)
+```
+
 ## Storage and authorization boundary
 
-Blobs are written through `cognityx-storage` using opaque logical keys under
-the shared trust-domain blob namespace. The catalog records the blob relationship but never
-uses blob identity for authorization. Source reads are scoped by both current
-Context and `source_id`.
+The ownership boundary is explicit:
+
+| Ingest owns | Storage owns |
+| --- | --- |
+| Context relationship | `BlobRef` |
+| Bundle and Source records | hashing and SHA-256 |
+| Source catalog and Source-to-BlobRef relationship | CAS keys and Blob IDs |
+| Source/Bundle authorization | dedup scope and domain |
+| same-Bundle logical equality | physical reuse, URI and profile routing |
+
+Registration calls `runtime.blobs("source_asset").put_file(...)`. Ingest then
+uses `bundle_id + blob_ref.digest` to create or reuse its logical Source.
+Ingest does not calculate a second digest, CAS key or dedup domain.
+
+Inspectable JSON metadata is written through
+`runtime.for_role("source_asset")`:
+
+```text
+source-assets/
+  source-contexts/<context_id>/
+    context.json
+    bundles/<bundle_id>/
+      bundle.json
+      sources/<source_id>/source.json
+```
+
+Raw source bytes appear only beneath `blob-domains`. The catalog records the
+durable BlobRef relationship but never uses Blob identity for authorization.
+Source reads remain scoped by current Context and `source_id`.
 
 The source service calls the existing control seam with:
 
@@ -184,9 +246,19 @@ cloud-provider policy model is introduced here.
 
 ## Migration
 
-On first opening an existing Source Storage v1 catalog, Ingest detects the
-legacy globally unique SHA-256 Blob table. It creates domain-specific Blob
-records, copies each referenced legacy Blob into the configured dedup domain,
-updates Sources to the new Blob IDs, and retains source readability. Legacy
-objects may remain as unreferenced storage data; this phase intentionally does
-not implement Blob garbage collection.
+On first opening an existing catalog, Ingest adds nullable
+`sources.blob_ref_json` and migrates every unmigrated Source through the
+Storage Blob API. Both the original global-SHA Blob table and the later
+domain-scoped Ingest Blob table are supported directly.
+
+Migration reconstructs the stored `ResourceContext`, verifies its computed
+Context ID, validates the legacy bytes against catalog digest and size, calls
+`BlobStore.put_stream()`, and commits one Source at a time. It is therefore
+restartable after interruption. A mismatch raises a clear migration error
+without replacing the Source mapping.
+
+The old `blobs` table is retained solely as legacy migration state. New
+registration, lookup, deduplication, authorization, reads and locate operations
+do not use it. Existing IDs remain unchanged, authoritative metadata is
+republished under the `source_asset` role, and old bytes/metadata may remain as
+unreferenced legacy data. Garbage collection is out of scope.

@@ -81,6 +81,7 @@ class SourceLocation:
     blob_uri: str
     backend: str
     local_path: str | None
+    profile_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

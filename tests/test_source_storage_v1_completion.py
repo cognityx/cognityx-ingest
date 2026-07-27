@@ -9,13 +9,47 @@ import pytest
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.models import ExecutionContext
 from cognityx_ingest.sources import SourceRegistry
-from cognityx_storage import LocalStorageBackend, StorageClient
+from cognityx_storage import (
+    LocalStorageBackend,
+    StorageClient,
+    StorageConfig,
+    StorageRuntime,
+)
 from cognityx_resource import ExecutionContext as SharedExecutionContext
 
 
-def _registry(tmp_path: Path) -> SourceRegistry:
+def _runtime(root: Path, *, dedup_scope: str = "tenant") -> StorageRuntime:
+    return StorageRuntime.from_config(
+        StorageConfig.from_dict(
+            {
+                "storage": {
+                    "default_profile": "local-main",
+                    "profiles": {
+                        "local-main": {
+                            "type": "filesystem",
+                            "root": str(root),
+                        }
+                    },
+                    "roles": {
+                        "source_asset": {
+                            "namespace": "source-assets",
+                            "dedup_scope": dedup_scope,
+                        }
+                    },
+                }
+            }
+        )
+    )
+
+
+def _registry(
+    tmp_path: Path, *, dedup_scope: str = "tenant"
+) -> SourceRegistry:
     root = tmp_path / "storage"
-    return SourceRegistry(StorageClient(LocalStorageBackend(root)).for_shared_data(), root / ".cognityx-ingest" / "source_catalog.sqlite3")
+    return SourceRegistry(
+        _runtime(root, dedup_scope=dedup_scope),
+        root / ".cognityx-ingest" / "source_catalog.sqlite3",
+    )
 
 
 def _context(tenant: str | None, principal: str = "alice", **extra: str) -> ExecutionContext:
@@ -49,26 +83,35 @@ def test_dedup_domains_and_logical_metadata(tmp_path: Path, monkeypatch) -> None
     b = registry.register_file(_context("tenant-a"), source, bundle="other")
     c = registry.register_file(_context("tenant-b"), source)
     assert a.source_id != b.source_id != c.source_id
-    with sqlite3.connect(tmp_path / "storage/.cognityx-ingest/source_catalog.sqlite3") as db:
-        assert db.execute("SELECT count(*) FROM blobs").fetchone()[0] == 2
+    blobs_root = tmp_path / "storage/source-assets/blob-domains"
+    assert len([path for path in blobs_root.rglob("*") if path.is_file()]) == 2
     context = registry.resolve_context(_context("tenant-a"))
     bundle = registry.resolve_bundle(_context("tenant-a"))
-    metadata = tmp_path / "storage/shared/source-contexts" / context.context_id / "bundles" / bundle.bundle_id
+    metadata = tmp_path / "storage/source-assets/source-contexts" / context.context_id / "bundles" / bundle.bundle_id
     assert (metadata.parent.parent / "context.json").is_file()
     assert (metadata / "bundle.json").is_file()
     payload = json.loads((metadata / "sources" / a.source_id / "source.json").read_text())
-    assert payload["blob_uri"].startswith("storage://shared/blob-domains/")
-    assert not any(item.suffix == ".txt" for item in (tmp_path / "storage/shared/source-contexts").rglob("*"))
+    assert payload["blob_uri"].startswith(
+        "storage://local-main/source-assets/blob-domains/"
+    )
+    assert not any(
+        item.suffix == ".txt"
+        for item in (
+            tmp_path / "storage/source-assets/source-contexts"
+        ).rglob("*")
+    )
     monkeypatch.setenv("COGNITYX_DEDUP_SCOPE", "context")
+    with pytest.warns(DeprecationWarning, match="deprecated and ignored"):
+        registry = _registry(tmp_path, dedup_scope="context")
     registry.register_file(_context("tenant-a", project="one"), source)
     registry.register_file(_context("tenant-a", project="two"), source)
-    with sqlite3.connect(tmp_path / "storage/.cognityx-ingest/source_catalog.sqlite3") as db:
-        assert db.execute("SELECT count(*) FROM blobs").fetchone()[0] == 4
+    assert len([path for path in blobs_root.rglob("*") if path.is_file()]) == 4
     monkeypatch.setenv("COGNITYX_DEDUP_SCOPE", "platform")
+    with pytest.warns(DeprecationWarning, match="deprecated and ignored"):
+        registry = _registry(tmp_path, dedup_scope="platform")
     registry.register_file(_context("tenant-c"), source)
     registry.register_file(_context("tenant-d"), source)
-    with sqlite3.connect(tmp_path / "storage/.cognityx-ingest/source_catalog.sqlite3") as db:
-        assert db.execute("SELECT count(*) FROM blobs").fetchone()[0] == 5
+    assert len([path for path in blobs_root.rglob("*") if path.is_file()]) == 5
 
 
 def test_tenant_scope_cannot_contradict_tenant_dedup_domain(
@@ -91,13 +134,9 @@ def test_tenant_scope_cannot_contradict_tenant_dedup_domain(
             source,
         )
 
-    with sqlite3.connect(
-        tmp_path / "storage/.cognityx-ingest/source_catalog.sqlite3"
-    ) as db:
-        domains = db.execute(
-            "SELECT dedup_domain_id FROM blobs ORDER BY dedup_domain_id"
-        ).fetchall()
-    assert domains == [("tenant-80a707af7dc77ee1228f",)]
+    blobs_root = tmp_path / "storage/source-assets/blob-domains"
+    domains = sorted(path.name for path in blobs_root.iterdir())
+    assert domains == ["tenant-80a707af7dc77ee1228f"]
 
 
 def test_locate_is_read_only_and_legacy_migration_is_domain_safe(tmp_path: Path) -> None:
@@ -116,7 +155,7 @@ def test_locate_is_read_only_and_legacy_migration_is_domain_safe(tmp_path: Path)
         db.execute("INSERT INTO bundles VALUES ('bun-old',?,'default',NULL,'alice','now','now')", (context_id,))
         db.execute("INSERT INTO blobs VALUES (?,?,?,?,?)", (f"sha256:{digest}",digest,old_key,6,"now"))
         db.execute("INSERT INTO sources VALUES (?,?,?,?,?,?,?,?,?,?)", ("src-old",context_id,"bun-old","legacy.txt","text/plain",6,digest,f"sha256:{digest}","alice","now"))
-    registry = SourceRegistry(storage, db_path)
+    registry = SourceRegistry(_runtime(root), db_path)
     context = ExecutionContext(run_id="x", correlation_id="y", principal_id="alice", tenant_id="tenant-a")
     with registry.open(context, "src-old") as opened: assert opened.read() == b"legacy"
     before = {path: path.stat().st_mtime_ns for path in root.rglob("*") if path.is_file()}

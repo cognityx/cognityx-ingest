@@ -570,7 +570,10 @@ source = { git = "https://github.com/cognityx/cognityx-resource.git#79f89a965f46
 [[package]]
 name = "cognityx-storage"
 version = "0.1.0"
-source = { git = "https://github.com/cognityx/cognityx-storage.git#99f578df39b2b45993b47c51a949ba00ff051538" }
+source = { git = "https://github.com/cognityx/cognityx-storage.git#d169022bbcea50f79b859b4640b1a456bf2ff424" }
+dependencies = [
+    { name = "cognityx-resource" },
+]
 
 [[package]]
 name = "colorama"

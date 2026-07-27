@@ -98,6 +98,59 @@ def test_cli_registers_and_lists_sources_and_bundles(tmp_path: Path, capsys: pyt
     assert _json_output(capsys)["source_id"] == created["source_id"]
 
 
+def test_source_cli_uses_storage_config_and_rejects_root_combination(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    storage_root = tmp_path / "configured"
+    source = tmp_path / "configured.txt"
+    source.write_text("configured runtime", encoding="utf-8")
+    config = tmp_path / "storage.toml"
+    config.write_text(
+        "\n".join(
+            [
+                "[storage]",
+                'default_profile = "local-main"',
+                "",
+                "[storage.profiles.local-main]",
+                'type = "filesystem"',
+                f'root = "{storage_root}"',
+                "",
+                "[storage.roles.source_asset]",
+                'profile = "local-main"',
+                'namespace = "source-assets"',
+                'dedup_scope = "tenant"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert main(
+        [
+            "sources",
+            "add",
+            str(source),
+            "--storage-config",
+            str(config),
+        ]
+    ) == 0
+    assert _json_output(capsys)["status"] == "created"
+    assert (
+        storage_root / ".cognityx-ingest/source_catalog.sqlite3"
+    ).is_file()
+
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "sources",
+                "list",
+                "--storage-config",
+                str(config),
+                "--storage-root",
+                str(storage_root),
+            ]
+        )
+
+
 def test_cli_context_file_override_scope_and_local_fallback(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> None:
     storage_root, source = tmp_path / "storage", tmp_path / "source.txt"
     source.write_text("context", encoding="utf-8")

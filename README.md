@@ -36,6 +36,20 @@ print(result.document.document_id)
 
 The legacy short CLI form, `cognityx-ingest report.pdf --storage-root ...`, remains supported.
 
+Registering source files independently uses the Storage Runtime `source_asset`
+role and persists a durable Storage-owned `BlobRef`:
+
+```bash
+cognityx-ingest sources add report.pdf
+cognityx-ingest sources add report.pdf --bundle phd/rag \
+  --storage-config .cognityx/storage.toml
+```
+
+Ingest owns the Source and Bundle records; `cognityx-storage` owns hashing,
+CAS layout, deduplication, physical Blob reuse and profile routing. See
+[Source Storage](docs/sources.md) for the CLI, Python API and automatic legacy
+catalog migration.
+
 Manage local execution with `jobs list`, `jobs show`, `jobs cancel`,
 `documents list`, `documents show`, `artifacts read`, and `documents delete
 --yes`. Full commands and Python API examples are in the documentation.

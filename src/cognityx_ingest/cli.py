@@ -9,7 +9,13 @@ import sys
 from pathlib import Path
 
 from cognityx_jobs import JobRepository
-from cognityx_storage import DEFAULT_STORAGE_ROOT, LocalStorageBackend, StorageClient
+from cognityx_storage import (
+    DEFAULT_STORAGE_ROOT,
+    LocalStorageBackend,
+    StorageClient,
+    StorageConfig,
+    StorageRuntime,
+)
 
 from cognityx_ingest.management import IngestManager
 from cognityx_ingest.context import resolve_execution_context
@@ -59,35 +65,30 @@ def main(argv: list[str] | None = None) -> int:
         command = bundle_commands.add_parser(name)
         if name == "create": command.add_argument("path")
         if name == "locate": command.add_argument("bundle_id")
-        _add_runtime_arguments(command)
+        _add_runtime_arguments(command, source_storage=True)
 
     sources = commands.add_parser("sources", help="Register and inspect durable source files.")
     source_commands = sources.add_subparsers(dest="source_command", required=True)
     source_add = source_commands.add_parser("add")
     source_add.add_argument("file")
     source_add.add_argument("--bundle")
-    _add_runtime_arguments(source_add)
+    _add_runtime_arguments(source_add, source_storage=True)
     source_list = source_commands.add_parser("list")
     source_list.add_argument("--bundle")
-    _add_runtime_arguments(source_list)
+    _add_runtime_arguments(source_list, source_storage=True)
     source_show = source_commands.add_parser("show")
     source_show.add_argument("source_id")
-    _add_runtime_arguments(source_show)
+    _add_runtime_arguments(source_show, source_storage=True)
     source_locate = source_commands.add_parser("locate")
     source_locate.add_argument("source_id")
-    _add_runtime_arguments(source_locate)
+    _add_runtime_arguments(source_locate, source_storage=True)
 
     args = parser.parse_args(arguments)
-    storage, repository = _runtime(args)
     context = _context(args)
 
-    if args.command == "ingest":
-        results = IngestService(storage, jobs=repository).ingest_path(args.path, owner_id=args.owner_id, context=context)
-        _write([_result_json(item) for item in results])
-        return 0
-
     if args.command in {"bundles", "sources"}:
-        registry = SourceRegistry(storage, _source_catalog_path(args))
+        runtime = _source_runtime(args)
+        registry = SourceRegistry(runtime, _source_catalog_path(args, runtime))
         if args.command == "bundles":
             if args.bundle_command == "list":
                 _write([_plain(item) for item in registry.list_bundles(context)])
@@ -104,6 +105,12 @@ def main(argv: list[str] | None = None) -> int:
             _write(_plain(registry.show_source(context, args.source_id)))
         else:
             _write(_plain(registry.locate_source(context, args.source_id)))
+        return 0
+
+    storage, repository = _runtime(args)
+    if args.command == "ingest":
+        results = IngestService(storage, jobs=repository).ingest_path(args.path, owner_id=args.owner_id, context=context)
+        _write([_result_json(item) for item in results])
         return 0
 
     manager = IngestManager(storage, repository)
@@ -132,8 +139,25 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--storage-root", default=str(DEFAULT_STORAGE_ROOT), help="Local root used by cognityx-storage.")
+def _add_runtime_arguments(
+    parser: argparse.ArgumentParser, *, source_storage: bool = False
+) -> None:
+    if source_storage:
+        selection = parser.add_mutually_exclusive_group()
+        selection.add_argument(
+            "--storage-root",
+            help="Local-development shortcut for a built-in filesystem Storage Runtime.",
+        )
+        selection.add_argument(
+            "--storage-config",
+            help="Explicit Cognityx Storage Runtime TOML configuration.",
+        )
+        parser.add_argument(
+            "--catalog-path",
+            help="Explicit Source catalog path; required when no local root can be derived.",
+        )
+    else:
+        parser.add_argument("--storage-root", default=str(DEFAULT_STORAGE_ROOT), help="Local root used by cognityx-storage.")
     parser.add_argument("--jobs-database", help="SQLite job database; defaults beneath the storage root.")
     parser.add_argument("--owner-id", default="local", help="Owner scope for lifecycle commands.")
     parser.add_argument("--context", help="JSON file defining the base Cognityx context.")
@@ -152,8 +176,28 @@ def _runtime(args: argparse.Namespace) -> tuple[StorageClient, JobRepository]:
     return StorageClient(LocalStorageBackend(storage_root)).for_shared_data(), JobRepository(str(database))
 
 
-def _source_catalog_path(args: argparse.Namespace) -> Path:
-    return Path(args.storage_root) / ".cognityx-ingest" / "source_catalog.sqlite3"
+def _source_runtime(args: argparse.Namespace) -> StorageRuntime:
+    if args.storage_root:
+        return StorageRuntime.from_config(
+            StorageConfig.built_in(root=args.storage_root)
+        )
+    return StorageRuntime.load(config_file=args.storage_config)
+
+
+def _source_catalog_path(
+    args: argparse.Namespace, runtime: StorageRuntime
+) -> Path:
+    if args.catalog_path:
+        return Path(args.catalog_path)
+    store = runtime.for_role("source_asset")
+    profile = runtime.config.profiles[store.profile_name]
+    root = profile.options.get("root")
+    if profile.type != "filesystem" or not isinstance(root, str) or not root:
+        raise ValueError(
+            "A --catalog-path is required when the resolved source_asset "
+            "profile has no local filesystem root."
+        )
+    return Path(root) / ".cognityx-ingest" / "source_catalog.sqlite3"
 
 
 def _context(args: argparse.Namespace):
