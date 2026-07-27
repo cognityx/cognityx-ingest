@@ -25,7 +25,7 @@ inference = ["cognityx-inference"]
 cognityx-ingest = "cognityx_ingest.cli:main"
 
 [tool.uv.sources]
-cognityx-resource = { path = "../cognityx-resource", editable = true }
+cognityx-resource = { git = "https://github.com/cognityx/cognityx-resource.git" }
 cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git" }
 cognityx-jobs = { git = "https://github.com/cognityx/cognityx-jobs.git" }
 cognityx-inference = { git = "https://github.com/cognityx/llm-benchmark.git" }

@@ -548,7 +548,7 @@ inference = [
 requires-dist = [
     { name = "cognityx-inference", marker = "extra == 'inference'", git = "https://github.com/cognityx/llm-benchmark.git" },
     { name = "cognityx-jobs", git = "https://github.com/cognityx/cognityx-jobs.git" },
-    { name = "cognityx-resource", editable = "../cognityx-resource" },
+    { name = "cognityx-resource", git = "https://github.com/cognityx/cognityx-resource.git" },
     { name = "cognityx-storage", git = "https://github.com/cognityx/cognityx-storage.git" },
     { name = "mkdocs-material", marker = "extra == 'dev'", specifier = ">=9.5" },
     { name = "mkdocstrings-python", marker = "extra == 'dev'", specifier = ">=1.12" },
@@ -565,20 +565,12 @@ source = { git = "https://github.com/cognityx/cognityx-jobs.git#bfd10769703dfca9
 [[package]]
 name = "cognityx-resource"
 version = "0.1.0"
-source = { editable = "../cognityx-resource" }
-
-[package.metadata]
-requires-dist = [
-    { name = "mkdocs-material", marker = "extra == 'dev'", specifier = ">=9.5" },
-    { name = "mkdocstrings-python", marker = "extra == 'dev'", specifier = ">=1.12" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-]
-provides-extras = ["dev"]
+source = { git = "https://github.com/cognityx/cognityx-resource.git#a56a44910e4ef14870b95867a370390914a21dbd" }
 
 [[package]]
 name = "cognityx-storage"
 version = "0.1.0"
-source = { git = "https://github.com/cognityx/cognityx-storage.git#71b04f191d3465f5ff75af0e6664a00fe7303ae1" }
+source = { git = "https://github.com/cognityx/cognityx-storage.git#99f578df39b2b45993b47c51a949ba00ff051538" }
 
 [[package]]
 name = "colorama"
