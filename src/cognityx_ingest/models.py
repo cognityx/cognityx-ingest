@@ -88,6 +88,15 @@ class SourceRegistrationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceLocation:
+    source_id: str
+    blob_id: str
+    blob_uri: str
+    backend: str
+    local_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class UsageReport:
     """Facts measured by the ingest execution rather than policy assertions."""
 

@@ -96,3 +96,37 @@ def test_cli_registers_and_lists_sources_and_bundles(tmp_path: Path, capsys: pyt
     assert len(_json_output(capsys)) == 1
     assert main(["sources", "show", created["source_id"], "--storage-root", str(storage_root)]) == 0
     assert _json_output(capsys)["source_id"] == created["source_id"]
+
+
+def test_cli_context_file_override_scope_and_local_fallback(tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch) -> None:
+    storage_root, source = tmp_path / "storage", tmp_path / "source.txt"
+    source.write_text("context", encoding="utf-8")
+    context = tmp_path / "context.json"
+    context.write_text('{"principal_id":"alice","workspace_id":"dev","scopes":{"repo":"ingest"}}', encoding="utf-8")
+
+    assert main(["sources", "add", str(source), "--context", str(context), "--workspace-id", "test", "--scope", "function=trial", "--storage-root", str(storage_root)]) == 0
+    result = _json_output(capsys)
+    import sqlite3
+    with sqlite3.connect(storage_root / ".cognityx-ingest/source_catalog.sqlite3") as db:
+        descriptors = json.loads(db.execute("SELECT descriptors_json FROM contexts WHERE context_id=?", (result["context_id"],)).fetchone()[0])
+    assert descriptors["workspace_id"] == "test"
+    assert descriptors["repo"] == "ingest"
+    assert descriptors["function"] == "trial"
+
+    monkeypatch.setenv("COGNITYX_CONTEXT_FILE", str(context))
+    assert main(["sources", "add", str(source), "--bundle", "env", "--storage-root", str(storage_root)]) == 0
+    environment_result = _json_output(capsys)
+    with sqlite3.connect(storage_root / ".cognityx-ingest/source_catalog.sqlite3") as db:
+        environment_descriptors = json.loads(db.execute("SELECT descriptors_json FROM contexts WHERE context_id=?", (environment_result["context_id"],)).fetchone()[0])
+    assert environment_descriptors["workspace_id"] == "dev"
+    monkeypatch.delenv("COGNITYX_CONTEXT_FILE")
+    assert main(["sources", "add", str(source), "--bundle", "local", "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["context_id"] != result["context_id"]
+    project = tmp_path / "project"; (project / ".cognityx").mkdir(parents=True)
+    (project / ".cognityx/context.json").write_text('{"project_id":"project-context"}', encoding="utf-8")
+    monkeypatch.chdir(project)
+    assert main(["sources", "add", str(source), "--bundle", "project", "--storage-root", str(storage_root)]) == 0
+    project_result = _json_output(capsys)
+    with sqlite3.connect(storage_root / ".cognityx-ingest/source_catalog.sqlite3") as db:
+        project_descriptors = json.loads(db.execute("SELECT descriptors_json FROM contexts WHERE context_id=?", (project_result["context_id"],)).fetchone()[0])
+    assert project_descriptors["project_id"] == "project-context"

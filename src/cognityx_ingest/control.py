@@ -17,6 +17,8 @@ INGEST_BUNDLE_READ = "ingest.bundle.read"
 INGEST_SOURCE_CREATE = "ingest.source.create"
 INGEST_SOURCE_READ = "ingest.source.read"
 INGEST_SOURCE_LIST = "ingest.source.list"
+INGEST_SOURCE_LOCATE = "ingest.source.locate"
+INGEST_BUNDLE_LOCATE = "ingest.bundle.locate"
 
 
 @dataclass(frozen=True, slots=True)

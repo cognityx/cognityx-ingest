@@ -71,7 +71,7 @@ def test_source_registration_deduplicates_by_bundle_and_reuses_blob(tmp_path: Pa
     assert other_bundle.sha256 == first.sha256
     with registry.open(_context(), other_bundle.source_id) as stored:
         assert stored.read() == b"same immutable bytes"
-    blobs = list((tmp_path / "storage" / "shared" / "blobs" / "sha256").rglob("*"))
+    blobs = list((tmp_path / "storage" / "shared" / "blob-domains").rglob("*"))
     assert len([path for path in blobs if path.is_file()]) == 1
 
 

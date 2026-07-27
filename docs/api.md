@@ -4,6 +4,8 @@
 
 ::: cognityx_ingest.sources.SourceRegistry
 
+::: cognityx_ingest.context.resolve_execution_context
+
 ::: cognityx_ingest.models
 
 ::: cognityx_ingest.control
