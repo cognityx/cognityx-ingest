@@ -6,9 +6,23 @@ import pytest
 
 from cognityx_ingest import (
     SourceAssetCatalogAmbiguityError,
+    SourceAssetCatalogError,
     SourceAssetRegistry,
 )
 from cognityx_storage import StorageConfig, StorageRuntime
+from cognityx_storage import StorageBackendFactory, StorageCapabilities
+
+
+class _RemoteTestBackend:
+    """Provider stub used only to prove catalog/source-role separation."""
+
+
+class _NativeTestBackend:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def native_path(self, key: str) -> Path:
+        return self.root / key
 
 
 def _runtime(root: Path) -> StorageRuntime:
@@ -90,3 +104,125 @@ def test_compatibility_registry_alias_uses_loader() -> None:
 
     assert SourceRegistry is SourceAssetRegistry
     assert hasattr(SourceRegistry, "load")
+
+
+def _split_runtime(
+    tmp_path: Path,
+    *,
+    catalog_capabilities: StorageCapabilities,
+    catalog_backend: object,
+) -> StorageRuntime:
+    config = StorageConfig.from_dict(
+        {
+            "storage": {
+                "profiles": {
+                    "remote-source": {"type": "object"},
+                    "local-catalog": {
+                        "type": "filesystem",
+                        "root": str(tmp_path / "catalog-root"),
+                    },
+                },
+                "roles": {
+                    "source_asset": {
+                        "profile": "remote-source",
+                        "namespace": "source-assets",
+                    },
+                    "catalog": {
+                        "profile": "local-catalog",
+                        "namespace": "catalog",
+                        "preferred_capabilities": [
+                            "native_path",
+                            "random_write",
+                            "file_locking",
+                        ],
+                    },
+                },
+            }
+        }
+    )
+    factory = StorageBackendFactory()
+    factory.register(
+        "object",
+        lambda profile: _RemoteTestBackend(),
+        capabilities=StorageCapabilities(
+            stream_read=True,
+            stream_write=True,
+            distributed=True,
+        ),
+    )
+    factory.register(
+        "filesystem",
+        lambda profile: catalog_backend,
+        capabilities=catalog_capabilities,
+    )
+    return StorageRuntime.from_config(config, factory=factory)
+
+
+def test_remote_source_role_can_use_local_catalog_role(tmp_path: Path) -> None:
+    runtime = _split_runtime(
+        tmp_path,
+        catalog_capabilities=StorageCapabilities(
+            native_path=True,
+            random_write=True,
+            file_locking=True,
+        ),
+        catalog_backend=_NativeTestBackend(tmp_path / "catalog-root"),
+    )
+
+    registry = SourceAssetRegistry.load(runtime=runtime)
+
+    assert registry.catalog_info()["catalog_profile"] == "local-catalog"
+    assert runtime.for_role("source_asset").profile_name == "remote-source"
+    assert registry.catalog_path == tmp_path / "catalog-root/catalog/ingest/source_catalog.sqlite3"
+
+
+def test_unsafe_catalog_capabilities_are_rejected_before_sqlite(
+    tmp_path: Path,
+) -> None:
+    runtime = _split_runtime(
+        tmp_path,
+        catalog_capabilities=StorageCapabilities(native_path=True),
+        catalog_backend=_NativeTestBackend(tmp_path / "unsafe-root"),
+    )
+
+    with pytest.raises(SourceAssetCatalogError) as caught:
+        SourceAssetRegistry.load(runtime=runtime)
+
+    message = str(caught.value)
+    assert "Resolved profile: local-catalog" in message
+    assert "Backend: _NativeTestBackend" in message
+    assert "random_write" in message
+    assert "file_locking" in message
+    assert "pass catalog_path explicitly" in message
+    assert not (tmp_path / "unsafe-root").exists()
+
+
+def test_explicit_catalog_path_overrides_unsafe_catalog_role(tmp_path: Path) -> None:
+    runtime = _split_runtime(
+        tmp_path,
+        catalog_capabilities=StorageCapabilities(),
+        catalog_backend=_RemoteTestBackend(),
+    )
+    explicit = tmp_path / "explicit.sqlite3"
+
+    registry = SourceAssetRegistry.load(runtime=runtime, catalog_path=explicit)
+
+    assert registry.catalog_path == explicit
+    assert explicit.exists()
+
+
+def test_catalog_without_native_path_is_rejected_but_explicit_path_works(
+    tmp_path: Path,
+) -> None:
+    runtime = _split_runtime(
+        tmp_path,
+        catalog_capabilities=StorageCapabilities(),
+        catalog_backend=_RemoteTestBackend(),
+    )
+
+    with pytest.raises(SourceAssetCatalogError, match="native_path"):
+        SourceAssetRegistry.load(runtime=runtime)
+
+    explicit = tmp_path / "native-explicit.sqlite3"
+    registry = SourceAssetRegistry.load(runtime=runtime, catalog_path=explicit)
+    assert registry.catalog_path == explicit

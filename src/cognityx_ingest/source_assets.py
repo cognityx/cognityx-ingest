@@ -14,7 +14,11 @@ import warnings
 from dataclasses import dataclass
 
 from cognityx_storage import BlobRef, PreparedBlob, StorageRuntime
-from cognityx_storage.exceptions import StorageError
+from cognityx_storage.exceptions import (
+    StorageError,
+    StorageRoleNotFoundError,
+    StorageRoleUnavailableError,
+)
 
 from cognityx_ingest.control import (
     ControlClient,
@@ -37,6 +41,12 @@ from cognityx_ingest.models import (
     SourceAssetRegistrationResult,
 )
 from cognityx_ingest.source_migration import SourceBlobMigrator
+
+CATALOG_REQUIRED_CAPABILITIES = (
+    "native_path",
+    "random_write",
+    "file_locking",
+)
 
 
 class SourceAssetCatalogError(ValueError):
@@ -841,11 +851,34 @@ def _catalog_role_selection(
 ) -> _CatalogSelection | None:
     try:
         store = runtime.for_role("catalog")
-        path = store.native_path("ingest/source_catalog.sqlite3")
-    except (KeyError, StorageError) as exc:
-        if isinstance(exc, StorageError):
-            return None
+    except (StorageRoleNotFoundError, StorageRoleUnavailableError):
         return None
+    except StorageError as exc:
+        raise SourceAssetCatalogError(
+            "The resolved 'catalog' role could not be opened for the SourceAsset "
+            "SQLite catalog. Configure the 'catalog' role with a native "
+            "filesystem profile, or pass catalog_path explicitly."
+        ) from exc
+    missing = store.capabilities.missing(CATALOG_REQUIRED_CAPABILITIES)
+    if missing:
+        missing_lines = "\n".join(f"- {name}" for name in missing)
+        raise SourceAssetCatalogError(
+            "The resolved 'catalog' role cannot host the SourceAsset SQLite "
+            f"catalog.\n\nResolved profile: {store.profile_name}\n"
+            f"Backend: {store.backend_name}\n\n"
+            f"Missing required capabilities:\n{missing_lines}\n\n"
+            "Configure the 'catalog' role with a native filesystem profile, "
+            "or pass catalog_path explicitly."
+        )
+    try:
+        path = store.native_path("ingest/source_catalog.sqlite3")
+    except StorageError as exc:
+        raise SourceAssetCatalogError(
+            "The resolved 'catalog' role reports the required capabilities, "
+            "but native_path() failed for the SourceAsset SQLite catalog. "
+            "Configure the 'catalog' role with a working native filesystem "
+            "profile, or pass catalog_path explicitly."
+        ) from exc
     return _CatalogSelection(
         path,
         "catalog_role",
