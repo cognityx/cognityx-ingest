@@ -115,11 +115,16 @@ def test_source_cli_uses_storage_config_and_rejects_root_combination(
                 'type = "filesystem"',
                 f'root = "{storage_root}"',
                 "",
-                "[storage.roles.source_asset]",
-                'profile = "local-main"',
-                'namespace = "source-assets"',
-                'dedup_scope = "tenant"',
-            ]
+                    "[storage.roles.source_asset]",
+                    'profile = "local-main"',
+                    'namespace = "source-assets"',
+                    'dedup_scope = "tenant"',
+                    "",
+                    "[storage.roles.catalog]",
+                    'profile = "local-main"',
+                    'namespace = "catalog"',
+                    'preferred_capabilities = ["native_path", "random_write", "file_locking"]',
+                ]
         ),
         encoding="utf-8",
     )
@@ -135,7 +140,7 @@ def test_source_cli_uses_storage_config_and_rejects_root_combination(
     ) == 0
     assert _json_output(capsys)["status"] == "created"
     assert (
-        storage_root / ".cognityx-ingest/source_catalog.sqlite3"
+        storage_root / "catalog/ingest/source_catalog.sqlite3"
     ).is_file()
 
     with pytest.raises(SystemExit):
@@ -160,7 +165,7 @@ def test_cli_context_file_override_scope_and_local_fallback(tmp_path: Path, caps
     assert main(["sources", "add", str(source), "--context", str(context), "--workspace-id", "test", "--scope", "function=trial", "--storage-root", str(storage_root)]) == 0
     result = _json_output(capsys)
     import sqlite3
-    with sqlite3.connect(storage_root / ".cognityx-ingest/source_catalog.sqlite3") as db:
+    with sqlite3.connect(storage_root / "catalog/ingest/source_catalog.sqlite3") as db:
         descriptors = json.loads(db.execute("SELECT descriptors_json FROM contexts WHERE context_id=?", (result["context_id"],)).fetchone()[0])
     assert descriptors["workspace_id"] == "test"
     assert descriptors["repo"] == "ingest"
@@ -169,7 +174,7 @@ def test_cli_context_file_override_scope_and_local_fallback(tmp_path: Path, caps
     monkeypatch.setenv("COGNITYX_CONTEXT_FILE", str(context))
     assert main(["sources", "add", str(source), "--bundle", "env", "--storage-root", str(storage_root)]) == 0
     environment_result = _json_output(capsys)
-    with sqlite3.connect(storage_root / ".cognityx-ingest/source_catalog.sqlite3") as db:
+    with sqlite3.connect(storage_root / "catalog/ingest/source_catalog.sqlite3") as db:
         environment_descriptors = json.loads(db.execute("SELECT descriptors_json FROM contexts WHERE context_id=?", (environment_result["context_id"],)).fetchone()[0])
     assert environment_descriptors["workspace_id"] == "dev"
     monkeypatch.delenv("COGNITYX_CONTEXT_FILE")
@@ -180,6 +185,6 @@ def test_cli_context_file_override_scope_and_local_fallback(tmp_path: Path, caps
     monkeypatch.chdir(project)
     assert main(["sources", "add", str(source), "--bundle", "project", "--storage-root", str(storage_root)]) == 0
     project_result = _json_output(capsys)
-    with sqlite3.connect(storage_root / ".cognityx-ingest/source_catalog.sqlite3") as db:
+    with sqlite3.connect(storage_root / "catalog/ingest/source_catalog.sqlite3") as db:
         project_descriptors = json.loads(db.execute("SELECT descriptors_json FROM contexts WHERE context_id=?", (project_result["context_id"],)).fetchone()[0])
     assert project_descriptors["project_id"] == "project-context"

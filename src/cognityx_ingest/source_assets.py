@@ -11,8 +11,10 @@ import sqlite3
 from typing import Any, BinaryIO, Iterator
 from uuid import uuid4
 import warnings
+from dataclasses import dataclass
 
 from cognityx_storage import BlobRef, PreparedBlob, StorageRuntime
+from cognityx_storage.exceptions import StorageError
 
 from cognityx_ingest.control import (
     ControlClient,
@@ -37,6 +39,22 @@ from cognityx_ingest.models import (
 from cognityx_ingest.source_migration import SourceBlobMigrator
 
 
+class SourceAssetCatalogError(ValueError):
+    """The SourceAsset catalog cannot be selected or opened safely."""
+
+
+class SourceAssetCatalogAmbiguityError(SourceAssetCatalogError):
+    """Legacy and catalog-role databases exist at different paths."""
+
+
+@dataclass(frozen=True, slots=True)
+class _CatalogSelection:
+    path: Path
+    selection: str
+    profile_name: str | None = None
+    backend_name: str | None = None
+
+
 class SourceAssetRegistry:
     """SQLite SourceAsset catalog backed by Storage-owned immutable Blobs."""
 
@@ -46,11 +64,13 @@ class SourceAssetRegistry:
         catalog_path: str | Path,
         *,
         control: ControlClient | None = None,
+        _catalog_selection: _CatalogSelection | None = None,
     ) -> None:
         self._runtime = storage_runtime
         self._blob_store = storage_runtime.blobs("source_asset")
         self._source_store = storage_runtime.for_role("source_asset")
         self._catalog_path = Path(catalog_path)
+        self._catalog_selection = _catalog_selection
         self._catalog_path.parent.mkdir(parents=True, exist_ok=True)
         self._control = control or LocalControlClient()
         if "COGNITYX_DEDUP_SCOPE" in os.environ:
@@ -61,6 +81,49 @@ class SourceAssetRegistry:
                 stacklevel=2,
             )
         self._initialise_and_migrate()
+
+    @classmethod
+    def load(
+        cls,
+        *,
+        runtime: StorageRuntime | None = None,
+        storage_config: str | Path | None = None,
+        catalog_path: str | Path | None = None,
+        control: ControlClient | None = None,
+    ) -> "SourceAssetRegistry":
+        """Load a registry using the Storage ``catalog`` role by default."""
+        if runtime is not None and storage_config is not None:
+            raise ValueError(
+                "Pass either runtime or storage_config to SourceAssetRegistry.load(), "
+                "not both."
+            )
+        selected_runtime = runtime or StorageRuntime.load(
+            config_file=storage_config
+        )
+        selection = _resolve_catalog_selection(
+            selected_runtime, catalog_path=catalog_path
+        )
+        return cls(
+            selected_runtime,
+            selection.path,
+            control=control,
+            _catalog_selection=selection,
+        )
+
+    @property
+    def catalog_path(self) -> Path:
+        """Return the native SQLite path selected for this registry."""
+        return self._catalog_path
+
+    def catalog_info(self) -> dict[str, str | None]:
+        """Return non-secret catalog routing diagnostics."""
+        selection = getattr(self, "_catalog_selection", None)
+        return {
+            "catalog_path": str(self._catalog_path),
+            "selection": selection.selection if selection else "explicit",
+            "catalog_profile": selection.profile_name if selection else None,
+            "catalog_backend": selection.backend_name if selection else None,
+        }
 
     def resolve_context(
         self, execution: ExecutionContext
@@ -705,3 +768,91 @@ def _registration(
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _resolve_catalog_selection(
+    runtime: StorageRuntime,
+    *,
+    catalog_path: str | Path | None,
+) -> _CatalogSelection:
+    """Resolve the SQLite catalog without coupling it to Blob storage."""
+    if catalog_path is not None:
+        return _CatalogSelection(Path(catalog_path), "explicit")
+
+    environment_path = os.environ.get("COGNITYX_INGEST_CATALOG")
+    if environment_path:
+        return _CatalogSelection(Path(environment_path), "environment")
+    if "COGNITYX_INGEST_CATALOG" in os.environ:
+        raise SourceAssetCatalogError(
+            "COGNITYX_INGEST_CATALOG must contain a non-empty catalog path."
+        )
+
+    legacy = _legacy_catalog_selection(runtime)
+    role_selection = _catalog_role_selection(runtime)
+    if legacy is not None:
+        if role_selection is not None and _same_path(
+            legacy.path, role_selection.path
+        ):
+            return legacy
+        if role_selection is not None and role_selection.path.exists():
+            raise SourceAssetCatalogAmbiguityError(
+                "Both a legacy SourceAsset catalog and a catalog-role database "
+                "exist. Pass catalog_path explicitly to select the authoritative "
+                "catalog."
+            )
+        return legacy
+    if role_selection is None:
+        raise SourceAssetCatalogError(
+            "The SourceAsset catalog requires native filesystem semantics. "
+            "Configure the 'catalog' role with a filesystem profile providing "
+            "native_path, random_write, and file_locking, or pass catalog_path "
+            "explicitly."
+        )
+    return role_selection
+
+
+def _legacy_catalog_selection(
+    runtime: StorageRuntime,
+) -> _CatalogSelection | None:
+    """Find the pre-3C catalog only when source assets use a filesystem root."""
+    try:
+        source_store = runtime.for_role("source_asset")
+        profile = runtime.config.profiles[source_store.profile_name]
+    except (KeyError, StorageError):
+        return None
+    if profile.type != "filesystem":
+        return None
+    root = profile.options.get("root")
+    if not isinstance(root, (str, Path)) or not str(root):
+        return None
+    path = Path(root) / ".cognityx-ingest" / "source_catalog.sqlite3"
+    if not path.is_file():
+        return None
+    return _CatalogSelection(
+        path,
+        "legacy",
+        profile_name=source_store.profile_name,
+        backend_name=source_store.backend_name,
+    )
+
+
+def _catalog_role_selection(
+    runtime: StorageRuntime,
+) -> _CatalogSelection | None:
+    try:
+        store = runtime.for_role("catalog")
+        path = store.native_path("ingest/source_catalog.sqlite3")
+    except (KeyError, StorageError) as exc:
+        if isinstance(exc, StorageError):
+            return None
+        return None
+    return _CatalogSelection(
+        path,
+        "catalog_role",
+        profile_name=store.profile_name,
+        backend_name=store.backend_name,
+    )
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)

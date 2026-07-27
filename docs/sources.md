@@ -5,11 +5,14 @@ returns a durable Cognityx resource identity. After registration, downstream
 work uses `asset_id`; it does not need the original filesystem path.
 
 ```text
-ResourceContext -> ExecutionContext -> SourceAssetContext
-                                      -> DocBundle
-                                      -> SourceAsset
-                                      -> BlobRef
+ResourceContext
+      -> DocBundle
+      -> SourceAsset
+      -> BlobRef
 ```
+
+`SourceAssetContext` is the catalog's durable read model of the shared
+`ResourceContext`; callers do not construct a second Context.
 
 Registration accepts any digital file without parsing it. Later capabilities
 may begin from `asset_id`, but not every SourceAsset becomes a parsed document:
@@ -68,12 +71,15 @@ cognityx-ingest assets add report.pdf \
 configuration otherwise follows `COGNITYX_STORAGE_CONFIG`, project
 `.cognityx/storage.toml`, user configuration, and the built-in local fallback.
 
-The source catalog is persisted at
-`<storage-root>/.cognityx-ingest/source_catalog.sqlite3`; it is metadata owned
-by Ingest, not a storage-folder index. With a non-filesystem profile or a
-configuration whose local root cannot be derived, pass
-`--catalog-path /path/to/source_catalog.sqlite3`. This job deliberately does
-not move the catalog into a Storage role.
+The SQLite catalog is resolved through the Storage `catalog` role at
+`catalog/ingest/source_catalog.sqlite3`. Existing installations with
+`<source-asset-root>/.cognityx-ingest/source_catalog.sqlite3` continue using
+that file in place. Resolution precedence is explicit `--catalog-path`,
+`COGNITYX_INGEST_CATALOG`, an existing legacy catalog, then the catalog role.
+If both legacy and catalog-role databases exist, pass `--catalog-path` rather
+than allowing split-brain selection. The catalog requires native path,
+random-write and file-locking capabilities; it is never stored as a Blob or
+object-storage item.
 
 ## Context resolution
 
@@ -178,13 +184,7 @@ the logical metadata namespace, not the source-byte location.
 ```python
 from cognityx_ingest import SourceAssetRegistry
 from cognityx_resource import ResourceContext, ExecutionContext
-from cognityx_storage import StorageRuntime
-
-runtime = StorageRuntime.load()
-assets = SourceAssetRegistry(
-    runtime,
-    "/path/to/source_catalog.sqlite3",
-)
+assets = SourceAssetRegistry.load()
 context = ExecutionContext.create(ResourceContext(
     principal_id="alice",
     tenant_id="tenant-a",
@@ -199,6 +199,19 @@ print(asset.asset_id, asset.ref)
 
 with assets.open_asset(context, result.asset_id) as blob:
     assert blob.read()
+```
+
+For an explicit Runtime or recovery/testing catalog path:
+
+```python
+from cognityx_storage import StorageRuntime
+
+runtime = StorageRuntime.load(config_file=".cognityx/storage.toml")
+assets = SourceAssetRegistry.load(
+    runtime=runtime,
+    catalog_path="/tmp/source_catalog.sqlite3",
+)
+print(assets.catalog_info())
 ```
 
 For physical inspection only:

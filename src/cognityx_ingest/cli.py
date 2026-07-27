@@ -97,8 +97,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in {"doc-bundles", "assets", "bundles", "sources"}:
         runtime = _source_runtime(args)
-        registry = SourceAssetRegistry(
-            runtime, _source_catalog_path(args, runtime)
+        registry = SourceAssetRegistry.load(
+            runtime=runtime,
+            catalog_path=args.catalog_path,
         )
         canonical = args.command in {"doc-bundles", "assets"}
         if args.command in {"bundles", "sources"}:
@@ -281,22 +282,6 @@ def _source_runtime(args: argparse.Namespace) -> StorageRuntime:
             StorageConfig.built_in(root=args.storage_root)
         )
     return StorageRuntime.load(config_file=args.storage_config)
-
-
-def _source_catalog_path(
-    args: argparse.Namespace, runtime: StorageRuntime
-) -> Path:
-    if args.catalog_path:
-        return Path(args.catalog_path)
-    store = runtime.for_role("source_asset")
-    profile = runtime.config.profiles[store.profile_name]
-    root = profile.options.get("root")
-    if profile.type != "filesystem" or not isinstance(root, str) or not root:
-        raise ValueError(
-            "A --catalog-path is required when the resolved source_asset "
-            "profile has no local filesystem root."
-        )
-    return Path(root) / ".cognityx-ingest" / "source_catalog.sqlite3"
 
 
 def _context(args: argparse.Namespace):

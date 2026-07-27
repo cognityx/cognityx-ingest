@@ -35,7 +35,11 @@ from cognityx_ingest.parser import (
     UnsupportedInputError,
 )
 from cognityx_ingest.service import IngestService
-from cognityx_ingest.source_assets import SourceAssetRegistry
+from cognityx_ingest.source_assets import (
+    SourceAssetCatalogAmbiguityError,
+    SourceAssetCatalogError,
+    SourceAssetRegistry,
+)
 from cognityx_ingest.sources import SourceRegistry
 from cognityx_resource import ExecutionContext, ResourceContext, ResourceRef
 
@@ -62,6 +66,8 @@ __all__ = [
     "Section",
     "SourceAsset",
     "SourceAssetContext",
+    "SourceAssetCatalogAmbiguityError",
+    "SourceAssetCatalogError",
     "SourceAssetLocation",
     "SourceAssetRegistrationResult",
     "SourceAssetRegistry",
