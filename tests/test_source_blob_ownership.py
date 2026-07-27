@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -148,6 +149,48 @@ def test_same_bundle_reuses_source_while_different_bundle_reuses_storage_blob(
     assert duplicate.status == "already_registered"
     assert duplicate.source_id == first.source_id
     assert other.source_id != first.source_id
+    assert len(_blob_files(root)) == 1
+
+
+def test_none_scope_duplicate_source_does_not_publish_orphan_blob(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "storage"
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"same")
+    registry = _registry(root, dedup_scope="none")
+
+    first = registry.register_file(_context(), source)
+    duplicate = registry.register_file(_context(), source)
+
+    assert first.status == "created"
+    assert duplicate.status == "already_registered"
+    assert duplicate.source_id == first.source_id
+    assert len(_blob_files(root)) == 1
+
+    other = registry.register_file(_context(), source, bundle="other")
+
+    assert other.status == "created"
+    assert other.source_id != first.source_id
+    assert len(_blob_files(root)) == 2
+
+
+def test_concurrent_none_scope_duplicate_source_has_one_source_and_blob(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "storage"
+    source = tmp_path / "concurrent.txt"
+    source.write_bytes(b"concurrent same bytes")
+    registry = _registry(root, dedup_scope="none")
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        first, second = workers.map(
+            lambda _: registry.register_file(_context(), source), range(2)
+        )
+
+    assert {first.status, second.status} == {"created", "already_registered"}
+    assert first.source_id == second.source_id
+    assert len(registry.list_sources(_context())) == 1
     assert len(_blob_files(root)) == 1
 
 

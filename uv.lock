@@ -570,7 +570,7 @@ source = { git = "https://github.com/cognityx/cognityx-resource.git#79f89a965f46
 [[package]]
 name = "cognityx-storage"
 version = "0.1.0"
-source = { git = "https://github.com/cognityx/cognityx-storage.git#d169022bbcea50f79b859b4640b1a456bf2ff424" }
+source = { git = "https://github.com/cognityx/cognityx-storage.git#20ed196aedca6f09fff643b16fb301809b3a952f" }
 dependencies = [
     { name = "cognityx-resource" },
 ]

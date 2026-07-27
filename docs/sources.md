@@ -211,9 +211,19 @@ The ownership boundary is explicit:
 | Source/Bundle authorization | dedup scope and domain |
 | same-Bundle logical equality | physical reuse, URI and profile routing |
 
-Registration calls `runtime.blobs("source_asset").put_file(...)`. Ingest then
-uses `bundle_id + blob_ref.digest` to create or reuse its logical Source.
+Registration captures an unpublished snapshot with
+`runtime.blobs("source_asset").prepare_file(...)`. Ingest uses
+`bundle_id + prepared.digest` to create or reuse its logical Source. A duplicate
+Source discards the prepared snapshot without publishing a Blob; an accepted
+Source publishes the exact staged bytes and persists the returned BlobRef.
 Ingest does not calculate a second digest, CAS key or dedup domain.
+
+For `dedup_scope = "none"`, the final duplicate check and winning publication
+are arbitrated with the Source catalog write transaction. The potentially
+large caller-file capture occurs before that lock. Concurrent identical
+registrations in one Bundle therefore produce one Source and one referenced
+Blob, while identical content accepted into two different Bundles produces two
+Sources and two physical Blobs.
 
 Inspectable JSON metadata is written through
 `runtime.for_role("source_asset")`:

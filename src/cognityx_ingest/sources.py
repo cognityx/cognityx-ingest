@@ -5,7 +5,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import json
-import mimetypes
 import os
 from pathlib import Path
 import sqlite3
@@ -13,7 +12,7 @@ from typing import Any, BinaryIO, Iterator
 from uuid import uuid4
 import warnings
 
-from cognityx_storage import BlobRef, StorageRuntime
+from cognityx_storage import BlobRef, PreparedBlob, StorageRuntime
 
 from cognityx_ingest.control import (
     ControlClient,
@@ -162,56 +161,108 @@ class SourceRegistry:
             INGEST_SOURCE_CREATE,
             {"context_id": context.context_id, "bundle_id": target.bundle_id},
         )
-        media_type = (
-            mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        )
-        blob_ref = self._blob_store.put_file(
-            path,
-            context=execution.context,
-            media_type=media_type,
-        )
-        existing = self._source_for_digest(
-            context.context_id, target.bundle_id, blob_ref.digest
-        )
-        if existing:
-            return _registration(existing, "already_registered")
-
-        blob_ref_json = _blob_ref_json(blob_ref)
-        with self._connection(immediate=True) as db:
-            row = db.execute(
-                "SELECT * FROM sources WHERE bundle_id=? AND sha256=?",
-                (target.bundle_id, blob_ref.digest),
-            ).fetchone()
-            if row:
-                return _registration(
-                    self._source_from_row(row), "already_registered"
-                )
-            source_id, now = f"src-{uuid4().hex}", _now()
-            db.execute(
-                "INSERT INTO sources("
-                "source_id, context_id, bundle_id, original_filename, media_type, "
-                "size_bytes, sha256, blob_id, created_by, created_at, blob_ref_json"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    source_id,
-                    context.context_id,
-                    target.bundle_id,
-                    path.name,
-                    blob_ref.media_type,
-                    blob_ref.size_bytes,
-                    blob_ref.digest,
-                    blob_ref.blob_id,
-                    execution.principal_id,
-                    now,
-                    blob_ref_json,
-                ),
+        with self._blob_store.prepare_file(path) as prepared:
+            existing = self._source_for_digest(
+                context.context_id, target.bundle_id, prepared.digest
             )
-            row = db.execute(
-                "SELECT * FROM sources WHERE source_id=?", (source_id,)
-            ).fetchone()
-        source = self._source_from_row(row)
+            if existing:
+                return _registration(existing, "already_registered")
+            source, blob_ref = self._register_prepared_source(
+                execution,
+                context,
+                target,
+                path.name,
+                prepared,
+            )
+        if blob_ref is None:
+            return _registration(source, "already_registered")
         self._publish_source(source, blob_ref)
         return _registration(source, "created")
+
+    def _register_prepared_source(
+        self,
+        execution: ExecutionContext,
+        context: SourceContext,
+        target: SourceBundle,
+        original_filename: str,
+        prepared: PreparedBlob,
+    ) -> tuple[RegisteredSource, BlobRef | None]:
+        if self._blob_store.dedup_scope == "none":
+            with self._connection(immediate=True) as db:
+                row = self._source_row_for_digest(
+                    db, target.bundle_id, prepared.digest
+                )
+                if row:
+                    return self._source_from_row(row), None
+                blob_ref = prepared.publish(context=execution.context)
+                row = self._insert_source(
+                    db,
+                    execution,
+                    context,
+                    target,
+                    original_filename,
+                    blob_ref,
+                )
+            return self._source_from_row(row), blob_ref
+
+        blob_ref = prepared.publish(context=execution.context)
+        with self._connection(immediate=True) as db:
+            row = self._source_row_for_digest(
+                db, target.bundle_id, prepared.digest
+            )
+            if row:
+                return self._source_from_row(row), None
+            row = self._insert_source(
+                db,
+                execution,
+                context,
+                target,
+                original_filename,
+                blob_ref,
+            )
+        return self._source_from_row(row), blob_ref
+
+    @staticmethod
+    def _source_row_for_digest(
+        db: sqlite3.Connection, bundle_id: str, digest: str
+    ) -> sqlite3.Row | None:
+        return db.execute(
+            "SELECT * FROM sources WHERE bundle_id=? AND sha256=?",
+            (bundle_id, digest),
+        ).fetchone()
+
+    @staticmethod
+    def _insert_source(
+        db: sqlite3.Connection,
+        execution: ExecutionContext,
+        context: SourceContext,
+        target: SourceBundle,
+        original_filename: str,
+        blob_ref: BlobRef,
+    ) -> sqlite3.Row:
+        source_id, now = f"src-{uuid4().hex}", _now()
+        db.execute(
+            "INSERT INTO sources("
+            "source_id, context_id, bundle_id, original_filename, media_type, "
+            "size_bytes, sha256, blob_id, created_by, created_at, blob_ref_json"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                source_id,
+                context.context_id,
+                target.bundle_id,
+                original_filename,
+                blob_ref.media_type,
+                blob_ref.size_bytes,
+                blob_ref.digest,
+                blob_ref.blob_id,
+                execution.principal_id,
+                now,
+                _blob_ref_json(blob_ref),
+            ),
+        )
+        return db.execute(
+            "SELECT * FROM sources WHERE source_id=?", (source_id,)
+        ).fetchone()
 
     def list_bundles(
         self, execution: ExecutionContext
