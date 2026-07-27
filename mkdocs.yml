@@ -11,5 +11,6 @@ plugins:
 strict: true
 nav:
   - Overview: index.md
+  - Source Storage: sources.md
   - Contract: contract.md
   - API: api.md

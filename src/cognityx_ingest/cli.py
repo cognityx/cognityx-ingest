@@ -10,16 +10,17 @@ from pathlib import Path
 from uuid import uuid4
 
 from cognityx_jobs import JobRepository
-from cognityx_storage import LocalStorageBackend, StorageClient
+from cognityx_storage import DEFAULT_STORAGE_ROOT, LocalStorageBackend, StorageClient
 
 from cognityx_ingest.management import IngestManager
 from cognityx_ingest.models import ExecutionContext
 from cognityx_ingest.service import IngestService
+from cognityx_ingest.sources import SourceRegistry
 
 
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
-    if arguments and arguments[0] not in {"ingest", "jobs", "documents", "artifacts", "-h", "--help"}:
+    if arguments and arguments[0] not in {"ingest", "jobs", "documents", "artifacts", "bundles", "sources", "-h", "--help"}:
         arguments.insert(0, "ingest")
 
     parser = argparse.ArgumentParser(prog="cognityx-ingest")
@@ -53,6 +54,27 @@ def main(argv: list[str] | None = None) -> int:
     read.add_argument("name", choices=("source", "document", "evidence", "manifest"))
     _add_runtime_arguments(read)
 
+    bundles = commands.add_parser("bundles", help="Manage logical source bundles.")
+    bundle_commands = bundles.add_subparsers(dest="bundle_command", required=True)
+    bundle_list = bundle_commands.add_parser("list")
+    _add_runtime_arguments(bundle_list)
+    bundle_create = bundle_commands.add_parser("create")
+    bundle_create.add_argument("path")
+    _add_runtime_arguments(bundle_create)
+
+    sources = commands.add_parser("sources", help="Register and inspect durable source files.")
+    source_commands = sources.add_subparsers(dest="source_command", required=True)
+    source_add = source_commands.add_parser("add")
+    source_add.add_argument("file")
+    source_add.add_argument("--bundle")
+    _add_runtime_arguments(source_add)
+    source_list = source_commands.add_parser("list")
+    source_list.add_argument("--bundle")
+    _add_runtime_arguments(source_list)
+    source_show = source_commands.add_parser("show")
+    source_show.add_argument("source_id")
+    _add_runtime_arguments(source_show)
+
     args = parser.parse_args(arguments)
     storage, repository = _runtime(args)
     context = ExecutionContext(run_id=str(uuid4()), correlation_id=str(uuid4()), principal_id=args.owner_id)
@@ -60,6 +82,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "ingest":
         results = IngestService(storage, jobs=repository).ingest_path(args.path, owner_id=args.owner_id, context=context)
         _write([_result_json(item) for item in results])
+        return 0
+
+    if args.command in {"bundles", "sources"}:
+        registry = SourceRegistry(storage, _source_catalog_path(args))
+        if args.command == "bundles":
+            if args.bundle_command == "list":
+                _write([_plain(item) for item in registry.list_bundles(context)])
+            else:
+                _write(_plain(registry.resolve_bundle(context, args.path, create=True)))
+            return 0
+        if args.source_command == "add":
+            _write(_plain(registry.register_file(context, args.file, bundle=args.bundle)))
+        elif args.source_command == "list":
+            _write([_plain(item) for item in registry.list_sources(context, bundle=args.bundle)])
+        else:
+            _write(_plain(registry.show_source(context, args.source_id)))
         return 0
 
     manager = IngestManager(storage, repository)
@@ -89,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _add_runtime_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--storage-root", required=True, help="Local root used by cognityx-storage.")
+    parser.add_argument("--storage-root", default=str(DEFAULT_STORAGE_ROOT), help="Local root used by cognityx-storage.")
     parser.add_argument("--jobs-database", help="SQLite job database; defaults beneath the storage root.")
     parser.add_argument("--owner-id", default="local", help="Owner scope for lifecycle commands.")
 
@@ -99,6 +137,10 @@ def _runtime(args: argparse.Namespace) -> tuple[StorageClient, JobRepository]:
     database = Path(args.jobs_database) if args.jobs_database else storage_root / ".cognityx-ingest" / "jobs.sqlite3"
     database.parent.mkdir(parents=True, exist_ok=True)
     return StorageClient(LocalStorageBackend(storage_root)).for_shared_data(), JobRepository(str(database))
+
+
+def _source_catalog_path(args: argparse.Namespace) -> Path:
+    return Path(args.storage_root) / ".cognityx-ingest" / "source_catalog.sqlite3"
 
 
 def _result_json(result: object) -> dict[str, object]:
@@ -120,6 +162,12 @@ def _artifact_json(name: str, payload: bytes) -> dict[str, object]:
 
 def _write(value: object) -> None:
     print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _plain(value: object) -> object:
+    from dataclasses import asdict, is_dataclass
+
+    return asdict(value) if is_dataclass(value) else value
 
 
 if __name__ == "__main__":

@@ -12,6 +12,11 @@ INGEST_JOB_SUBMIT = "ingest.job.submit"
 INGEST_JOB_CANCEL = "ingest.job.cancel"
 INGEST_RESULT_READ = "ingest.result.read"
 INGEST_DOCUMENT_DELETE = "ingest.document.delete"
+INGEST_BUNDLE_CREATE = "ingest.bundle.create"
+INGEST_BUNDLE_READ = "ingest.bundle.read"
+INGEST_SOURCE_CREATE = "ingest.source.create"
+INGEST_SOURCE_READ = "ingest.source.read"
+INGEST_SOURCE_LIST = "ingest.source.list"
 
 
 @dataclass(frozen=True, slots=True)

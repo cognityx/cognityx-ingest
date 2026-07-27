@@ -32,6 +32,59 @@ class ExecutionContext:
     project_id: str | None = None
     workspace_id: str | None = None
     scopes: dict[str, str] = field(default_factory=dict)
+    context_type: str = "user"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceContext:
+    """Durable governance context for source resources."""
+
+    context_id: str
+    context_type: str
+    descriptors: dict[str, str]
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceBundle:
+    """Durable, named source collection within one context."""
+
+    bundle_id: str
+    context_id: str
+    name: str
+    parent_bundle_id: str | None
+    path: str
+    created_by: str | None
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredSource:
+    """Logical source resource referring to immutable managed bytes."""
+
+    source_id: str
+    context_id: str
+    bundle_id: str
+    original_filename: str
+    media_type: str
+    size_bytes: int
+    sha256: str
+    blob_id: str
+    created_by: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceRegistrationResult:
+    """Outcome of source registration without exposing caller file paths."""
+
+    context_id: str
+    bundle_id: str
+    source_id: str
+    sha256: str
+    size_bytes: int
+    status: str
 
 
 @dataclass(frozen=True, slots=True)

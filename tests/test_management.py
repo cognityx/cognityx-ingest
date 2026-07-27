@@ -75,3 +75,24 @@ def test_cli_cancellation_is_owner_scoped_and_retains_job_history(tmp_path: Path
 def test_cli_document_delete_requires_explicit_confirmation(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         main(["documents", "delete", "pdf-0123456789abcdef", "--storage-root", str(tmp_path / "storage")])
+
+
+def test_cli_registers_and_lists_sources_and_bundles(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    storage_root = tmp_path / "storage"
+    source = tmp_path / "notes.txt"
+    source.write_text("durable source", encoding="utf-8")
+
+    assert main(["sources", "add", str(source), "--storage-root", str(storage_root)]) == 0
+    created = _json_output(capsys)
+    assert created["status"] == "created"
+    assert main(["sources", "add", str(source), "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["status"] == "already_registered"
+
+    assert main(["bundles", "create", "phd/rag", "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["path"] == "phd/rag"
+    assert main(["sources", "add", str(source), "--bundle", "phd/rag", "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["status"] == "created"
+    assert main(["sources", "list", "--bundle", "phd/rag", "--storage-root", str(storage_root)]) == 0
+    assert len(_json_output(capsys)) == 1
+    assert main(["sources", "show", created["source_id"], "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["source_id"] == created["source_id"]

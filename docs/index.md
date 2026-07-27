@@ -11,6 +11,10 @@ LLM assistance is optional and routed only through `cognityx-inference`.
 The optional `inference` package extra installs that client integration; normal
 PDF ingestion does not load a model runtime.
 
+Source registration is also available as a separate first-stage capability.
+It creates Context, Bundle and Source resources over immutable storage bytes
+without parsing the file. See [Source Storage](sources.md).
+
 ## CLI
 
 ```bash
