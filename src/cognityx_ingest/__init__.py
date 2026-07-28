@@ -1,6 +1,7 @@
 """Cognityx SourceAsset registration and document-ingestion API."""
 
 from cognityx_ingest.context import resolve_execution_context
+from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.control import (
     ControlClient,
     ControlDecision,
@@ -13,6 +14,7 @@ from cognityx_ingest.models import (
     ArtifactRef,
     CanonicalDocument,
     DocBundle,
+    DocBundleDeletionResult,
     Evidence,
     IngestJobState,
     IngestResult,
@@ -20,6 +22,7 @@ from cognityx_ingest.models import (
     Section,
     SourceAsset,
     SourceAssetContext,
+    SourceAssetDeletionResult,
     SourceAssetLocation,
     SourceAssetRegistrationResult,
     SourceBundle,
@@ -49,6 +52,7 @@ __all__ = [
     "ControlClient",
     "ControlDecision",
     "DocBundle",
+    "DocBundleDeletionResult",
     "Evidence",
     "ExecutionContext",
     "ExtractedPage",
@@ -66,6 +70,8 @@ __all__ = [
     "Section",
     "SourceAsset",
     "SourceAssetContext",
+    "SourceAssetCleanupService",
+    "SourceAssetDeletionResult",
     "SourceAssetCatalogAmbiguityError",
     "SourceAssetCatalogError",
     "SourceAssetLocation",

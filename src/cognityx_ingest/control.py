@@ -18,7 +18,11 @@ INGEST_SOURCE_CREATE = "ingest.source.create"
 INGEST_SOURCE_READ = "ingest.source.read"
 INGEST_SOURCE_LIST = "ingest.source.list"
 INGEST_SOURCE_LOCATE = "ingest.source.locate"
+INGEST_SOURCE_DELETE = "ingest.source.delete"
+INGEST_SOURCE_DELETED_LIST = "ingest.source.deleted.list"
 INGEST_BUNDLE_LOCATE = "ingest.bundle.locate"
+INGEST_BUNDLE_DELETE = "ingest.bundle.delete"
+INGEST_BUNDLE_DELETED_LIST = "ingest.bundle.deleted.list"
 
 
 @dataclass(frozen=True, slots=True)

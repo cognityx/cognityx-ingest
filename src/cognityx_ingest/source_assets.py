@@ -23,9 +23,13 @@ from cognityx_storage.exceptions import (
 from cognityx_ingest.control import (
     ControlClient,
     INGEST_BUNDLE_CREATE,
+    INGEST_BUNDLE_DELETE,
+    INGEST_BUNDLE_DELETED_LIST,
     INGEST_BUNDLE_LOCATE,
     INGEST_BUNDLE_READ,
     INGEST_SOURCE_CREATE,
+    INGEST_SOURCE_DELETE,
+    INGEST_SOURCE_DELETED_LIST,
     INGEST_SOURCE_LIST,
     INGEST_SOURCE_LOCATE,
     INGEST_SOURCE_READ,
@@ -34,8 +38,10 @@ from cognityx_ingest.control import (
 )
 from cognityx_ingest.models import (
     DocBundle,
+    DocBundleDeletionResult,
     ExecutionContext,
     SourceAsset,
+    SourceAssetDeletionResult,
     SourceAssetContext,
     SourceAssetLocation,
     SourceAssetRegistrationResult,
@@ -168,6 +174,7 @@ class SourceAssetRegistry:
         create: bool = True,
     ) -> DocBundle:
         context, parent = self.resolve_context(execution), None
+        restored = False
         segments = _bundle_segments(path)
         current: sqlite3.Row | None = None
         for index, name in enumerate(segments):
@@ -191,7 +198,10 @@ class SourceAssetRegistry:
                     now, bundle_id = _now(), f"bun-{uuid4().hex}"
                     try:
                         db.execute(
-                            "INSERT INTO bundles VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO bundles("
+                            "bundle_id, context_id, name, parent_bundle_id, "
+                            "created_by, created_at, updated_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?)",
                             (
                                 bundle_id,
                                 context.context_id,
@@ -209,12 +219,45 @@ class SourceAssetRegistry:
                         "AND parent_bundle_id IS ? AND name=?",
                         (context.context_id, parent, name),
                     ).fetchone()
+                elif current["deleted_at"] is not None:
+                    if not create:
+                        raise KeyError(f"Bundle does not exist: {path}")
+                    self._authorize(
+                        execution,
+                        INGEST_BUNDLE_CREATE,
+                        {
+                            "context_id": context.context_id,
+                            "path": "/".join(segments[: index + 1]),
+                        },
+                    )
+                    db.execute(
+                        "UPDATE bundles SET deleted_at=NULL, deleted_by=NULL, "
+                        "delete_run_id=NULL, delete_reason=NULL "
+                        "WHERE bundle_id=? AND context_id=?",
+                        (current["bundle_id"], context.context_id),
+                    )
+                    current = db.execute(
+                        "SELECT * FROM bundles WHERE bundle_id=?",
+                        (current["bundle_id"],),
+                    ).fetchone()
+                    restored = True
             assert current is not None
             parent = current["bundle_id"]
         result = self._bundle_from_row(
             current, self._bundle_path(context.context_id, current["bundle_id"])
         )
-        self._publish_bundle(result)
+        if not restored:
+            self._publish_bundle(result)
+        if restored:
+            self._publish_lifecycle(
+                execution,
+                result.context_id,
+                result.bundle_id,
+                None,
+                event="restored",
+                reason=None,
+                blob_id=None,
+            )
         return result
 
     def register_asset(
@@ -241,7 +284,22 @@ class SourceAssetRegistry:
                 context.context_id, target.bundle_id, prepared.digest
             )
             if existing:
-                return _registration(existing, "already_registered")
+                if existing.deleted_at is None:
+                    return _registration(existing, "already_registered")
+                source, blob_ref = self._restore_prepared_source(
+                    execution, existing.source_id, prepared
+                )
+                self._publish_source(source, blob_ref)
+                self._publish_lifecycle(
+                    execution,
+                    source.context_id,
+                    source.bundle_id,
+                    source.source_id,
+                    event="restored",
+                    reason=None,
+                    blob_id=source.blob_id,
+                )
+                return _registration(source, "restored")
             source, blob_ref = self._register_prepared_source(
                 execution,
                 context,
@@ -262,31 +320,13 @@ class SourceAssetRegistry:
         original_filename: str,
         prepared: PreparedBlob,
     ) -> tuple[SourceAsset, BlobRef | None]:
-        if self._blob_store.dedup_scope == "none":
-            with self._connection(immediate=True) as db:
-                row = self._source_row_for_digest(
-                    db, target.bundle_id, prepared.digest
-                )
-                if row:
-                    return self._source_from_row(row), None
-                blob_ref = prepared.publish(context=execution.context)
-                row = self._insert_source(
-                    db,
-                    execution,
-                    context,
-                    target,
-                    original_filename,
-                    blob_ref,
-                )
-            return self._source_from_row(row), blob_ref
-
-        blob_ref = prepared.publish(context=execution.context)
         with self._connection(immediate=True) as db:
             row = self._source_row_for_digest(
                 db, target.bundle_id, prepared.digest
             )
             if row:
                 return self._source_from_row(row), None
+            blob_ref = prepared.publish(context=execution.context)
             row = self._insert_source(
                 db,
                 execution,
@@ -295,6 +335,37 @@ class SourceAssetRegistry:
                 original_filename,
                 blob_ref,
             )
+        return self._source_from_row(row), blob_ref
+
+    def _restore_prepared_source(
+        self,
+        execution: ExecutionContext,
+        source_id: str,
+        prepared: PreparedBlob,
+    ) -> tuple[SourceAsset, BlobRef]:
+        with self._connection(immediate=True) as db:
+            blob_ref = prepared.publish(context=execution.context)
+            db.execute(
+                "UPDATE sources SET media_type=?, size_bytes=?, sha256=?, "
+                "blob_id=?, blob_ref_json=?, deleted_at=NULL, deleted_by=NULL, "
+                "delete_run_id=NULL, delete_reason=NULL WHERE source_id=? "
+                "AND context_id=?",
+                (
+                    blob_ref.media_type,
+                    blob_ref.size_bytes,
+                    blob_ref.digest,
+                    blob_ref.blob_id,
+                    _blob_ref_json(blob_ref),
+                    source_id,
+                    execution.context_id,
+                ),
+            )
+            row = db.execute(
+                "SELECT * FROM sources WHERE source_id=? AND context_id=?",
+                (source_id, execution.context_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"SourceAsset does not exist in this context: {source_id}")
         return self._source_from_row(row), blob_ref
 
     @staticmethod
@@ -348,7 +419,8 @@ class SourceAssetRegistry:
         )
         with self._connection() as db:
             rows = db.execute(
-                "SELECT * FROM bundles WHERE context_id=? ORDER BY created_at, name",
+                "SELECT * FROM bundles WHERE context_id=? AND deleted_at IS NULL "
+                "ORDER BY created_at, name",
                 (context.context_id,),
             ).fetchall()
         return tuple(
@@ -362,9 +434,12 @@ class SourceAssetRegistry:
         self, execution: ExecutionContext, *, bundle: str | None = None
     ) -> tuple[SourceAsset, ...]:
         context = self.resolve_context(execution)
-        query, values = "SELECT * FROM sources WHERE context_id=?", [
+        query, values = (
+            "SELECT * FROM sources WHERE context_id=? AND deleted_at IS NULL",
+            [
             context.context_id
-        ]
+            ],
+        )
         resource: dict[str, Any] = {"context_id": context.context_id}
         if bundle is not None:
             target = self.resolve_doc_bundle(execution, bundle, create=False)
@@ -391,7 +466,8 @@ class SourceAssetRegistry:
         )
         with self._connection() as db:
             row = db.execute(
-                "SELECT * FROM sources WHERE source_id=? AND context_id=?",
+                "SELECT * FROM sources WHERE source_id=? AND context_id=? "
+                "AND deleted_at IS NULL",
                 (asset_id, context.context_id),
             ).fetchone()
         if not row:
@@ -447,7 +523,8 @@ class SourceAssetRegistry:
         )
         with self._connection() as db:
             row = db.execute(
-                "SELECT * FROM bundles WHERE bundle_id=? AND context_id=?",
+                "SELECT * FROM bundles WHERE bundle_id=? AND context_id=? "
+                "AND deleted_at IS NULL",
                 (bundle_id, context.context_id),
             ).fetchone()
         if not row:
@@ -466,6 +543,223 @@ class SourceAssetRegistry:
             "profile_name": self._source_store.profile_name,
             "local_path": str(local) if local else None,
         }
+
+    def delete_asset(
+        self,
+        execution: ExecutionContext,
+        asset_id: str,
+        *,
+        reason: str | None = None,
+    ) -> SourceAssetDeletionResult:
+        context = self.resolve_context(execution)
+        self._authorize(
+            execution,
+            INGEST_SOURCE_DELETE,
+            {"context_id": context.context_id, "asset_id": asset_id},
+        )
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT * FROM sources WHERE source_id=? AND context_id=?",
+                (asset_id, context.context_id),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"SourceAsset does not exist in this context: {asset_id}")
+        if row["deleted_at"] is None:
+            deleted_at = _now()
+            with self._connection(immediate=True) as db:
+                db.execute(
+                    "UPDATE sources SET deleted_at=?, deleted_by=?, "
+                    "delete_run_id=?, delete_reason=? WHERE source_id=? "
+                    "AND context_id=? AND deleted_at IS NULL",
+                    (
+                        deleted_at,
+                        execution.principal_id,
+                        execution.run_id,
+                        reason,
+                        asset_id,
+                        context.context_id,
+                    ),
+                )
+            status = "deleted"
+        else:
+            deleted_at = row["deleted_at"]
+            status = "already_deleted"
+        blob_ref = self._blob_ref_for_source(asset_id)
+        still_referenced = self._blob_is_live_referenced(
+            blob_ref, excluding_asset_id=None
+        )
+        if status == "deleted":
+            self._publish_lifecycle(
+                execution,
+                context.context_id,
+                row["bundle_id"],
+                asset_id,
+                event="deleted",
+                reason=reason,
+                blob_id=blob_ref.blob_id,
+            )
+        return SourceAssetDeletionResult(
+            context.context_id,
+            row["bundle_id"],
+            asset_id,
+            blob_ref.blob_id,
+            deleted_at,
+            status,
+            still_referenced,
+        )
+
+    def delete_doc_bundle(
+        self,
+        execution: ExecutionContext,
+        bundle_id: str,
+        *,
+        recursive: bool = False,
+        reason: str | None = None,
+    ) -> DocBundleDeletionResult:
+        context = self.resolve_context(execution)
+        self._authorize(
+            execution,
+            INGEST_BUNDLE_DELETE,
+            {"context_id": context.context_id, "bundle_id": bundle_id},
+        )
+        with self._connection() as db:
+            target = db.execute(
+                "SELECT * FROM bundles WHERE bundle_id=? AND context_id=?",
+                (bundle_id, context.context_id),
+            ).fetchone()
+            if target is None:
+                raise KeyError(f"DocBundle does not exist in this context: {bundle_id}")
+            descendants = self._bundle_descendants(db, context.context_id, bundle_id)
+            bundle_ids = [bundle_id, *(row["bundle_id"] for row in descendants)]
+            live_assets = db.execute(
+                "SELECT * FROM sources WHERE context_id=? AND deleted_at IS NULL "
+                "AND bundle_id IN ({})".format(",".join("?" * len(bundle_ids))),
+                [context.context_id, *bundle_ids],
+            ).fetchall()
+            live_children = [row for row in descendants if row["deleted_at"] is None]
+        if not recursive and (live_assets or live_children):
+            raise ValueError(
+                "DocBundle is not empty. Use recursive=True to delete contained "
+                "SourceAssets and child DocBundles."
+            )
+        if target["deleted_at"] is not None and not live_assets and not live_children:
+            return DocBundleDeletionResult(
+                context.context_id,
+                bundle_id,
+                0,
+                0,
+                target["deleted_at"],
+                "already_deleted",
+            )
+        deleted_at = _now()
+        with self._connection(immediate=True) as db:
+            db.execute(
+                "UPDATE sources SET deleted_at=?, deleted_by=?, delete_run_id=?, "
+                "delete_reason=? WHERE context_id=? AND deleted_at IS NULL "
+                "AND bundle_id IN ({})".format(",".join("?" * len(bundle_ids))),
+                [
+                    deleted_at,
+                    execution.principal_id,
+                    execution.run_id,
+                    reason,
+                    context.context_id,
+                    *bundle_ids,
+                ],
+            )
+            db.execute(
+                "UPDATE bundles SET deleted_at=?, deleted_by=?, delete_run_id=?, "
+                "delete_reason=? WHERE context_id=? "
+                "AND bundle_id IN ({}) AND deleted_at IS NULL".format(",".join("?" * len(bundle_ids))),
+                [
+                    deleted_at,
+                    execution.principal_id,
+                    execution.run_id,
+                    reason,
+                    context.context_id,
+                    *bundle_ids,
+                ],
+            )
+        for row in live_assets:
+            self._publish_lifecycle(
+                execution,
+                context.context_id,
+                row["bundle_id"],
+                row["source_id"],
+                event="deleted",
+                reason=reason,
+                blob_id=row["blob_id"],
+            )
+        self._publish_lifecycle(
+            execution,
+            context.context_id,
+            bundle_id,
+            None,
+            event="deleted",
+            reason=reason,
+            blob_id=None,
+        )
+        return DocBundleDeletionResult(
+            context.context_id,
+            bundle_id,
+            len(live_assets),
+            len(bundle_ids) if target["deleted_at"] is None else 0,
+            deleted_at,
+            "deleted",
+        )
+
+    def list_deleted_assets(
+        self, execution: ExecutionContext
+    ) -> tuple[SourceAsset, ...]:
+        context = self.resolve_context(execution)
+        self._authorize(
+            execution, INGEST_SOURCE_DELETED_LIST, {"context_id": context.context_id}
+        )
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM sources WHERE context_id=? AND deleted_at IS NOT NULL "
+                "ORDER BY deleted_at, source_id",
+                (context.context_id,),
+            ).fetchall()
+        return tuple(self._source_from_row(row) for row in rows)
+
+    def list_deleted_doc_bundles(
+        self, execution: ExecutionContext
+    ) -> tuple[DocBundle, ...]:
+        context = self.resolve_context(execution)
+        self._authorize(
+            execution, INGEST_BUNDLE_DELETED_LIST, {"context_id": context.context_id}
+        )
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT * FROM bundles WHERE context_id=? AND deleted_at IS NOT NULL "
+                "ORDER BY deleted_at, bundle_id",
+                (context.context_id,),
+            ).fetchall()
+        return tuple(
+            self._bundle_from_row(row, self._bundle_path(context.context_id, row["bundle_id"]))
+            for row in rows
+        )
+
+    def list_referenced_blob_refs(
+        self, *, include_deleted: bool = False
+    ) -> tuple[BlobRef, ...]:
+        query = "SELECT blob_ref_json FROM sources"
+        if not include_deleted:
+            query += " WHERE deleted_at IS NULL"
+        with self._connection() as db:
+            rows = db.execute(query).fetchall()
+        refs: dict[tuple[str, str], BlobRef] = {}
+        for row in rows:
+            if row["blob_ref_json"]:
+                ref = BlobRef.from_dict(json.loads(row["blob_ref_json"]))
+                refs.setdefault((ref.profile_name, ref.storage_key), ref)
+        return tuple(refs.values())
+
+    @contextmanager
+    def catalog_write_lock(self) -> Iterator[None]:
+        """Coordinate bounded cleanup batches with SourceAsset registration."""
+        with self._connection(immediate=True):
+            yield
 
     # Historical method names delegate to the canonical domain vocabulary.
     def resolve_bundle(
@@ -528,6 +822,72 @@ class SourceAssetRegistry:
             raise RuntimeError(
                 f"Source {source_id} has an invalid Storage BlobRef."
             ) from exc
+
+    @staticmethod
+    def _bundle_descendants(
+        db: sqlite3.Connection, context_id: str, bundle_id: str
+    ) -> list[sqlite3.Row]:
+        rows: list[sqlite3.Row] = []
+        frontier = [bundle_id]
+        while frontier:
+            placeholders = ",".join("?" * len(frontier))
+            children = db.execute(
+                f"SELECT * FROM bundles WHERE context_id=? AND parent_bundle_id "
+                f"IN ({placeholders})",
+                [context_id, *frontier],
+            ).fetchall()
+            rows.extend(children)
+            frontier = [row["bundle_id"] for row in children]
+        return rows
+
+    def _blob_is_live_referenced(
+        self, blob_ref: BlobRef, *, excluding_asset_id: str | None
+    ) -> bool:
+        with self._connection() as db:
+            rows = db.execute(
+                "SELECT source_id, blob_ref_json FROM sources "
+                "WHERE deleted_at IS NULL"
+            ).fetchall()
+        identity = (blob_ref.profile_name, blob_ref.storage_key)
+        for row in rows:
+            if excluding_asset_id and row["source_id"] == excluding_asset_id:
+                continue
+            if row["blob_ref_json"]:
+                ref = BlobRef.from_dict(json.loads(row["blob_ref_json"]))
+                if (ref.profile_name, ref.storage_key) == identity:
+                    return True
+        return False
+
+    def _publish_lifecycle(
+        self,
+        execution: ExecutionContext,
+        context_id: str,
+        bundle_id: str,
+        asset_id: str | None,
+        *,
+        event: str,
+        reason: str | None,
+        blob_id: str | None,
+    ) -> None:
+        path = (
+            f"source-contexts/{context_id}/bundles/{bundle_id}/"
+            + (f"sources/{asset_id}/" if asset_id else "")
+            + f"lifecycle/{execution.run_id}-{event}.json"
+        )
+        self._source_store.put_json_idempotent(
+            path,
+            {
+                "event": event,
+                "asset_id": asset_id,
+                "bundle_id": bundle_id,
+                "context_id": context_id,
+                "timestamp": _now(),
+                "principal_id": execution.principal_id,
+                "run_id": execution.run_id,
+                "reason": reason,
+                "blob_id": blob_id,
+            },
+        )
 
     def _source_for_digest(
         self, context_id: str, bundle_id: str, digest: str
@@ -655,6 +1015,10 @@ class SourceAssetRegistry:
             row["created_by"],
             row["created_at"],
             row["updated_at"],
+            row["deleted_at"],
+            row["deleted_by"],
+            row["delete_run_id"],
+            row["delete_reason"],
         )
 
     @staticmethod
@@ -670,6 +1034,10 @@ class SourceAssetRegistry:
             row["blob_id"],
             row["created_by"],
             row["created_at"],
+            row["deleted_at"],
+            row["deleted_by"],
+            row["delete_run_id"],
+            row["delete_reason"],
         )
 
     def _initialise_and_migrate(self) -> None:
@@ -690,6 +1058,10 @@ class SourceAssetRegistry:
                     created_by TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
+                    deleted_at TEXT,
+                    deleted_by TEXT,
+                    delete_run_id TEXT,
+                    delete_reason TEXT,
                     UNIQUE(context_id,parent_bundle_id,name)
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS
@@ -707,6 +1079,10 @@ class SourceAssetRegistry:
                     created_by TEXT,
                     created_at TEXT NOT NULL,
                     blob_ref_json TEXT,
+                    deleted_at TEXT,
+                    deleted_by TEXT,
+                    delete_run_id TEXT,
+                    delete_reason TEXT,
                     UNIQUE(bundle_id,sha256)
                 );
                 """
@@ -717,6 +1093,16 @@ class SourceAssetRegistry:
             }
             if "blob_ref_json" not in columns:
                 db.execute("ALTER TABLE sources ADD COLUMN blob_ref_json TEXT")
+            for column in ("deleted_at", "deleted_by", "delete_run_id", "delete_reason"):
+                if column not in columns:
+                    db.execute(f"ALTER TABLE sources ADD COLUMN {column} TEXT")
+            bundle_columns = {
+                row["name"]
+                for row in db.execute("PRAGMA table_info(bundles)").fetchall()
+            }
+            for column in ("deleted_at", "deleted_by", "delete_run_id", "delete_reason"):
+                if column not in bundle_columns:
+                    db.execute(f"ALTER TABLE bundles ADD COLUMN {column} TEXT")
         SourceBlobMigrator(self._runtime, self._catalog_path).migrate()
         with self._connection() as db:
             migrated_or_current = db.execute(

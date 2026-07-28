@@ -44,6 +44,10 @@ class DocBundle:
     created_by: str | None
     created_at: str
     updated_at: str
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+    delete_run_id: str | None = None
+    delete_reason: str | None = None
 
     @property
     def ref(self) -> ResourceRef:
@@ -69,6 +73,10 @@ class SourceAsset:
     blob_id: str
     created_by: str | None
     created_at: str
+    deleted_at: str | None = None
+    deleted_by: str | None = None
+    delete_run_id: str | None = None
+    delete_reason: str | None = None
 
     @property
     def asset_id(self) -> str:
@@ -100,6 +108,27 @@ class SourceAssetRegistrationResult:
     def asset_id(self) -> str:
         """Return the canonical API name for the stable ``src-...`` ID."""
         return self.source_id
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAssetDeletionResult:
+    context_id: str
+    bundle_id: str
+    asset_id: str
+    blob_id: str
+    deleted_at: str
+    status: str
+    blob_still_referenced: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DocBundleDeletionResult:
+    context_id: str
+    bundle_id: str
+    deleted_asset_count: int
+    deleted_bundle_count: int
+    deleted_at: str
+    status: str
 
 
 @dataclass(frozen=True, slots=True)

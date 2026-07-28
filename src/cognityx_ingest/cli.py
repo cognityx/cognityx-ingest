@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+from datetime import timedelta
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -18,6 +20,7 @@ from cognityx_storage import (
 )
 
 from cognityx_ingest.management import IngestManager
+from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.service import IngestService
 from cognityx_ingest.source_assets import SourceAssetRegistry
@@ -34,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         "doc-bundles",
         "sources",
         "bundles",
+        "cleanup",
         "-h",
         "--help",
     }
@@ -91,6 +95,13 @@ def main(argv: list[str] | None = None) -> int:
         "sources",
         help_text="Compatibility alias for assets.",
     )
+    cleanup = commands.add_parser("cleanup", help="Plan or execute physical Blob cleanup.")
+    cleanup_commands = cleanup.add_subparsers(dest="cleanup_command", required=True)
+    blobs = cleanup_commands.add_parser("blobs")
+    blobs.add_argument("--older-than", default="7d")
+    blobs.add_argument("--dry-run", action="store_true")
+    blobs.add_argument("--yes", action="store_true")
+    _add_runtime_arguments(blobs, source_storage=True)
 
     args = parser.parse_args(arguments)
     context = _context(args)
@@ -124,6 +135,19 @@ def main(argv: list[str] | None = None) -> int:
                     else registry.locate_bundle(context, args.bundle_id)
                 )
                 _write(value)
+            elif args.bundle_command == "deleted":
+                items = registry.list_deleted_doc_bundles(context)
+                _write([_plain(item) for item in items])
+            elif args.bundle_command == "delete":
+                if not args.yes:
+                    raise ValueError("Deleting a DocBundle requires --yes.")
+                value = registry.delete_doc_bundle(
+                    context,
+                    args.bundle_id,
+                    recursive=args.recursive,
+                    reason=args.reason,
+                )
+                _write(_plain(value))
             else:
                 value = (
                     registry.resolve_doc_bundle(context, args.path, create=True)
@@ -158,6 +182,15 @@ def main(argv: list[str] | None = None) -> int:
                 else registry.show_source(context, args.asset_id)
             )
             _write(_asset_plain(value) if canonical else _plain(value))
+        elif args.asset_command == "deleted":
+            _write([_asset_plain(item) for item in registry.list_deleted_assets(context)])
+        elif args.asset_command == "delete":
+            if not args.yes:
+                raise ValueError("Deleting a SourceAsset requires --yes.")
+            value = registry.delete_asset(
+                context, args.asset_id, reason=args.reason
+            )
+            _write(_plain(value))
         else:
             value = (
                 registry.locate_asset(context, args.asset_id)
@@ -165,6 +198,29 @@ def main(argv: list[str] | None = None) -> int:
                 else registry.locate_source(context, args.asset_id)
             )
             _write(_asset_plain(value) if canonical else _plain(value))
+        return 0
+
+    if args.command == "cleanup":
+        runtime = _source_runtime(args)
+        registry = SourceAssetRegistry.load(
+            runtime=runtime, catalog_path=args.catalog_path
+        )
+        if args.dry_run and args.yes:
+            raise ValueError("--dry-run and --yes cannot be combined.")
+        if not args.dry_run and not args.yes:
+            raise ValueError(
+                "Physical cleanup requires --yes; use --dry-run to plan only."
+            )
+        service = SourceAssetCleanupService(
+            registry=registry, storage_runtime=runtime
+        )
+        plan = service.plan_blobs(
+            context, older_than=_parse_duration(args.older_than)
+        )
+        if args.dry_run:
+            _write(plan.to_dict())
+        else:
+            _write(service.execute_blobs(context, plan).to_dict())
         return 0
 
     storage, repository = _runtime(args)
@@ -207,12 +263,17 @@ def _add_doc_bundle_commands(
 ) -> None:
     group = commands.add_parser(name, help=help_text)
     subcommands = group.add_subparsers(dest="bundle_command", required=True)
-    for command_name in ("list", "create", "locate"):
+    for command_name in ("list", "create", "locate", "delete", "deleted"):
         command = subcommands.add_parser(command_name)
         if command_name == "create":
             command.add_argument("path")
         if command_name == "locate":
             command.add_argument("bundle_id")
+        if command_name == "delete":
+            command.add_argument("bundle_id")
+            command.add_argument("--recursive", action="store_true")
+            command.add_argument("--yes", action="store_true")
+            command.add_argument("--reason")
         _add_runtime_arguments(command, source_storage=True)
 
 
@@ -237,6 +298,13 @@ def _add_asset_commands(
     locate = subcommands.add_parser("locate")
     locate.add_argument("asset_id")
     _add_runtime_arguments(locate, source_storage=True)
+    delete = subcommands.add_parser("delete")
+    delete.add_argument("asset_id")
+    delete.add_argument("--yes", action="store_true")
+    delete.add_argument("--reason")
+    _add_runtime_arguments(delete, source_storage=True)
+    subcommands.add_parser("deleted")
+    _add_runtime_arguments(subcommands.choices["deleted"], source_storage=True)
 
 
 def _add_runtime_arguments(
@@ -297,6 +365,14 @@ def _context(args: argparse.Namespace):
         tenant_id=args.tenant_id, project_id=args.project_id,
         workspace_id=args.workspace_id, scopes=scopes,
     )
+
+
+def _parse_duration(value: str) -> timedelta:
+    match = re.fullmatch(r"([1-9][0-9]*)([hd])", value.strip().lower())
+    if match is None:
+        raise ValueError("Duration must be a positive value such as 1h, 24h, or 7d.")
+    amount, unit = int(match.group(1)), match.group(2)
+    return timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
 
 
 def _result_json(result: object) -> dict[str, object]:

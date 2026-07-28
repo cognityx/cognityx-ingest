@@ -14,6 +14,45 @@ ResourceContext
 `SourceAssetContext` is the catalog's durable read model of the shared
 `ResourceContext`; callers do not construct a second Context.
 
+## Deletion and restoration
+
+SourceAsset and DocBundle deletion is an auditable logical soft deletion. It
+records lifecycle fields in SQLite and publishes an append-only lifecycle event;
+it never deletes the physical Blob. Shared Blobs remain available until Storage
+garbage collection proves that no live SourceAsset references them.
+
+```text
+Asset A ─┐
+Asset B ─┼──→ shared Blob
+Asset C ─┘
+```
+
+Deleted resources are excluded from normal list/show/open/locate operations and
+can be inspected with `list_deleted_assets()` and
+`list_deleted_doc_bundles()`. Re-registering identical bytes in the same
+bundle restores the original `src-...` identity with status `restored`.
+
+Bundle deletion requires `recursive=True` when live assets or child bundles
+exist. Recursive deletion tombstones descendants before the target bundle.
+
+## Explicit Blob cleanup
+
+Use `SourceAssetCleanupService` to enumerate live BlobRefs through Ingest and
+delegate physical cleanup to Storage:
+
+```python
+from datetime import timedelta
+from cognityx_ingest import SourceAssetCleanupService
+
+cleanup = SourceAssetCleanupService(registry=registry, storage_runtime=runtime)
+plan = cleanup.plan_blobs(execution, older_than=timedelta(days=7))
+result = cleanup.execute_blobs(execution, plan)
+```
+
+Planning is dry-run only. Storage revalidates references, CAS identity, object
+age, and metadata before deletion. The default grace period is seven days, and
+planned bytes are not reclaimed bytes until deletion succeeds.
+
 Registration accepts any digital file without parsing it. Later capabilities
 may begin from `asset_id`, but not every SourceAsset becomes a parsed document:
 
