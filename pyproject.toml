@@ -25,16 +25,16 @@ inference = ["cognityx-inference"]
 cognityx-ingest = "cognityx_ingest.cli:main"
 
 [tool.uv.sources]
-cognityx-resource = { git = "https://github.com/cognityx/cognityx-resource.git", rev = "79f89a965f46300be6a892d4371d44e6c288fd0c" }
-cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git", rev = "0d159136ebac6ce5362a5092ea4d6d2f181e9c89" }
-cognityx-jobs = { git = "https://github.com/cognityx/cognityx-jobs.git", rev = "bfd10769703dfca97e6a70b0d242c5ccd961d702" }
-cognityx-inference = { git = "https://github.com/cognityx/llm-benchmark.git" }
+cognityx-resource = { path = "../cognityx-resource" }
+cognityx-storage = { path = "../cognityx-storage" }
+cognityx-jobs = { path = "../cognityx-jobs" }
+cognityx-inference = { path = "../llm-benchmark" }
 
 [tool.uv]
 override-dependencies = [
-  "cognityx-resource @ git+https://github.com/cognityx/cognityx-resource.git@79f89a965f46300be6a892d4371d44e6c288fd0c",
-  "cognityx-storage @ git+https://github.com/cognityx/cognityx-storage.git@0d159136ebac6ce5362a5092ea4d6d2f181e9c89",
-  "cognityx-jobs @ git+https://github.com/cognityx/cognityx-jobs.git@bfd10769703dfca97e6a70b0d242c5ccd961d702",
+  "cognityx-resource @ file:///home/bhujay/ai-workspace/cognityx-resource",
+  "cognityx-storage @ file:///home/bhujay/ai-workspace/cognityx-storage",
+  "cognityx-jobs @ file:///home/bhujay/ai-workspace/cognityx-jobs",
 ]
 
 [tool.hatch.build.targets.wheel]
