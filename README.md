@@ -1,5 +1,7 @@
 # Cognityx Ingest
 
+[![CI](https://github.com/cognityx/cognityx-ingest/actions/workflows/ci.yml/badge.svg)](https://github.com/cognityx/cognityx-ingest/actions/workflows/ci.yml)
+
 `cognityx-ingest` durably registers any digital input as a SourceAsset. Its
 current extraction pipeline turns PDFs into canonical Cognityx document
 artifacts with source, page, and text-span provenance. Image, audio, video and
