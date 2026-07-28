@@ -58,3 +58,15 @@ Manage local execution with `jobs list`, `jobs show`, `jobs cancel`,
 --yes`. Full commands and Python API examples are in the documentation.
 
 See the [documentation](docs/index.md) for the complete CLI and Python API examples.
+
+## Contributing
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run mkdocs build --strict
+uv build
+```
+
+GitHub CI runs these same convention-based commands and automatically collects
+every test below `tests/`.
