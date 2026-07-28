@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import warnings
 
 from cognityx_ingest.control import ControlClient
 from cognityx_ingest.models import ExecutionContext
@@ -34,10 +35,18 @@ class SourceAssetCleanupService:
         self._authorize(execution, "storage.blob.gc.plan")
         refs = self.registry.list_referenced_blob_refs(include_deleted=False)
         historical = self.registry.list_referenced_blob_refs(include_deleted=True)
-        return self.storage_runtime.blob_gc("source_asset").plan(
+        plan = self.storage_runtime.blob_gc("source_asset").plan(
             referenced_blob_refs=refs, profile_hint_blob_refs=historical,
             older_than=older_than
         )
+        self._report(
+            execution,
+            {
+                "objects_scanned": plan.objects_scanned,
+                "candidates_planned": len(plan.deletion_candidates),
+            },
+        )
+        return plan
 
     def execute_blobs(
         self,
@@ -77,8 +86,12 @@ class SourceAssetCleanupService:
     def _report(self, execution: ExecutionContext, metrics: dict[str, int]) -> None:
         try:
             self.control.report_usage(execution, UsageReport(run_id=execution.run_id, metrics=metrics))
-        except Exception:
-            return
+        except Exception as exc:
+            warnings.warn(
+                f"Usage reporting failed after a completed operation: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _authorize(self, execution: ExecutionContext, action: str) -> None:
         decision = self.control.authorize(execution, action, resource={"role": "source_asset"})

@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import sqlite3
+import time
 
 import pytest
 
 from cognityx_ingest.models import ExecutionContext
+from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.source_migration import SourceBlobMigrationError
 from cognityx_ingest.sources import SourceRegistry
 from cognityx_resource import ResourceContext
@@ -192,6 +196,40 @@ def test_concurrent_none_scope_duplicate_source_has_one_source_and_blob(
     assert first.source_id == second.source_id
     assert len(registry.list_sources(_context())) == 1
     assert len(_blob_files(root)) == 1
+
+
+def test_none_scope_restores_same_asset_after_gc_removes_old_blob(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "storage"
+    source = tmp_path / "restore.txt"
+    source.write_bytes(b"restore after gc")
+    registry = _registry(root, dedup_scope="none")
+    execution = _context()
+    created = registry.register_file(execution, source)
+    old_ref = registry._blob_ref_for_source(created.source_id)
+
+    registry.delete_asset(execution, created.source_id)
+    old_path = root / old_ref.storage_key
+    old = time.time() - 10
+    os.utime(old_path, (old, old))
+    cleanup = SourceAssetCleanupService(
+        registry=registry, storage_runtime=registry._runtime
+    )
+    plan = cleanup.plan_blobs(execution, older_than=timedelta(seconds=1))
+    result = cleanup.execute_blobs(execution, plan, batch_size=1)
+
+    assert result.deleted_objects == 1
+    assert not old_path.exists()
+
+    restored = registry.register_file(execution, source)
+
+    assert restored.status == "restored"
+    assert restored.source_id == created.source_id
+    new_ref = registry._blob_ref_for_source(restored.source_id)
+    assert registry._runtime.blob_exists(new_ref)
+    with registry.open(execution, restored.source_id) as stream:
+        assert stream.read() == b"restore after gc"
 
 
 def test_domain_scoped_catalog_migrates_once_and_preserves_ids(

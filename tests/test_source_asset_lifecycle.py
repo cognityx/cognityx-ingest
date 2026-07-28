@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import timedelta
+import os
 from pathlib import Path
+import time
 
 import pytest
 
@@ -10,6 +13,8 @@ from cognityx_ingest import (
     SourceAssetDeletionResult,
     SourceAssetRegistry,
 )
+from cognityx_ingest.cleanup import SourceAssetCleanupService
+from cognityx_ingest.control import ControlDecision
 from cognityx_resource import ResourceContext
 from cognityx_storage import StorageConfig, StorageRuntime
 
@@ -105,3 +110,84 @@ def test_recursive_bundle_delete_and_bundle_restore(tmp_path: Path) -> None:
         execution, "research/child", create=False
     ).bundle_id == bundle.bundle_id
     assert registry.list_assets(execution) == ()
+
+
+def test_repeated_recursive_bundle_delete_has_zero_new_counts_and_repairs_event(
+    tmp_path: Path,
+) -> None:
+    registry, execution, _ = _setup(tmp_path)
+    source = tmp_path / "nested.txt"
+    source.write_bytes(b"nested")
+    bundle = registry.resolve_doc_bundle(execution, "parent/child")
+    registry.register_asset(execution, source, bundle="parent/child")
+
+    first = registry.delete_doc_bundle(execution, bundle.bundle_id, recursive=True)
+    lifecycle_key = (
+        f"source-contexts/{execution.context_id}/bundles/{bundle.bundle_id}/"
+        f"lifecycle/{execution.run_id}-deleted.json"
+    )
+    registry._source_store.delete(lifecycle_key)
+
+    second = registry.delete_doc_bundle(execution, bundle.bundle_id, recursive=True)
+
+    assert first.status == "deleted"
+    assert first.deleted_asset_count > 0
+    assert first.deleted_bundle_count > 0
+    assert second.status == "already_deleted"
+    assert second.deleted_asset_count == 0
+    assert second.deleted_bundle_count == 0
+    assert registry._source_store.exists(lifecycle_key)
+
+
+def test_deletion_and_cleanup_usage_metrics_are_actual(tmp_path: Path) -> None:
+    class RecordingControl:
+        def __init__(self) -> None:
+            self.metrics: list[dict[str, int]] = []
+
+        def authorize(self, context, action, resource=None, request=None):
+            return ControlDecision(allowed=True)
+
+        def report_usage(self, context, usage):
+            self.metrics.append(dict(usage.metrics))
+
+    root = tmp_path / "storage"
+    runtime = StorageRuntime.from_config(StorageConfig.built_in(root=root))
+    control = RecordingControl()
+    registry = SourceAssetRegistry(
+        runtime, tmp_path / "catalog.sqlite3", control=control
+    )
+    execution = ExecutionContext.create(
+        ResourceContext(tenant_id="tenant-a", principal_id="alice")
+    )
+    source = tmp_path / "usage.txt"
+    source.write_bytes(b"usage")
+    created = registry.register_asset(execution, source, bundle="usage")
+
+    registry.delete_asset(execution, created.asset_id)
+    registry.delete_asset(execution, created.asset_id)
+    bundle = registry.resolve_doc_bundle(execution, "empty")
+    registry.delete_doc_bundle(execution, bundle.bundle_id)
+    registry.delete_doc_bundle(execution, bundle.bundle_id)
+
+    blob_path = root / registry._blob_ref_for_source(created.asset_id).storage_key
+    old = time.time() - 10
+    os.utime(blob_path, (old, old))
+    cleanup = SourceAssetCleanupService(
+        registry=registry, storage_runtime=runtime, control=control
+    )
+    plan = cleanup.plan_blobs(execution, older_than=timedelta(seconds=1))
+    cleanup.execute_blobs(execution, plan, batch_size=1)
+
+    assert {"assets_deleted": 1} in control.metrics
+    assert {"assets_deleted": 0} in control.metrics
+    assert {"assets_deleted": 0, "bundles_deleted": 1} in control.metrics
+    assert {"assets_deleted": 0, "bundles_deleted": 0} in control.metrics
+    assert {
+        "objects_scanned": plan.objects_scanned,
+        "candidates_planned": len(plan.deletion_candidates),
+    } in control.metrics
+    assert {
+        "objects_deleted": 1,
+        "objects_failed": 0,
+        "bytes_reclaimed": len(b"usage"),
+    } in control.metrics

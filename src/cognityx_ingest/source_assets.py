@@ -46,6 +46,7 @@ from cognityx_ingest.models import (
     SourceAssetContext,
     SourceAssetLocation,
     SourceAssetRegistrationResult,
+    UsageReport,
 )
 from cognityx_ingest.source_migration import SourceBlobMigrator
 
@@ -607,7 +608,7 @@ class SourceAssetRegistry:
                 blob_id=blob_ref.blob_id,
                 blob_ref=blob_ref,
             )
-        return SourceAssetDeletionResult(
+        result = SourceAssetDeletionResult(
             context.context_id,
             row["bundle_id"],
             asset_id,
@@ -616,6 +617,11 @@ class SourceAssetRegistry:
             status,
             still_referenced,
         )
+        self._report_usage(
+            execution,
+            {"assets_deleted": 1 if status == "deleted" else 0},
+        )
+        return result
 
     @property
     def control(self) -> ControlClient:
@@ -636,8 +642,10 @@ class SourceAssetRegistry:
             INGEST_BUNDLE_DELETE,
             {"context_id": context.context_id, "bundle_id": bundle_id},
         )
-        deleted_assets: list[sqlite3.Row] = []
-        deleted_bundles: list[sqlite3.Row] = []
+        repair_assets: list[sqlite3.Row] = []
+        repair_bundles: list[sqlite3.Row] = []
+        newly_deleted_asset_count = 0
+        newly_deleted_bundle_count = 0
         with self._connection(immediate=True) as db:
             target = db.execute(
                 "SELECT * FROM bundles WHERE bundle_id=? AND context_id=?",
@@ -677,28 +685,27 @@ class SourceAssetRegistry:
                     [deleted_at, execution.principal_id, execution.run_id, reason,
                      context.context_id, *bundle_ids],
                 )
-                deleted_assets = db.execute(
+                repair_assets = db.execute(
                     "SELECT * FROM sources WHERE context_id=? AND deleted_at=? AND delete_run_id=? AND bundle_id IN ({})".format(",".join("?" * len(bundle_ids))),
                     [context.context_id, deleted_at, execution.run_id, *bundle_ids],
                 ).fetchall()
-                deleted_bundles = db.execute(
+                repair_bundles = db.execute(
                     "SELECT * FROM bundles WHERE context_id=? AND deleted_at=? AND delete_run_id=? AND bundle_id IN ({})".format(",".join("?" * len(bundle_ids))),
                     [context.context_id, deleted_at, execution.run_id, *bundle_ids],
                 ).fetchall()
+                newly_deleted_asset_count = len(repair_assets)
+                newly_deleted_bundle_count = len(repair_bundles)
                 status = "deleted"
             if status == "already_deleted":
-                deleted_assets = db.execute(
+                repair_assets = db.execute(
                     "SELECT * FROM sources WHERE context_id=? AND delete_run_id=? AND bundle_id IN ({})".format(",".join("?" * len(bundle_ids))),
                     [context.context_id, target["delete_run_id"], *bundle_ids],
                 ).fetchall() if target["delete_run_id"] else []
-                deleted_bundles = db.execute(
+                repair_bundles = db.execute(
                     "SELECT * FROM bundles WHERE context_id=? AND delete_run_id=? AND bundle_id IN ({})".format(",".join("?" * len(bundle_ids))),
                     [context.context_id, target["delete_run_id"], *bundle_ids],
                 ).fetchall() if target["delete_run_id"] else []
-        event_execution = execution
-        if status == "already_deleted" and target["delete_run_id"]:
-            event_execution = ExecutionContext(target["delete_run_id"], execution.correlation_id, context=execution.context)
-        for row in deleted_assets:
+        for row in repair_assets:
             blob_ref = BlobRef.from_dict(json.loads(row["blob_ref_json"])) if row["blob_ref_json"] else None
             if not self._lifecycle_exists(context.context_id, row["bundle_id"], row["source_id"], row["delete_run_id"], "deleted"):
                 self._publish_lifecycle_event(
@@ -706,21 +713,29 @@ class SourceAssetRegistry:
                     event="deleted", timestamp=row["deleted_at"], principal_id=row["deleted_by"],
                     run_id=row["delete_run_id"], reason=row["delete_reason"], blob_ref=blob_ref,
                 )
-        for row in deleted_bundles:
+        for row in repair_bundles:
             if not self._lifecycle_exists(context.context_id, row["bundle_id"], None, row["delete_run_id"], "deleted"):
                 self._publish_lifecycle_event(
                     context_id=context.context_id, bundle_id=row["bundle_id"], asset_id=None,
                     event="deleted", timestamp=row["deleted_at"], principal_id=row["deleted_by"],
                     run_id=row["delete_run_id"], reason=row["delete_reason"], blob_ref=None,
                 )
-        return DocBundleDeletionResult(
+        result = DocBundleDeletionResult(
             context.context_id,
             bundle_id,
-            len(deleted_assets),
-            len(deleted_bundles),
+            newly_deleted_asset_count,
+            newly_deleted_bundle_count,
             deleted_at,
             status,
         )
+        self._report_usage(
+            execution,
+            {
+                "assets_deleted": result.deleted_asset_count,
+                "bundles_deleted": result.deleted_bundle_count,
+            },
+        )
+        return result
 
     def list_deleted_assets(
         self, execution: ExecutionContext
@@ -937,6 +952,21 @@ class SourceAssetRegistry:
             return True
         except ObjectNotFoundError:
             return False
+
+    def _report_usage(
+        self, execution: ExecutionContext, metrics: dict[str, int]
+    ) -> None:
+        try:
+            self._control.report_usage(
+                execution,
+                UsageReport(run_id=execution.run_id, metrics=metrics),
+            )
+        except Exception as exc:
+            warnings.warn(
+                f"Usage reporting failed after a completed operation: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     def _source_for_digest(
         self, context_id: str, bundle_id: str, digest: str
