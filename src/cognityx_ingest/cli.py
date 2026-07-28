@@ -24,6 +24,7 @@ from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.service import IngestService
 from cognityx_ingest.source_assets import SourceAssetRegistry
+from cognityx_ingest.models import SourceAssetBatchResult
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -164,6 +165,12 @@ def main(argv: list[str] | None = None) -> int:
                 structure=args.structure,
                 recursive=args.recursive,
             )
+            if isinstance(value, SourceAssetBatchResult) and value.failed_count:
+                print(
+                    f"{value.failed_count} SourceAsset file registration(s) failed; "
+                    "inspect the JSON batch items for safe details.",
+                    file=sys.stderr,
+                )
             _write(_asset_plain(value) if canonical else _plain(value))
         elif args.asset_command == "list":
             items = (
