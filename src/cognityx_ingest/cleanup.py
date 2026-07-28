@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from cognityx_ingest.control import ControlClient
 from cognityx_ingest.models import ExecutionContext
+from cognityx_ingest.models import UsageReport
 from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_storage import BlobGcPlan, BlobGcResult, StorageRuntime
 
@@ -45,8 +46,8 @@ class SourceAssetCleanupService:
         *,
         batch_size: int = 100,
     ) -> BlobGcResult:
-        if not 50 <= batch_size <= 500:
-            raise ValueError("batch_size must be between 50 and 500")
+        if not 1 <= batch_size <= 500:
+            raise ValueError("batch_size must be between 1 and 500")
         self._authorize(execution, "storage.blob.gc.execute")
         results = []
         candidates = plan.deletion_candidates
@@ -61,10 +62,23 @@ class SourceAssetCleanupService:
             with self.registry.catalog_write_lock():
                 refs = self.registry.list_referenced_blob_refs(include_deleted=False)
                 results.append(self.storage_runtime.blob_gc("source_asset").execute(batch, referenced_blob_refs=refs))
-        return BlobGcResult(plan.plan_id, sum(r.deleted_objects for r in results),
-            sum(r.already_absent for r in results), sum(r.skipped_objects for r in results),
-            sum(r.failed_objects for r in results), sum(r.reclaimed_bytes for r in results),
-            tuple(f for r in results for f in r.failures))
+        result = BlobGcResult(plan_id=plan.plan_id,
+            deleted_objects=sum(r.deleted_objects for r in results),
+            already_absent=sum(r.already_absent for r in results),
+            skipped_objects=sum(r.skipped_objects for r in results),
+            failed_objects=sum(r.failed_objects for r in results),
+            reclaimed_bytes=sum(r.reclaimed_bytes for r in results),
+            failures=tuple(f for r in results for f in r.failures),
+            skips=tuple(s for r in results for s in r.skips))
+        self._report(execution, {"objects_deleted": result.deleted_objects,
+            "objects_failed": result.failed_objects, "bytes_reclaimed": result.reclaimed_bytes})
+        return result
+
+    def _report(self, execution: ExecutionContext, metrics: dict[str, int]) -> None:
+        try:
+            self.control.report_usage(execution, UsageReport(run_id=execution.run_id, metrics=metrics))
+        except Exception:
+            return
 
     def _authorize(self, execution: ExecutionContext, action: str) -> None:
         decision = self.control.authorize(execution, action, resource={"role": "source_asset"})

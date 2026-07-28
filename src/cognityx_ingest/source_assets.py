@@ -894,7 +894,7 @@ class SourceAssetRegistry:
 
     def _publish_lifecycle_event(
         self, *, context_id: str, bundle_id: str, asset_id: str | None,
-        event: str, timestamp: float, principal_id: str | None, run_id: str,
+        event: str, timestamp: str, principal_id: str | None, run_id: str,
         reason: str | None, blob_ref: BlobRef | None,
     ) -> None:
         path = (
