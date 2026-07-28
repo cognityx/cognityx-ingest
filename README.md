@@ -46,8 +46,14 @@ role and persists a durable Storage-owned `BlobRef`:
 cognityx-ingest assets add report.pdf
 cognityx-ingest assets add interview.mp3 --bundle research/interviews \
   --storage-config .cognityx/storage.toml
+cognityx-ingest assets add /data/contracts --bundle legal
+cognityx-ingest assets add /data/contracts --bundle legal --structure flat
 cognityx-ingest doc-bundles list
 ```
+
+Folder registration is synchronous. The default `preserve` structure mirrors
+relative folders as DocBundles; `flat` places every discovered file in one
+DocBundle. Background execution for large trees is a separate future job.
 
 Ingest owns SourceAsset and DocBundle records; `cognityx-storage` owns
 hashing, CAS layout, deduplication, physical Blob reuse and profile routing.

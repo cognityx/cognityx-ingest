@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
 import os
@@ -11,7 +13,6 @@ import sqlite3
 from typing import Any, BinaryIO, Iterator
 from uuid import uuid4
 import warnings
-from dataclasses import dataclass
 
 from cognityx_storage import BlobRef, PreparedBlob, StorageRuntime
 from cognityx_storage.exceptions import (
@@ -28,6 +29,7 @@ from cognityx_ingest.control import (
     INGEST_BUNDLE_DELETED_LIST,
     INGEST_BUNDLE_LOCATE,
     INGEST_BUNDLE_READ,
+    INGEST_SOURCE_BATCH_CREATE,
     INGEST_SOURCE_CREATE,
     INGEST_SOURCE_DELETE,
     INGEST_SOURCE_DELETED_LIST,
@@ -42,6 +44,8 @@ from cognityx_ingest.models import (
     DocBundleDeletionResult,
     ExecutionContext,
     SourceAsset,
+    SourceAssetBatchItem,
+    SourceAssetBatchResult,
     SourceAssetDeletionResult,
     SourceAssetContext,
     SourceAssetLocation,
@@ -65,12 +69,37 @@ class SourceAssetCatalogAmbiguityError(SourceAssetCatalogError):
     """Legacy and catalog-role databases exist at different paths."""
 
 
+class SourceAssetBatchCancelled(RuntimeError):
+    """Directory registration stopped safely after preserving completed work."""
+
+    def __init__(
+        self,
+        *,
+        result: SourceAssetBatchResult | None,
+        files_discovered: int,
+        files_processed: int,
+    ) -> None:
+        super().__init__(
+            "SourceAsset batch registration was cancelled after "
+            f"{files_processed} of {files_discovered} discovered files."
+        )
+        self.result = result
+        self.files_discovered = files_discovered
+        self.files_processed = files_processed
+
+
 @dataclass(frozen=True, slots=True)
 class _CatalogSelection:
     path: Path
     selection: str
     profile_name: str | None = None
     backend_name: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscoveredFile:
+    path: Path
+    relative_path: str
 
 
 class SourceAssetRegistry:
@@ -315,6 +344,301 @@ class SourceAssetRegistry:
             return _registration(source, "already_registered")
         self._publish_source(source, blob_ref)
         return _registration(source, "created")
+
+    def register_path(
+        self,
+        execution: ExecutionContext,
+        path: str | Path,
+        *,
+        bundle: str | None = None,
+        structure: str = "preserve",
+        recursive: bool = True,
+        progress: Callable[[dict[str, Any]], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+    ) -> SourceAssetRegistrationResult | SourceAssetBatchResult:
+        """Register one file or a deterministic directory tree synchronously."""
+        if structure not in {"preserve", "flat"}:
+            raise ValueError("structure must be either 'preserve' or 'flat'.")
+        selected = Path(path)
+        if selected.is_file():
+            return self.register_asset(execution, selected, bundle=bundle)
+        if not selected.exists() or not selected.is_dir() or selected.is_symlink():
+            raise FileNotFoundError(
+                "Source path does not exist or is not a regular file or directory."
+            )
+
+        root_bundle_path = _normalise_generated_bundle_path(
+            bundle if bundle is not None else selected.resolve().name
+        )
+        context = self.resolve_context(execution)
+        self._authorize(
+            execution,
+            INGEST_SOURCE_BATCH_CREATE,
+            {
+                "context_id": context.context_id,
+                "root_bundle": root_bundle_path,
+                "structure": structure,
+                "recursive": recursive,
+            },
+        )
+        if cancellation_requested and cancellation_requested():
+            raise SourceAssetBatchCancelled(
+                result=None, files_discovered=0, files_processed=0
+            )
+
+        emit = progress or (lambda payload: None)
+        emit({"event": "scan_started", "files_discovered": 0})
+        discovered, skipped = self._scan_source_tree(
+            selected,
+            recursive=recursive,
+            root_bundle_path=root_bundle_path,
+            structure=structure,
+            emit=emit,
+        )
+        emit(
+            {
+                "event": "scan_completed",
+                "files_discovered": len(discovered),
+                "entries_skipped": len(skipped),
+            }
+        )
+
+        if cancellation_requested and cancellation_requested():
+            raise SourceAssetBatchCancelled(
+                result=None,
+                files_discovered=len(discovered),
+                files_processed=0,
+            )
+        root_bundle = self.resolve_doc_bundle(
+            execution, root_bundle_path, create=True
+        )
+        batch_id = f"batch-{uuid4().hex}"
+        items: list[SourceAssetBatchItem] = list(skipped)
+        created = restored = already_registered = failed = input_bytes = 0
+
+        for index, source in enumerate(discovered, start=1):
+            if cancellation_requested and cancellation_requested():
+                result = _batch_result(
+                    batch_id=batch_id,
+                    context_id=context.context_id,
+                    root_bundle_id=root_bundle.bundle_id,
+                    root_bundle_path=root_bundle.path,
+                    structure=structure,
+                    recursive=recursive,
+                    files_discovered=len(discovered),
+                    created=created,
+                    restored=restored,
+                    already_registered=already_registered,
+                    failed=failed,
+                    skipped=len(skipped),
+                    items=items,
+                )
+                raise SourceAssetBatchCancelled(
+                    result=result,
+                    files_discovered=len(discovered),
+                    files_processed=result.files_processed,
+                )
+            bundle_path = _bundle_for_relative_path(
+                root_bundle.path, source.relative_path, structure
+            )
+            emit(
+                {
+                    "event": "file_started",
+                    "relative_path": source.relative_path,
+                    "bundle_path": bundle_path,
+                    "file_index": index,
+                    "files_discovered": len(discovered),
+                }
+            )
+            try:
+                result = self.register_asset(
+                    execution, source.path, bundle=bundle_path
+                )
+            except Exception as exc:
+                failed += 1
+                item = SourceAssetBatchItem(
+                    relative_path=source.relative_path,
+                    bundle_path=bundle_path,
+                    asset_id=None,
+                    status="failed",
+                    error_category=type(exc).__name__,
+                    error_message=(
+                        f"{type(exc).__name__} while registering "
+                        f"{source.relative_path}."
+                    ),
+                )
+                items.append(item)
+                emit(
+                    {
+                        "event": "file_failed",
+                        "relative_path": item.relative_path,
+                        "bundle_path": item.bundle_path,
+                        "error_category": item.error_category,
+                        "files_processed": created
+                        + restored
+                        + already_registered
+                        + failed,
+                        "files_discovered": len(discovered),
+                    }
+                )
+                continue
+
+            if result.status == "created":
+                created += 1
+            elif result.status == "restored":
+                restored += 1
+            elif result.status == "already_registered":
+                already_registered += 1
+            else:
+                raise RuntimeError(
+                    f"Unexpected SourceAsset registration status: {result.status}"
+                )
+            input_bytes += result.size_bytes
+            item = SourceAssetBatchItem(
+                relative_path=source.relative_path,
+                bundle_path=bundle_path,
+                asset_id=result.asset_id,
+                status=result.status,
+            )
+            items.append(item)
+            emit(
+                {
+                    "event": "file_completed",
+                    "relative_path": item.relative_path,
+                    "bundle_path": item.bundle_path,
+                    "asset_id": item.asset_id,
+                    "status": item.status,
+                    "files_processed": created
+                    + restored
+                    + already_registered
+                    + failed,
+                    "files_discovered": len(discovered),
+                }
+            )
+
+        result = _batch_result(
+            batch_id=batch_id,
+            context_id=context.context_id,
+            root_bundle_id=root_bundle.bundle_id,
+            root_bundle_path=root_bundle.path,
+            structure=structure,
+            recursive=recursive,
+            files_discovered=len(discovered),
+            created=created,
+            restored=restored,
+            already_registered=already_registered,
+            failed=failed,
+            skipped=len(skipped),
+            items=items,
+        )
+        self._report_usage(
+            execution,
+            {
+                "files_discovered": result.files_discovered,
+                "files_processed": result.files_processed,
+                "assets_created": result.created_count,
+                "assets_restored": result.restored_count,
+                "assets_already_registered": result.already_registered_count,
+                "assets_failed": result.failed_count,
+                "entries_skipped": result.skipped_count,
+                "input_bytes": input_bytes,
+            },
+        )
+        emit(
+            {
+                "event": "batch_completed",
+                "batch_id": result.batch_id,
+                "files_discovered": result.files_discovered,
+                "files_processed": result.files_processed,
+                "failed_count": result.failed_count,
+                "skipped_count": result.skipped_count,
+            }
+        )
+        return result
+
+    def _scan_source_tree(
+        self,
+        root: Path,
+        *,
+        recursive: bool,
+        root_bundle_path: str,
+        structure: str,
+        emit: Callable[[dict[str, Any]], None],
+    ) -> tuple[list[_DiscoveredFile], list[SourceAssetBatchItem]]:
+        discovered: list[_DiscoveredFile] = []
+        skipped: list[SourceAssetBatchItem] = []
+        excluded_roots = self._local_storage_roots()
+        catalog = self._catalog_path.resolve(strict=False)
+
+        def skip(path: Path, relative_path: str, reason: str) -> None:
+            bundle_path = _bundle_for_relative_path(
+                root_bundle_path, relative_path, structure
+            )
+            skipped.append(
+                SourceAssetBatchItem(
+                    relative_path=relative_path,
+                    bundle_path=bundle_path,
+                    asset_id=None,
+                    status="skipped",
+                    error_category=reason,
+                    error_message=None,
+                )
+            )
+            emit(
+                {
+                    "event": "entry_skipped",
+                    "relative_path": relative_path,
+                    "bundle_path": bundle_path,
+                    "reason": reason,
+                }
+            )
+
+        def visit(directory: Path, prefix: Path) -> None:
+            try:
+                entries = sorted(os.scandir(directory), key=lambda item: item.name)
+            except OSError as exc:
+                relative = prefix.as_posix() if prefix.parts else directory.name
+                skip(directory, relative, type(exc).__name__)
+                return
+            for entry in entries:
+                entry_path = Path(entry.path)
+                relative = (prefix / entry.name).as_posix()
+                try:
+                    if entry.is_symlink():
+                        skip(entry_path, relative, "symlink")
+                    elif entry.is_file(follow_symlinks=False):
+                        resolved = entry_path.resolve(strict=False)
+                        if _is_catalog_file(resolved, catalog):
+                            skip(entry_path, relative, "cognityx_catalog")
+                        else:
+                            discovered.append(
+                                _DiscoveredFile(entry_path, relative)
+                            )
+                    elif entry.is_dir(follow_symlinks=False):
+                        resolved = entry_path.resolve(strict=False)
+                        if resolved in excluded_roots:
+                            skip(entry_path, relative, "cognityx_storage_root")
+                        elif recursive:
+                            visit(entry_path, prefix / entry.name)
+                    else:
+                        skip(entry_path, relative, "special_entry")
+                except OSError as exc:
+                    skip(entry_path, relative, type(exc).__name__)
+
+        visit(root, Path())
+        discovered.sort(key=lambda item: item.relative_path)
+        skipped.sort(key=lambda item: item.relative_path)
+        return discovered, skipped
+
+    def _local_storage_roots(self) -> set[Path]:
+        roots: set[Path] = set()
+        for profile in self._runtime.config.profiles.values():
+            if profile.type != "filesystem":
+                continue
+            root = profile.options.get("root")
+            if isinstance(root, str) and root.strip():
+                roots.add(Path(root).expanduser().resolve(strict=False))
+        return roots
 
     def _register_prepared_source(
         self,
@@ -1222,6 +1546,75 @@ def _bundle_segments(path: str) -> tuple[str, ...]:
     if not parts or any(item in {".", ".."} for item in parts):
         raise ValueError("Bundle path must contain normal name segments.")
     return parts
+
+
+def _normalise_generated_bundle_path(path: str) -> str:
+    selected = path.strip().replace("\\", "/")
+    if not selected or selected.startswith("/"):
+        raise ValueError("Bundle path must be a non-empty relative path.")
+    if len(selected) >= 2 and selected[1] == ":":
+        raise ValueError("Bundle path must not contain an absolute drive path.")
+    parts = selected.split("/")
+    if any(not part.strip() or part.strip() in {".", ".."} for part in parts):
+        raise ValueError("Bundle path must contain only normal name segments.")
+    return "/".join(part.strip() for part in parts)
+
+
+def _bundle_for_relative_path(
+    root_bundle_path: str, relative_path: str, structure: str
+) -> str:
+    if structure == "flat":
+        return root_bundle_path
+    parent_parts = Path(relative_path).parent.parts
+    if not parent_parts:
+        return root_bundle_path
+    return _normalise_generated_bundle_path(
+        "/".join((root_bundle_path, *parent_parts))
+    )
+
+
+def _is_catalog_file(candidate: Path, catalog: Path) -> bool:
+    if candidate == catalog or candidate.parent != catalog.parent:
+        return candidate == catalog
+    return candidate.name in {
+        f"{catalog.name}-journal",
+        f"{catalog.name}-shm",
+        f"{catalog.name}-wal",
+    }
+
+
+def _batch_result(
+    *,
+    batch_id: str,
+    context_id: str,
+    root_bundle_id: str,
+    root_bundle_path: str,
+    structure: str,
+    recursive: bool,
+    files_discovered: int,
+    created: int,
+    restored: int,
+    already_registered: int,
+    failed: int,
+    skipped: int,
+    items: list[SourceAssetBatchItem],
+) -> SourceAssetBatchResult:
+    return SourceAssetBatchResult(
+        batch_id=batch_id,
+        context_id=context_id,
+        root_bundle_id=root_bundle_id,
+        root_bundle_path=root_bundle_path,
+        structure=structure,
+        recursive=recursive,
+        files_discovered=files_discovered,
+        files_processed=created + restored + already_registered + failed,
+        created_count=created,
+        restored_count=restored,
+        already_registered_count=already_registered,
+        failed_count=failed,
+        skipped_count=skipped,
+        items=tuple(sorted(items, key=lambda item: item.relative_path)),
+    )
 
 
 def _blob_ref_json(blob_ref: BlobRef) -> str:

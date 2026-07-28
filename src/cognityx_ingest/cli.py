@@ -157,10 +157,12 @@ def main(argv: list[str] | None = None) -> int:
                 _write(_plain(value))
             return 0
         if args.asset_command == "add":
-            value = (
-                registry.register_asset(context, args.file, bundle=args.bundle)
-                if canonical
-                else registry.register_file(context, args.file, bundle=args.bundle)
+            value = registry.register_path(
+                context,
+                args.path,
+                bundle=args.bundle,
+                structure=args.structure,
+                recursive=args.recursive,
             )
             _write(_asset_plain(value) if canonical else _plain(value))
         elif args.asset_command == "list":
@@ -286,8 +288,20 @@ def _add_asset_commands(
     group = commands.add_parser(name, help=help_text)
     subcommands = group.add_subparsers(dest="asset_command", required=True)
     add = subcommands.add_parser("add")
-    add.add_argument("file")
+    add.add_argument("path")
     add.add_argument("--bundle")
+    add.add_argument(
+        "--structure",
+        choices=("preserve", "flat"),
+        default="preserve",
+    )
+    recursion = add.add_mutually_exclusive_group()
+    recursion.add_argument(
+        "--recursive", dest="recursive", action="store_true", default=True
+    )
+    recursion.add_argument(
+        "--no-recursive", dest="recursive", action="store_false"
+    )
     _add_runtime_arguments(add, source_storage=True)
     listing = subcommands.add_parser("list")
     listing.add_argument("--bundle")

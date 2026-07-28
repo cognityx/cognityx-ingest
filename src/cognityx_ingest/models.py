@@ -111,6 +111,38 @@ class SourceAssetRegistrationResult:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceAssetBatchItem:
+    """Safe per-entry outcome from directory SourceAsset registration."""
+
+    relative_path: str
+    bundle_path: str
+    asset_id: str | None
+    status: str
+    error_category: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAssetBatchResult:
+    """Aggregate outcome of one synchronous directory registration."""
+
+    batch_id: str
+    context_id: str
+    root_bundle_id: str
+    root_bundle_path: str
+    structure: str
+    recursive: bool
+    files_discovered: int
+    files_processed: int
+    created_count: int
+    restored_count: int
+    already_registered_count: int
+    failed_count: int
+    skipped_count: int
+    items: tuple[SourceAssetBatchItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SourceAssetDeletionResult:
     context_id: str
     bundle_id: str
