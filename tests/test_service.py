@@ -49,22 +49,23 @@ def test_ingest_persists_canonical_provenance_artifacts(service: IngestService, 
     assert [item.page_number for item in result.evidence] == [1, 2]
     assert result.evidence[0].evidence_id.endswith("page:1")
     storage = service._storage
-    assert storage.exists(result.document.source.storage_key)
+    assert result.document.source.storage_key.startswith("sourceasset://src-")
     manifest = json.load(storage.open(result.manifest_key))
     assert manifest["schema"] == "cognityx.ingest.document"
     assert manifest["artifacts"]["evidence"]["uri"].startswith("storage://")
     assert storage.open(result.evidence_key).read().decode().count("\n") == 2
 
 
-def test_same_source_is_idempotent(service: IngestService, tmp_path: Path) -> None:
+def test_same_source_reuses_asset_but_creates_run_bound_documents(service: IngestService, tmp_path: Path) -> None:
     source = tmp_path / "same.pdf"
     source.write_bytes(b"%PDF-1.4 same")
 
     first = service.ingest(source)
     second = service.ingest(source)
 
-    assert first.document.document_id == second.document.document_id
-    assert first.manifest_key == second.manifest_key
+    assert first.document.source.source_id == second.document.source.source_id
+    assert first.document.document_id != second.document.document_id
+    assert first.manifest_key != second.manifest_key
 
 
 def test_folder_discovers_only_pdfs(service: IngestService, tmp_path: Path) -> None:
@@ -144,6 +145,8 @@ def test_cli_end_to_end_uses_real_pdf_parser_and_local_storage(tmp_path: Path, c
 
     assert main(["ingest", str(source), "--storage-root", str(tmp_path / "storage")]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert result[0]["run_id"]
-    assert result[0]["document_id"].startswith("pdf-")
-    assert result[0]["artifacts"][0]["uri"].startswith("storage://")
+    assert result["run_id"]
+    assert result["document_count"] == 1
+    assert result["documents"][0]["document_id"].startswith("pdf-")
+    assert result["documents"][0]["artifacts"][0]["uri"].startswith("storage://")
+    assert "shared/shared" not in result["documents"][0]["artifacts"][0]["uri"]

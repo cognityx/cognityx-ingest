@@ -18,9 +18,12 @@ from cognityx_ingest.models import (
     Evidence,
     IngestJobState,
     IngestResult,
+    IngestRunResult,
     RegisteredSource,
     Section,
     SourceAsset,
+    SourceAssetBatchItem,
+    SourceAssetBatchResult,
     SourceAssetContext,
     SourceAssetDeletionResult,
     SourceAssetLocation,
@@ -39,6 +42,7 @@ from cognityx_ingest.parser import (
 )
 from cognityx_ingest.service import IngestService
 from cognityx_ingest.source_assets import (
+    SourceAssetBatchCancelled,
     SourceAssetCatalogAmbiguityError,
     SourceAssetCatalogError,
     SourceAssetRegistry,
@@ -61,6 +65,7 @@ __all__ = [
     "IngestLimitError",
     "IngestManager",
     "IngestResult",
+    "IngestRunResult",
     "IngestService",
     "LocalControlClient",
     "PyPdfExtractor",
@@ -69,6 +74,9 @@ __all__ = [
     "ResourceRef",
     "Section",
     "SourceAsset",
+    "SourceAssetBatchCancelled",
+    "SourceAssetBatchItem",
+    "SourceAssetBatchResult",
     "SourceAssetContext",
     "SourceAssetCleanupService",
     "SourceAssetDeletionResult",

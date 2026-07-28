@@ -73,6 +73,8 @@ precedence.
 ```bash
 cognityx-ingest assets add report.pdf
 cognityx-ingest assets add recording.mp3 --bundle research/interviews
+cognityx-ingest assets add /data/contracts --bundle legal
+cognityx-ingest assets add /data/contracts --bundle legal --structure flat
 cognityx-ingest doc-bundles list
 cognityx-ingest doc-bundles create enterprise/policies/hr
 cognityx-ingest assets list --bundle research/interviews
@@ -96,6 +98,42 @@ cognityx-ingest bundles list
 
 Compatibility JSON retains `source_id`; canonical `assets` JSON uses
 `asset_id`. Both values are the same stable `src-...` identity.
+
+### Complete folders
+
+`assets add` accepts either one regular file or a directory:
+
+```bash
+cognityx-ingest assets add /data/contracts \
+  --bundle legal \
+  --structure preserve
+
+cognityx-ingest assets add /data/contracts \
+  --bundle legal \
+  --structure flat
+
+cognityx-ingest assets add /data/contracts \
+  --bundle legal \
+  --no-recursive
+```
+
+`preserve` reproduces relative folders as nested DocBundles. With the example
+root `/data/contracts`, `india/agreement.pdf` is placed in `legal/india`; the
+source root name is not repeated beneath an explicit bundle. When `--bundle`
+is omitted, the source directory name becomes the root bundle. `flat` places
+all discovered files directly in that root bundle. Empty directories do not
+create child bundles.
+
+Folder traversal is deterministic and does not follow symlinks. It skips file
+symlinks, directory symlinks, special filesystem entries, and Cognityx
+Storage/catalog files encountered beneath the selected tree. `--no-recursive`
+limits discovery to direct child files.
+
+Folder registration is synchronous in Job 5A. Files are independently
+transactional, so a failed file is reported without rolling back successful
+files. Rerunning the same folder safely reuses existing Assets and restores
+logically deleted Assets. Durable background execution for large folders will
+be added separately.
 
 Use `--storage-root /path/to/storage` when selecting a local storage root.
 This is a local-development shortcut that creates the built-in filesystem
@@ -239,6 +277,28 @@ print(asset.asset_id, asset.ref)
 with assets.open_asset(context, result.asset_id) as blob:
     assert blob.read()
 ```
+
+Register a complete tree through the same registry:
+
+```python
+result = assets.register_path(
+    context,
+    "/data/contracts",
+    bundle="legal",
+    structure="preserve",
+)
+
+print(result.batch_id, result.created_count, result.failed_count)
+for item in result.items:
+    print(item.relative_path, item.bundle_path, item.status)
+```
+
+A file passed to `register_path()` returns the existing
+`SourceAssetRegistrationResult`. A directory returns
+`SourceAssetBatchResult`. One `ExecutionContext` covers the complete batch.
+Optional `progress` and `cancellation_requested` callbacks prepare the
+synchronous engine for future durable Jobs integration without creating
+threads or workers now.
 
 For an explicit Runtime or recovery/testing catalog path:
 

@@ -1,7 +1,7 @@
 # Cognityx Ingest
 
-Ingest PDFs into source-addressable, canonical document artifacts. The initial
-scope is deliberately narrow: local files and folders of PDFs.
+Ingest PDFs from paths or registered SourceAssets into canonical document
+artifacts prepared for DataForge.
 
 The deterministic pipeline registers source bytes, extracts page text,
 normalizes page sections and evidence, then persists artifacts through
@@ -23,11 +23,16 @@ Storage Runtime `source_asset` role. See [Source Assets](sources.md).
 ```bash
 cognityx-ingest ingest ./policy.pdf --storage-root /tmp/cognityx-storage
 cognityx-ingest ingest ./pdf-folder --storage-root /tmp/cognityx-storage --owner-id alex
+cognityx-ingest ingest --asset <asset-id> --storage-root /tmp/cognityx-storage
+cognityx-ingest ingest --bundle <bundle-id> --storage-root /tmp/cognityx-storage
 ```
 
-The command prints each run ID, optional job ID, document ID, manifest key, and
-logical `storage://` artifact references. The `ingest` word is optional for
-backward compatibility.
+The command prints one JSON object containing `run_id`, `job_id`,
+`root_bundle_id`, `document_count`, `failed_count`, `run_manifest_uri`,
+successful documents, and safe failure details. Folder ingest recursively
+preserves relative directories as nested DocBundles and continues after an
+individual PDF failure. The `ingest` word is optional for backward
+compatibility.
 
 ## Lifecycle And Artifacts
 
@@ -42,6 +47,8 @@ cognityx-ingest ingest ./policy.pdf --storage-root /tmp/cognityx-storage --owner
 # View only alex's jobs, then view one record and its ordered events.
 cognityx-ingest jobs list --storage-root /tmp/cognityx-storage --owner-id alex
 cognityx-ingest jobs show <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
+cognityx-ingest jobs events <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
+cognityx-ingest jobs events <job-id> --follow --storage-root /tmp/cognityx-storage --owner-id alex
 
 # Request cancellation of a queued or running job.
 cognityx-ingest jobs cancel <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
@@ -55,18 +62,21 @@ cognityx-ingest artifacts read <document-id> evidence --storage-root /tmp/cognit
 cognityx-ingest documents delete <document-id> --yes --storage-root /tmp/cognityx-storage
 ```
 
-`jobs cancel` records a durable cancellation request. The current local
-synchronous parser does not yet check for cancellation while parsing, so it
-cannot interrupt work that has already completed. Document deletion retains
-the durable job history and requires `--yes`.
+`jobs cancel` records a durable cancellation request. Folder and bundle runs
+check it between documents; parsing of the current PDF remains synchronous.
+Document deletion retains durable job history and requires `--yes`.
 
 ## Python API
 
 ```python
-from cognityx_ingest import ExecutionContext, IngestService
-from cognityx_storage import LocalStorageBackend, StorageClient
+from cognityx_ingest import ExecutionContext, IngestService, SourceAssetRegistry
+from cognityx_storage import LocalStorageBackend, StorageClient, StorageConfig, StorageRuntime
 
 storage = StorageClient(LocalStorageBackend("/tmp/cognityx-storage")).for_shared_data()
+runtime = StorageRuntime.from_config(
+    StorageConfig.built_in(root="/tmp/cognityx-storage")
+)
+registry = SourceAssetRegistry.load(runtime=runtime)
 context = ExecutionContext(
     run_id="run-123",
     correlation_id="request-456",
@@ -74,12 +84,16 @@ context = ExecutionContext(
     tenant_id="tenant-a",
     scopes={"environment": "development"},
 )
-result = IngestService(storage).ingest("policy.pdf", context=context)
+service = IngestService(storage, registry=registry)
+result = service.ingest("policy.pdf", context=context)
 
 print(result.document.document_id)
 print(result.usage.pages)
 for artifact in result.artifacts:
     print(artifact.artifact_id, artifact.uri)
+
+registered = registry.register_asset(context, "policy.pdf", bundle="legal")
+asset_result = service.ingest_asset(registered.asset_id, registry, context)
 ```
 
 ## Lifecycle Management API

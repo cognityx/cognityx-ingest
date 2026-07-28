@@ -8,6 +8,7 @@ from datetime import timedelta
 import json
 import re
 import sys
+import time
 from pathlib import Path
 
 from cognityx_jobs import JobRepository
@@ -24,6 +25,7 @@ from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.service import IngestService
 from cognityx_ingest.source_assets import SourceAssetRegistry
+from cognityx_ingest.models import SourceAssetBatchResult
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,15 +49,20 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="cognityx-ingest")
     commands = parser.add_subparsers(dest="command", required=True)
     ingest = commands.add_parser("ingest", help="Ingest a PDF file or directory.")
-    ingest.add_argument("path", help="A PDF file or folder of PDFs.")
-    _add_runtime_arguments(ingest)
+    selection = ingest.add_mutually_exclusive_group(required=True)
+    selection.add_argument("path", nargs="?", help="A PDF file or folder of PDFs.")
+    selection.add_argument("--asset", help="An existing SourceAsset ID.")
+    selection.add_argument("--bundle", help="An existing DocBundle ID.")
+    _add_runtime_arguments(ingest, source_storage=True)
 
     jobs = commands.add_parser("jobs", help="Inspect or cancel owned ingest jobs.")
     job_commands = jobs.add_subparsers(dest="job_command", required=True)
-    for name in ("list", "show", "cancel"):
+    for name in ("list", "show", "cancel", "events"):
         command = job_commands.add_parser(name)
         if name != "list":
             command.add_argument("job_id")
+        if name == "events":
+            command.add_argument("--follow", action="store_true")
         _add_runtime_arguments(command)
 
     documents = commands.add_parser("documents", help="Inspect or delete canonical documents.")
@@ -157,11 +164,19 @@ def main(argv: list[str] | None = None) -> int:
                 _write(_plain(value))
             return 0
         if args.asset_command == "add":
-            value = (
-                registry.register_asset(context, args.file, bundle=args.bundle)
-                if canonical
-                else registry.register_file(context, args.file, bundle=args.bundle)
+            value = registry.register_path(
+                context,
+                args.path,
+                bundle=args.bundle,
+                structure=args.structure,
+                recursive=args.recursive,
             )
+            if isinstance(value, SourceAssetBatchResult) and value.failed_count:
+                print(
+                    f"{value.failed_count} SourceAsset file registration(s) failed; "
+                    "inspect the JSON batch items for safe details.",
+                    file=sys.stderr,
+                )
             _write(_asset_plain(value) if canonical else _plain(value))
         elif args.asset_command == "list":
             items = (
@@ -223,18 +238,54 @@ def main(argv: list[str] | None = None) -> int:
             _write(service.execute_blobs(context, plan).to_dict())
         return 0
 
-    storage, repository = _runtime(args)
     if args.command == "ingest":
-        results = IngestService(storage, jobs=repository).ingest_path(args.path, owner_id=args.owner_id, context=context)
-        _write([_result_json(item) for item in results])
+        runtime = _source_runtime(args)
+        registry = SourceAssetRegistry.load(
+            runtime=runtime, catalog_path=args.catalog_path
+        )
+        storage, repository = _ingest_runtime(args, runtime, registry)
+        service = IngestService(
+            storage, jobs=repository, registry=registry
+        )
+        if args.asset:
+            asset = registry.show_asset(context, args.asset)
+            result = service.ingest_assets(
+                (asset.asset_id,),
+                registry,
+                context,
+                submitted_input={"type": "asset", "asset_id": asset.asset_id},
+                root_bundle_id=asset.bundle_id,
+            )
+        elif args.bundle:
+            result = service.ingest_bundle(args.bundle, registry, context)
+        else:
+            result = service.ingest_path(
+                args.path,
+                owner_id=args.owner_id,
+                context=context,
+                registry=registry,
+            )
+        _write(_run_result_json(result))
         return 0
 
+    storage, repository = _runtime(args)
     manager = IngestManager(storage, repository)
     if args.command == "jobs":
         if args.job_command == "list":
             _write(manager.list_jobs(context, owner_id=args.owner_id))
         elif args.job_command == "show":
             _write(manager.show_job(context, args.job_id, owner_id=args.owner_id))
+        elif args.job_command == "events":
+            if args.follow:
+                _follow_job_events(
+                    manager, context, args.job_id, owner_id=args.owner_id
+                )
+            else:
+                _write(
+                    manager.job_events(
+                        context, args.job_id, owner_id=args.owner_id
+                    )
+                )
         else:
             _write(manager.request_cancel(context, args.job_id, owner_id=args.owner_id))
         return 0
@@ -286,8 +337,20 @@ def _add_asset_commands(
     group = commands.add_parser(name, help=help_text)
     subcommands = group.add_subparsers(dest="asset_command", required=True)
     add = subcommands.add_parser("add")
-    add.add_argument("file")
+    add.add_argument("path")
     add.add_argument("--bundle")
+    add.add_argument(
+        "--structure",
+        choices=("preserve", "flat"),
+        default="preserve",
+    )
+    recursion = add.add_mutually_exclusive_group()
+    recursion.add_argument(
+        "--recursive", dest="recursive", action="store_true", default=True
+    )
+    recursion.add_argument(
+        "--no-recursive", dest="recursive", action="store_false"
+    )
     _add_runtime_arguments(add, source_storage=True)
     listing = subcommands.add_parser("list")
     listing.add_argument("--bundle")
@@ -344,6 +407,28 @@ def _runtime(args: argparse.Namespace) -> tuple[StorageClient, JobRepository]:
     return StorageClient(LocalStorageBackend(storage_root)).for_shared_data(), JobRepository(str(database))
 
 
+def _ingest_runtime(
+    args: argparse.Namespace,
+    runtime: StorageRuntime,
+    registry: SourceAssetRegistry,
+) -> tuple[object, JobRepository]:
+    if args.storage_root:
+        storage: object = StorageClient(
+            LocalStorageBackend(Path(args.storage_root))
+        ).for_shared_data()
+        default_database = (
+            Path(args.storage_root) / ".cognityx-ingest" / "jobs.sqlite3"
+        )
+    else:
+        storage = runtime.for_role("artifact")
+        default_database = registry.catalog_path.parent / "jobs.sqlite3"
+    database = (
+        Path(args.jobs_database) if args.jobs_database else default_database
+    )
+    database.parent.mkdir(parents=True, exist_ok=True)
+    return storage, JobRepository(str(database))
+
+
 def _source_runtime(args: argparse.Namespace) -> StorageRuntime:
     if args.storage_root:
         return StorageRuntime.from_config(
@@ -361,7 +446,7 @@ def _context(args: argparse.Namespace):
         scopes[key] = value
     return resolve_execution_context(
         context_file=args.context, context_type=args.context_type,
-        principal_id=args.principal_id if args.principal_id is not None else (args.owner_id if args.command == "jobs" else None),
+        principal_id=args.principal_id if args.principal_id is not None else (args.owner_id if args.command in {"jobs", "ingest"} else None),
         tenant_id=args.tenant_id, project_id=args.project_id,
         workspace_id=args.workspace_id, scopes=scopes,
     )
@@ -383,6 +468,42 @@ def _result_json(result: object) -> dict[str, object]:
         "manifest_key": result.manifest_key,
         "artifacts": [{"artifact_id": artifact.artifact_id, "uri": artifact.uri} for artifact in result.artifacts],
     }
+
+
+def _run_result_json(result: object) -> dict[str, object]:
+    return {
+        "run_id": result.run_id,
+        "job_id": result.job_id,
+        "root_bundle_id": result.root_bundle_id,
+        "document_count": result.document_count,
+        "failed_count": result.failed_count,
+        "run_manifest_uri": result.run_manifest_uri,
+        "documents": [_result_json(item) for item in result.results],
+        "failures": list(result.failures),
+    }
+
+
+def _follow_job_events(
+    manager: IngestManager,
+    context: object,
+    job_id: str,
+    *,
+    owner_id: str,
+) -> None:
+    after = 0
+    while True:
+        events = manager.job_events(
+            context, job_id, owner_id=owner_id, after=after
+        )
+        for event in events:
+            print(json.dumps(event, sort_keys=True), flush=True)
+            after = int(event["sequence"])
+        state = manager.show_job(
+            context, job_id, owner_id=owner_id
+        )["job"]["state"]
+        if state in {"completed", "failed", "cancelled", "interrupted"}:
+            return
+        time.sleep(0.25)
 
 
 def _artifact_json(name: str, payload: bytes) -> dict[str, object]:
