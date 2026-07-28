@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Mapping
 
 from cognityx_resource import ExecutionContext, ResourceRef
 
@@ -168,6 +168,7 @@ class UsageReport:
     output_bytes: int = 0
     duration_ms: int = 0
     service: str = "cognityx-ingest"
+    metrics: Mapping[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
