@@ -53,6 +53,20 @@ class IngestManager:
         self._authorize(context, INGEST_RESULT_READ, {"job_id": job_id})
         return {"job": asdict(record), "events": self._jobs.events(record.job_id)}
 
+    def job_events(
+        self,
+        context: ExecutionContext,
+        job_id: str,
+        *,
+        owner_id: str,
+        after: int = 0,
+    ) -> tuple[dict[str, Any], ...]:
+        """Replay ordered durable events for one owner-scoped job."""
+        self._validate_owner(context, owner_id)
+        record = self._jobs.get_for_owner(job_id, owner_id)
+        self._authorize(context, INGEST_RESULT_READ, {"job_id": job_id})
+        return tuple(self._jobs.events(record.job_id, after=after))
+
     def request_cancel(self, context: ExecutionContext, job_id: str, *, owner_id: str) -> dict[str, Any]:
         self._validate_owner(context, owner_id)
         record = self._jobs.get_for_owner(job_id, owner_id)

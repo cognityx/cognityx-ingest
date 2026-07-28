@@ -9,11 +9,14 @@ other modality-specific processing will be added separately.
 
 ## Contract
 
-Each content-addressed document persists the original PDF plus:
+Each ingest first registers immutable PDF bytes as a SourceAsset, then persists:
 
-- `document.json`: canonical document, source descriptor, and sections.
-- `evidence.jsonl`: one page-level evidence record per extracted page.
-- `manifest.json`: stable pointers to all artifacts.
+- `document.json`: canonical document, SourceAsset descriptor, and sections.
+- `evidence.jsonl`: v2 page evidence with asset, bundle, context, checksum,
+  parser, and run lineage.
+- `manifest.json`: stable pointers to document artifacts.
+- `ingest/runs/{run_id}/manifest.json`: one immutable manifest for the whole
+  file, folder, asset, or bundle run.
 
 The default parser is deterministic. Optional semantic enhancement is explicitly
 non-authoritative and must use `cognityx-inference`; evidence always retains its
@@ -26,6 +29,9 @@ Install the `inference` extra only when constructing a `SectionEnhancer` with
 
 ```bash
 cognityx-ingest ingest report.pdf --storage-root /tmp/cognityx-storage
+cognityx-ingest ingest ./reports --storage-root /tmp/cognityx-storage
+cognityx-ingest ingest --asset src-... --storage-root /tmp/cognityx-storage
+cognityx-ingest ingest --bundle bun-... --storage-root /tmp/cognityx-storage
 ```
 
 ```python
@@ -61,7 +67,8 @@ The historical `sources` and `bundles` commands remain compatibility aliases.
 See [Source Assets](docs/sources.md) for the CLI, Python API and automatic
 legacy catalog migration.
 
-Manage local execution with `jobs list`, `jobs show`, `jobs cancel`,
+Manage local execution with `jobs list`, `jobs show`, `jobs events`,
+`jobs events --follow`, `jobs cancel`,
 `documents list`, `documents show`, `artifacts read`, and `documents delete
 --yes`. Full commands and Python API examples are in the documentation.
 

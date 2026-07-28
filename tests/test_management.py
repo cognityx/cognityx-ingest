@@ -30,8 +30,8 @@ def test_cli_end_to_end_manages_job_and_generated_artifacts(tmp_path: Path, caps
     _write_pdf(source)
 
     assert main(["ingest", str(source), "--storage-root", str(storage_root)]) == 0
-    ingest = _json_output(capsys)[0]
-    document_id = ingest["document_id"]
+    ingest = _json_output(capsys)
+    document_id = ingest["documents"][0]["document_id"]
     job_id = ingest["job_id"]
 
     assert main(["jobs", "list", "--storage-root", str(storage_root)]) == 0

@@ -1,19 +1,25 @@
 # Output contract
 
-Artifact keys are relative to the supplied `StorageClient` scope and live under
-`ingest/documents/{document_id}/`, where `document_id` is derived from the PDF's
-SHA-256 digest.
+Source bytes live once as immutable SourceAsset blobs. Generated artifact keys
+are relative to the supplied artifact storage scope.
 
 | Artifact | Purpose |
 | --- | --- |
-| `source.pdf` | Original immutable source bytes |
 | `document.json` | Schema version, source metadata, title, and sections |
-| `evidence.jsonl` | Page text plus page number and character offsets |
+| `evidence.jsonl` | Evidence v2 with page text, offsets, and SourceAsset lineage |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
+| `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
 
 `document.json` includes `schema: "cognityx.ingest.document"` and uses
-`cognityx.ingest.document/v1`. Future DataForge work can
-consume these artifacts, but DataForge is not implemented or required here.
+`cognityx.ingest.document/v1`. Every newly written evidence row uses
+`cognityx.ingest.evidence/v2` and carries `source_asset_id`, `bundle_id`,
+`context_id`, `source_sha256`, parser identity, sequence number, and `run_id`.
+`Evidence.from_dict()` remains compatible with v1 rows that predate those
+fields.
+
+Run manifests use `cognityx.ingest.run/v1` and are never overwritten. A folder
+run has one run ID, one job ID, and one run manifest even when individual PDFs
+fail.
 
 An optional enhancer may attach inferred metadata under `enhancement`; it must
 name `cognityx-inference` and never replaces page evidence.
@@ -34,8 +40,9 @@ without changing parser or storage code.
 
 Ingest owns `SUBMITTED`, `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`, and
 `CANCELLED` lifecycle semantics. When a `cognityx-jobs` repository is supplied,
-the service records the corresponding submission, queue, start, and completion
-or failure events there.
+folder runs append replayable `folder_discovered`, `asset_registered`,
+`document_started`, `document_completed`, `document_failed`, and
+`run_completed` progress events. Cancellation is checked between documents.
 
 Deleting a document removes only its `ingest/documents/{document_id}/` storage
 tree through `cognityx-storage`; it does not erase durable job history.

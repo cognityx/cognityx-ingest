@@ -233,9 +233,26 @@ class Evidence:
     text: str
     char_start: int
     char_end: int
+    schema_version: str = "cognityx.ingest.evidence/v2"
+    source_asset_id: str | None = None
+    bundle_id: str | None = None
+    context_id: str | None = None
+    sequence_number: int | None = None
+    source_sha256: str | None = None
+    parser_name: str | None = None
+    parser_version: str | None = None
+    run_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "Evidence":
+        """Read both legacy v1 records and lineage-complete v2 records."""
+        known = cls.__dataclass_fields__
+        selected = {key: item for key, item in value.items() if key in known}
+        selected.setdefault("schema_version", "cognityx.ingest.evidence/v1")
+        return cls(**selected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,3 +300,33 @@ class IngestResult:
     job_id: str | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
     usage: UsageReport | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IngestRunResult:
+    """Aggregate outcome for one file, folder, asset, or bundle submission."""
+
+    run_id: str
+    job_id: str | None
+    root_bundle_id: str | None
+    results: tuple[IngestResult, ...]
+    failures: tuple[dict[str, Any], ...]
+    run_manifest_key: str
+    run_manifest_uri: str
+
+    @property
+    def document_count(self) -> int:
+        return len(self.results)
+
+    @property
+    def failed_count(self) -> int:
+        return len(self.failures)
+
+    def __len__(self) -> int:
+        return len(self.results)
+
+    def __iter__(self):
+        return iter(self.results)
+
+    def __getitem__(self, index: int) -> IngestResult:
+        return self.results[index]
