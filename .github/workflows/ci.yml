@@ -2,6 +2,8 @@ name: CI
 
 on:
   pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
@@ -12,7 +14,7 @@ permissions:
 
 jobs:
   ci:
-    uses: cognityx/.github/.github/workflows/python-package-ci.yml@941f13099229bc6cc011742b9ed79341ba0c7056
+    uses: cognityx/.github/.github/workflows/python-package-ci.yml@714d823b96b8608ae4d54705e71325349cfa1f4a
     with:
       python-version: "3.12"
       run-docs: true
