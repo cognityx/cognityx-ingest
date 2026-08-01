@@ -58,7 +58,10 @@ from cognityx_ingest.parser import (
     normalize_extraction,
 )
 from cognityx_ingest.source_assets import SourceAssetRegistry
-from cognityx_ingest.structure import build_same_page_sections, canonical_block_type
+from cognityx_ingest.structure import (
+    build_sections,
+    canonical_block_fragments,
+)
 
 DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v2"
 EVIDENCE_SCHEMA_VERSION = "cognityx.ingest.evidence/v2"
@@ -882,35 +885,36 @@ def _canonical_structure(
             content_order = 0
             repeated_orders = {"page_header": 0, "page_footer": 0}
             for item in extracted_blocks:
-                block_type = canonical_block_type(item.text, item.block_type)
-                if block_type in repeated_orders:
-                    repeated_orders[block_type] += 1
-                    block_id = (
-                        f"{page_id}:{block_type.replace('_', '-')}"
-                        f":{repeated_orders[block_type]}"
+                for fragment in canonical_block_fragments(item.text, item.block_type):
+                    block_type = fragment.block_type
+                    if block_type in repeated_orders:
+                        repeated_orders[block_type] += 1
+                        block_id = (
+                            f"{page_id}:{block_type.replace('_', '-')}"
+                            f":{repeated_orders[block_type]}"
+                        )
+                        reading_order = item.reading_order
+                        method = item.method
+                        confidence = item.confidence
+                    else:
+                        content_order += 1
+                        block_id = f"{page_id}:block:{content_order}"
+                        reading_order = content_order
+                        method = fragment.method
+                        confidence = fragment.confidence
+                    page_block_ids.append(block_id)
+                    blocks.append(
+                        Block(
+                            block_id=block_id,
+                            page_id=page_id,
+                            block_type=block_type,
+                            reading_order=reading_order,
+                            text=fragment.text,
+                            bbox=item.bbox,
+                            method=method,
+                            confidence=confidence,
+                        )
                     )
-                    reading_order = item.reading_order
-                    method = item.method
-                    confidence = item.confidence
-                else:
-                    content_order += 1
-                    block_id = f"{page_id}:block:{content_order}"
-                    reading_order = content_order
-                    method = "deterministic_block_type"
-                    confidence = 1.0
-                page_block_ids.append(block_id)
-                blocks.append(
-                    Block(
-                        block_id=block_id,
-                        page_id=page_id,
-                        block_type=block_type,
-                        reading_order=reading_order,
-                        text=item.text,
-                        bbox=item.bbox,
-                        method=method,
-                        confidence=confidence,
-                    )
-                )
         else:
             block_id = f"{page_id}:block:1"
             page_block_ids.append(block_id)
@@ -945,6 +949,8 @@ def _canonical_structure(
                 sequence_number=sequence,
                 pdf_page_label=page.page_label,
                 printed_page_label=page.printed_page_label,
+                width=page.width,
+                height=page.height,
                 block_ids=tuple(page_block_ids),
             )
         )
@@ -1039,7 +1045,7 @@ def _canonical_sections(
     blocks: tuple[Block, ...],
     evidence: tuple[Evidence, ...],
 ) -> tuple[Section, ...]:
-    structured = build_same_page_sections(document_id, pages, blocks, evidence)
+    structured = build_sections(document_id, pages, blocks, evidence)
     if structured:
         return structured
     content_block_ids = {

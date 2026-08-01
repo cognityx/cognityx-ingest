@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import re
 
 from cognityx_ingest.models import Block, Evidence, PageRecord, Section
@@ -15,6 +15,11 @@ _APPENDIX_HEADING = re.compile(
     r"^Appendix\s+(?P<number>[A-Z])\.\s+(?P<title>\S.*)$"
 )
 _CALLOUT = re.compile(r"^[A-Z]{2,}(?:-[A-Z0-9./]+)+(?:\s|$)")
+_BULLET_BOUNDARY = re.compile(r"(?:^|\n)•\s*\n")
+_FALSE_CONTINUATION = re.compile(
+    r"(?<=[.!?])\s+(?P<control>The next page starts (?:a )?new section.*)$",
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +27,14 @@ class HeadingCandidate:
     number: str
     title: str
     level: int
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalBlockFragment:
+    text: str
+    block_type: str
+    method: str = "deterministic_block_type"
+    confidence: float = 1.0
 
 
 def normalize_heading_candidate(text: str) -> HeadingCandidate | None:
@@ -55,13 +68,53 @@ def canonical_block_type(text: str, observed_type: str) -> str:
     return "paragraph"
 
 
-def build_same_page_sections(
+def canonical_block_fragments(
+    text: str, observed_type: str
+) -> tuple[CanonicalBlockFragment, ...]:
+    """Split parser-observed groups only at deterministic semantic boundaries."""
+    block_type = canonical_block_type(text, observed_type)
+    if block_type in {"page_header", "page_footer"}:
+        return (CanonicalBlockFragment(text, block_type),)
+    if block_type == "list":
+        items = tuple(
+            item.strip()
+            for item in _BULLET_BOUNDARY.split(text)
+            if item.strip()
+        )
+        if len(items) > 1:
+            return tuple(
+                CanonicalBlockFragment(
+                    item,
+                    "list_item",
+                    method="deterministic_list_item_split",
+                )
+                for item in items
+            )
+    false_control = _FALSE_CONTINUATION.search(text)
+    if false_control is not None:
+        content = text[: false_control.start("control")].strip()
+        control = false_control.group("control").strip()
+        return (
+            CanonicalBlockFragment(
+                content,
+                canonical_block_type(content, observed_type),
+            ),
+            CanonicalBlockFragment(
+                control,
+                "page_break_control",
+                method="deterministic_page_break_control",
+            ),
+        )
+    return (CanonicalBlockFragment(text, block_type),)
+
+
+def build_sections(
     document_id: str,
     pages: tuple[PageRecord, ...],
     blocks: tuple[Block, ...],
     evidence: tuple[Evidence, ...],
 ) -> tuple[Section, ...]:
-    """Build hierarchy and spans that stop at boundaries observed on one page."""
+    """Build deterministic hierarchy, spans, and validated continuation status."""
     blocks_by_id = {block.block_id: block for block in blocks}
     evidence_by_page = {
         item.physical_page_index: item
@@ -136,4 +189,76 @@ def build_same_page_sections(
                 confidence=1.0,
             )
         )
-    return tuple(result)
+    return _apply_continuation_status(
+        tuple(result), pages, content_by_page, blocks_by_id, evidence_by_page
+    )
+
+
+def _apply_continuation_status(
+    sections: tuple[Section, ...],
+    pages: tuple[PageRecord, ...],
+    content_by_page: dict[str, tuple[str, ...]],
+    blocks_by_id: dict[str, Block],
+    evidence_by_page: dict[int, Evidence],
+) -> tuple[Section, ...]:
+    """Extend only the deepest active section when top-page content flows onward."""
+    updated = list(sections)
+    for page_index, page in enumerate(pages[:-1]):
+        content_ids = content_by_page[page.page_id]
+        if not content_ids:
+            continue
+        active = [
+            (index, section)
+            for index, section in enumerate(updated)
+            if section.page_ids == (page.page_id,)
+            and section.end_block_id == content_ids[-1]
+        ]
+        if not active:
+            continue
+        section_index, section = max(active, key=lambda item: item[1].level or 0)
+        next_page = pages[page_index + 1]
+        next_content = content_by_page[next_page.page_id]
+        first_heading = next(
+            (
+                position
+                for position, block_id in enumerate(next_content)
+                if blocks_by_id[block_id].block_type == "heading"
+            ),
+            len(next_content),
+        )
+        leading_content = next_content[:first_heading]
+        begins_at_top = bool(
+            leading_content
+            and next_page.height
+            and blocks_by_id[leading_content[0]].bbox
+            and blocks_by_id[leading_content[0]].bbox[1] <= next_page.height * 0.2
+        )
+        method = "deterministic_heading_content_flow"
+        if leading_content and begins_at_top:
+            next_evidence = evidence_by_page.get(next_page.physical_page_index)
+            updated[section_index] = replace(
+                section,
+                page_ids=(*section.page_ids, next_page.page_id),
+                block_ids=(*section.block_ids, *leading_content),
+                evidence_ids=(
+                    (*section.evidence_ids, next_evidence.evidence_id)
+                    if next_evidence
+                    else section.evidence_ids
+                ),
+                end_block_id=leading_content[-1],
+                continuation_status="deterministic_true",
+                continuation_method=method,
+                continuation_confidence=1.0,
+                continues_from=section.end_block_id,
+                continues_to=leading_content[0],
+            )
+        else:
+            updated[section_index] = replace(
+                section,
+                continuation_status="deterministic_false",
+                continuation_method=method,
+                continuation_confidence=1.0,
+                continues_from=None,
+                continues_to=None,
+            )
+    return tuple(updated)

@@ -127,10 +127,6 @@ def test_p08_same_page_sections_have_exact_distinct_block_spans(
     assert actual["2"].start_block_id == actual["2"].heading_block_id
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GAP-CONTINUATION: docs/provenance-gap-report.md#gap-rich-structure",
-)
 def test_p09_section_4_3_continues_across_pages(
     structured_ingest, ground_truth: dict[str, object]
 ) -> None:
@@ -139,24 +135,40 @@ def test_p09_section_4_3_continues_across_pages(
     pages_by_id = {item.page_id: item for item in result.document.pages}
     expected = _ground_sections(ground_truth)["4.3"]
 
-    assert [pages_by_id[page_id].physical_page_index for page_id in section.page_ids] == (
-        expected["page_indexes"]
+    assert [
+        pages_by_id[page_id].physical_page_index for page_id in section.page_ids
+    ] == expected["page_indexes"]
+    assert section.block_ids == tuple(
+        [
+            f"{pages_by_id[section.page_ids[0]].page_id}:block:{index}"
+            for index in range(6, 10)
+        ]
+        + [
+            f"{pages_by_id[section.page_ids[1]].page_id}:block:{index}"
+            for index in range(1, 6)
+        ]
     )
     assert section.end_block_id.endswith(":page-index:5:block:5")
-    assert section.continues_to is not None
+    assert section.continuation_status == "deterministic_true"
+    assert section.continues_from.endswith(":page-index:4:block:9")
+    assert section.continues_to.endswith(":page-index:5:block:1")
+    assert section.continuation_method == "deterministic_heading_content_flow"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GAP-CONTINUATION: docs/provenance-gap-report.md#gap-rich-structure",
-)
 def test_p10_section_4_4_records_explicit_non_continuation(
     structured_ingest,
 ) -> None:
     result, _storage = structured_ingest
     section = next(item for item in result.document.sections if item.number == "4.4")
+    page = next(item for item in result.document.pages if item.physical_page_index == 5)
 
     assert section.continuation_status == "deterministic_false"
+    assert section.page_ids == (page.page_id,)
+    assert section.start_block_id == f"{page.page_id}:block:6"
+    assert section.end_block_id == f"{page.page_id}:block:9"
+    assert section.continues_from is None
+    assert section.continues_to is None
+    assert section.continuation_method == "deterministic_heading_content_flow"
 
 
 def test_dataforge_reads_exact_section_structure_from_provenance_only(
@@ -183,3 +195,31 @@ def test_dataforge_reads_exact_section_structure_from_provenance_only(
         repeated_blocks.isdisjoint(section["block_ids"])
         for section in handoff["sections"]
     )
+
+
+def test_dataforge_reads_true_and_false_continuation_from_provenance_only(
+    structured_ingest,
+) -> None:
+    result, storage = structured_ingest
+
+    handoff = json.load(storage.open(result.provenance_key))
+    pages = {item["page_id"]: item for item in handoff["pages"]}
+    sections = {item["number"]: item for item in handoff["sections"]}
+    true_case = sections["4.3"]
+    false_case = sections["4.4"]
+
+    assert [
+        pages[page_id]["physical_page_index"] for page_id in true_case["page_ids"]
+    ] == [4, 5]
+    assert true_case["continuation_status"] == "deterministic_true"
+    assert true_case["continues_from"].endswith(":page-index:4:block:9")
+    assert true_case["continues_to"].endswith(":page-index:5:block:1")
+    assert true_case["end_block_id"].endswith(":page-index:5:block:5")
+
+    assert [
+        pages[page_id]["physical_page_index"] for page_id in false_case["page_ids"]
+    ] == [5]
+    assert false_case["continuation_status"] == "deterministic_false"
+    assert false_case["continues_from"] is None
+    assert false_case["continues_to"] is None
+    assert false_case["end_block_id"].endswith(":page-index:5:block:9")

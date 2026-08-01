@@ -231,6 +231,8 @@ class PageRecord:
     sequence_number: int
     pdf_page_label: str | None = None
     printed_page_label: str | None = None
+    width: float | None = None
+    height: float | None = None
     block_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
@@ -423,6 +425,9 @@ class Section:
     heading_block_id: str | None = None
     start_block_id: str | None = None
     end_block_id: str | None = None
+    continuation_status: str | None = None
+    continuation_method: str | None = None
+    continuation_confidence: float | None = None
     page_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
     continues_from: str | None = None
