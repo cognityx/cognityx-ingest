@@ -26,8 +26,8 @@ than copying the current implementation's output.
 The Jobs 1–4 baseline adds 23 focused checks when both optional parser extras
 are installed:
 
-- 12 pass; and
-- 11 are strict expected failures linked to the gap identifiers below.
+- 13 pass; and
+- 10 are strict expected failures linked to the gap identifiers below.
 
 In the default dependency environment, the two optional parser modules skip
 cleanly. Locked local capability runs were also completed with PyMuPDF 1.28.0
@@ -150,14 +150,14 @@ logic does not belong in Ingest.
 
 ### GAP-FIXTURE-SOURCES
 
-The supplied inputs contain the verified main-policy PDF and the specification
-DOCX, but not the editable main-policy DOCX. The repository therefore freezes
-the supplied PDF and extracted diagram without fabricating an editable source
-or claiming a new conversion.
+The authoritative source attachment is a PDF 1.7 container even though the
+correction requires it to be stored as `main_policy_v2.docx`. The repository
+now freezes an exact byte-for-byte copy under that name. It records the actual
+container format and does not claim that renaming converted it to editable
+OOXML. No reconstruction was performed.
 
 The following fixtures are still required:
 
-- `main_policy_v2.docx`, for approved conversion and visual equivalence;
 - related travel-policy v1 DOCX/PDF;
 - related travel-policy v2 DOCX/PDF; and
 - a mixed scanned/native PDF for OCR routing and page-identity tests.

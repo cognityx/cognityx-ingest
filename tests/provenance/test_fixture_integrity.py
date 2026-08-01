@@ -4,8 +4,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import pytest
-
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -65,9 +63,13 @@ def test_ground_truth_is_self_consistent(
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GAP-FIXTURE-SOURCES: docs/provenance-gap-report.md#gap-fixture-sources",
-)
-def test_verified_docx_is_frozen(provenance_fixture_root: Path) -> None:
-    assert (provenance_fixture_root / "main_policy_v2.docx").is_file()
+def test_authoritative_named_docx_copy_is_frozen_without_reconstruction(
+    provenance_fixture_root: Path, ground_truth: dict[str, object]
+) -> None:
+    source = provenance_fixture_root / "main_policy_v2.docx"
+    pdf = provenance_fixture_root / "main_policy_v2.pdf"
+
+    assert source.read_bytes() == pdf.read_bytes()
+    assert source.read_bytes().startswith(b"%PDF-1.7")
+    assert _sha256(source) == ground_truth["document"]["frozen_source_sha256"]
+    assert ground_truth["document"]["frozen_source_container"] == "PDF 1.7"
