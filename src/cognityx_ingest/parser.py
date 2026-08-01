@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections import Counter
+from dataclasses import asdict, dataclass, field, replace
 import json
+import math
 from pathlib import Path
+import re
 from typing import Any, Mapping, Protocol, Sequence
 
 from pypdf import PdfReader
@@ -72,6 +75,8 @@ class ExtractedPage:
     page_index: int | None = None
     page_label: str | None = None
     printed_page_label: str | None = None
+    width: float | None = None
+    height: float | None = None
     blocks: tuple[ExtractedBlock, ...] = ()
     objects: tuple[ExtractedObject, ...] = ()
     relations: tuple[ExtractedRelation, ...] = ()
@@ -152,11 +157,12 @@ class PyMuPDFParser:
             ) from exc
         try:
             document = fitz.open(path)
+            native_labels = PdfReader(path).page_labels
             pages: list[ExtractedPage] = []
             outline = document.get_toc(simple=False)
             raw: dict[str, Any] = {"outline": outline, "pages": []}
             for index, page in enumerate(document):
-                label = page.get_label() or None
+                label = page.get_label() or native_labels[index] or None
                 blocks = tuple(
                     ExtractedBlock(
                         block_id=f"page:{index}:block:{order}",
@@ -211,8 +217,9 @@ class PyMuPDFParser:
                         page_number=index + 1,
                         page_index=index,
                         page_label=label,
-                        printed_page_label=label,
                         text=page.get_text("text").strip(),
+                        width=float(page.rect.width),
+                        height=float(page.rect.height),
                         blocks=blocks,
                         objects=(*images, *annotations),
                         relations=relations,
@@ -222,7 +229,7 @@ class PyMuPDFParser:
                     {"index": index, "label": label, "links": page.get_links()}
                 )
             return ExtractionResult(
-                pages=tuple(pages),
+                pages=_classify_repeated_page_regions(tuple(pages)),
                 backend=self.name,
                 backend_version=getattr(fitz, "VersionBind", None),
                 sections=_outline_sections(outline, len(pages)),
@@ -232,6 +239,94 @@ class PyMuPDFParser:
             raise
         except Exception as error:
             raise UnsupportedInputError(f"Could not parse PDF {path}: {error}") from error
+
+
+_PAGE_LABEL_SUFFIX = re.compile(
+    r"(?i)(?:front\s+matter|printed\s+page|page)\s+"
+    r"(?P<label>(?:[ivxlcdm]+|\d+|[a-z]+-\d+))\s*$"
+)
+
+
+def normalize_repeated_region_text(text: str) -> str:
+    """Normalize variable visible page labels when comparing margin text."""
+    collapsed = " ".join(text.split())
+    return _PAGE_LABEL_SUFFIX.sub("<page-label>", collapsed)
+
+
+def _visible_page_label(text: str) -> str | None:
+    match = _PAGE_LABEL_SUFFIX.search(" ".join(text.split()))
+    return match.group("label") if match else None
+
+
+def _classify_repeated_page_regions(
+    pages: tuple[ExtractedPage, ...],
+) -> tuple[ExtractedPage, ...]:
+    """Classify recurring positioned margin blocks without document-specific text."""
+    candidates: list[tuple[int, str, ExtractedBlock, str]] = []
+    for page_index, page in enumerate(pages):
+        if not page.height:
+            continue
+        for block in page.blocks:
+            if block.bbox is None:
+                continue
+            if block.bbox[1] <= page.height * 0.12:
+                region_type = "page_header"
+            elif block.bbox[3] >= page.height * 0.88:
+                region_type = "page_footer"
+            else:
+                continue
+            candidates.append(
+                (
+                    page_index,
+                    region_type,
+                    block,
+                    normalize_repeated_region_text(block.text),
+                )
+            )
+
+    counts = Counter((region_type, normalized) for _, region_type, _, normalized in candidates)
+    minimum_occurrences = max(2, math.ceil(len(pages) * 0.25))
+    repeated = {
+        key for key, count in counts.items() if count >= minimum_occurrences
+    }
+    classified: dict[int, dict[str, str]] = {}
+    for page_index, region_type, block, normalized in candidates:
+        if (region_type, normalized) in repeated:
+            classified.setdefault(page_index, {})[block.block_id] = region_type
+
+    result: list[ExtractedPage] = []
+    for page_index, page in enumerate(pages):
+        page_regions = classified.get(page_index, {})
+        blocks = tuple(
+            replace(
+                block,
+                block_type=page_regions.get(block.block_id, block.block_type),
+                method=(
+                    "deterministic_repeated_margin"
+                    if block.block_id in page_regions
+                    else block.method
+                ),
+                confidence=(1.0 if block.block_id in page_regions else block.confidence),
+            )
+            for block in page.blocks
+        )
+        content_text = "\n".join(
+            block.text for block in blocks if block.block_type not in {"page_header", "page_footer"}
+        ).strip()
+        footer_labels = [
+            _visible_page_label(block.text)
+            for block in blocks
+            if block.block_type == "page_footer"
+        ]
+        result.append(
+            replace(
+                page,
+                text=content_text if blocks else page.text,
+                printed_page_label=next((label for label in footer_labels if label), None),
+                blocks=blocks,
+            )
+        )
+    return tuple(result)
 
 
 class DoclingParser:
