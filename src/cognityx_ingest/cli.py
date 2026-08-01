@@ -93,7 +93,9 @@ def main(argv: list[str] | None = None) -> int:
     artifact_commands = artifacts.add_subparsers(dest="artifact_command", required=True)
     read = artifact_commands.add_parser("read")
     read.add_argument("document_id")
-    read.add_argument("name", choices=("document", "evidence", "manifest"))
+    read.add_argument(
+        "name", choices=("document", "evidence", "provenance", "manifest")
+    )
     _add_runtime_arguments(read)
 
     _add_doc_bundle_commands(

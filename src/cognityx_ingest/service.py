@@ -23,26 +23,43 @@ from cognityx_ingest.control import (
     IngestLimitError,
     LocalControlClient,
 )
-from cognityx_ingest.enhancement import SectionEnhancer
+from cognityx_ingest.enhancement import (
+    BoundedInferenceResolver,
+    ResolutionTask,
+    SectionEnhancer,
+)
 from cognityx_ingest.models import (
     ArtifactRef,
+    Block,
     CanonicalDocument,
+    DecisionRecord,
+    DocumentObject,
     Evidence,
     ExecutionContext,
     IngestJobState,
     IngestResult,
     IngestRunResult,
+    PageRecord,
+    Relation,
     Section,
     SourceAsset,
     SourceRecord,
+    UnresolvedItem,
     UsageReport,
 )
-from cognityx_ingest.parser import PdfExtractor, PyPdfExtractor, UnsupportedInputError
+from cognityx_ingest.parser import (
+    ExtractionResult,
+    PdfExtractor,
+    PyPdfExtractor,
+    UnsupportedInputError,
+    normalize_extraction,
+)
 from cognityx_ingest.source_assets import SourceAssetRegistry
 
-DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v1"
+DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v2"
 EVIDENCE_SCHEMA_VERSION = "cognityx.ingest.evidence/v2"
-RUN_SCHEMA_VERSION = "cognityx.ingest.run/v1"
+RUN_SCHEMA_VERSION = "cognityx.ingest.run/v2"
+PROVENANCE_SCHEMA_VERSION = "cognityx.ingest.provenance/v1"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -56,6 +73,7 @@ class IngestService:
         extractor: PdfExtractor | None = None,
         jobs: JobRepository | None = None,
         enhancer: SectionEnhancer | None = None,
+        resolver: BoundedInferenceResolver | None = None,
         control: ControlClient | None = None,
         registry: SourceAssetRegistry | None = None,
     ) -> None:
@@ -63,6 +81,7 @@ class IngestService:
         self._extractor = extractor or PyPdfExtractor()
         self._jobs = jobs
         self._enhancer = enhancer
+        self._resolver = resolver
         self._control = control or LocalControlClient()
         self._registry = registry
 
@@ -273,6 +292,11 @@ class IngestService:
             "evidence_refs": [
                 self._artifact_uri(item.evidence_key) for item in results
             ],
+            "provenance_refs": [
+                self._artifact_uri(item.provenance_key)
+                for item in results
+                if item.provenance_key
+            ],
             "successful_files": [
                 {
                     "asset_id": item.document.source.source_id,
@@ -422,7 +446,14 @@ class IngestService:
             with NamedTemporaryFile(suffix=".pdf") as temporary:
                 temporary.write(source.read())
                 temporary.flush()
-                pages = self._extractor.extract(Path(temporary.name))
+                extraction = normalize_extraction(
+                    self._extractor, Path(temporary.name)
+                )
+                pages = extraction.pages
+        page_records, blocks, objects = _canonical_structure(document_id, extraction)
+        page_by_index = {
+            item.physical_page_index: item.page_id for item in page_records
+        }
         evidence = tuple(
             Evidence(
                 evidence_id=f"{document_id}:page:{page.page_number}",
@@ -440,18 +471,82 @@ class IngestService:
                 parser_version=self._parser_version(),
                 run_id=context.run_id,
                 schema_version=EVIDENCE_SCHEMA_VERSION,
+                physical_page_index=page.physical_page_index,
+                pdf_page_label=page.page_label,
+                printed_page_label=page.printed_page_label,
+                block_id=(
+                    page_records[index - 1].block_ids[0]
+                    if page_records[index - 1].block_ids
+                    else None
+                ),
+                anchor_id=page_records[index - 1].page_id,
+                continues_from=(
+                    f"{document_id}:page:{pages[index - 2].page_number}"
+                    if index > 1
+                    else None
+                ),
+                continues_to=(
+                    f"{document_id}:page:{pages[index].page_number}"
+                    if index < len(pages)
+                    else None
+                ),
             )
             for index, page in enumerate(pages, start=1)
         )
         self._enforce_limit(decision.limits, "max_pages", len(evidence), "pages")
-        sections = tuple(
-            Section(
-                section_id=f"{document_id}:section:{item.page_number}",
-                title=f"Page {item.page_number}",
-                evidence_ids=(item.evidence_id,),
-            )
-            for item in evidence
+        sections = _canonical_sections(
+            document_id,
+            Path(asset.original_filename).stem,
+            extraction,
+            page_records,
+            blocks,
+            evidence,
         )
+        observed_relations, tasks = _relations_and_tasks(
+            document_id, extraction, page_by_index
+        )
+        valid_anchor_ids = frozenset(
+            [item.page_id for item in page_records]
+            + [item.block_id for item in blocks]
+            + [item.object_id for item in objects]
+        )
+        decisions: tuple[DecisionRecord, ...] = (
+            DecisionRecord(
+                decision_id=f"{document_id}:parser-selection",
+                task_id=f"{document_id}:parser-selection",
+                status="accepted",
+                method="parser_policy",
+                considered_tools=extraction.considered_backends,
+                invoked_tools=(extraction.backend,),
+                selected_tool=extraction.backend,
+                selected_reason=extraction.selected_reason,
+            ),
+        )
+        unresolved: tuple[UnresolvedItem, ...] = tuple(
+            UnresolvedItem(
+                task_id=item.task_id,
+                source_anchor_id=item.source_anchor_id,
+                relation_type=item.relation_type,
+                target_text=item.target_text,
+                reason="no_resolution_policy",
+            )
+            for item in tasks
+        )
+        inferred_relations: tuple[Relation, ...] = ()
+        if self._resolver and tasks:
+            resolution = self._resolver.resolve(
+                tasks,
+                valid_anchor_ids=valid_anchor_ids,
+                execution_context={
+                    "run_id": context.run_id,
+                    "context_id": context.context_id,
+                    "document_id": document_id,
+                    "source_asset_id": asset.asset_id,
+                },
+            )
+            inferred_relations = resolution.relations
+            decisions = (*decisions, *resolution.decisions)
+            unresolved = resolution.unresolved
         enhancement = (
             self._enhancer.enhance([item.text for item in evidence])
             if self._enhancer
@@ -472,8 +567,22 @@ class IngestService:
             title=Path(asset.original_filename).stem,
             sections=sections,
             enhancement=enhancement,
+            aliases=(asset.original_filename, Path(asset.original_filename).stem),
+            pages=page_records,
+            blocks=blocks,
+            objects=objects,
+            relations=(*observed_relations, *inferred_relations),
+            decisions=decisions,
+            unresolved=unresolved,
         )
-        result = self._persist(document, evidence, context, job_id, asset)
+        result = self._persist(
+            document,
+            evidence,
+            context,
+            job_id,
+            asset,
+            extraction=extraction,
+        )
         usage = UsageReport(
             run_id=context.run_id,
             job_id=job_id,
@@ -486,7 +595,9 @@ class IngestService:
                     result.document_key,
                     result.evidence_key,
                     result.manifest_key,
+                    result.provenance_key,
                 )
+                if key
             ),
             duration_ms=int((time.monotonic() - started_at) * 1000),
         )
@@ -501,6 +612,8 @@ class IngestService:
             job_id=job_id,
             artifacts=result.artifacts,
             usage=usage,
+            provenance_key=result.provenance_key,
+            raw_parser_key=result.raw_parser_key,
         )
 
     def _persist(
@@ -510,11 +623,19 @@ class IngestService:
         context: ExecutionContext,
         job_id: str | None,
         asset: SourceAsset,
+        *,
+        extraction: ExtractionResult,
     ) -> IngestResult:
         prefix = f"ingest/documents/{document.document_id}"
         document_key = f"{prefix}/document.json"
         evidence_key = f"{prefix}/evidence.jsonl"
         manifest_key = f"{prefix}/manifest.json"
+        provenance_key = f"{prefix}/provenance.json"
+        raw_parser_key = (
+            f"{prefix}/parser/{extraction.backend}.json"
+            if extraction.raw_artifact is not None
+            else None
+        )
         self._put_immutable_json(document_key, document.to_dict())
         payload = "".join(
             json.dumps(item.to_dict(), sort_keys=True) + "\n" for item in evidence
@@ -523,10 +644,46 @@ class IngestService:
             self._storage.put_bytes(
                 evidence_key, payload, media_type="application/x-ndjson"
             )
+        provenance = {
+            "schema": "cognityx.ingest.provenance",
+            "schema_version": PROVENANCE_SCHEMA_VERSION,
+            "document_id": document.document_id,
+            "source_asset": {
+                "asset_id": asset.asset_id,
+                "bundle_id": asset.bundle_id,
+                "context_id": asset.context_id,
+                "blob_sha256": asset.sha256,
+            },
+            "aliases": list(document.aliases),
+            "pages": [item.to_dict() for item in document.pages],
+            "blocks": [item.to_dict() for item in document.blocks],
+            "sections": [item.to_dict() for item in document.sections],
+            "objects": [item.to_dict() for item in document.objects],
+            "evidence": [item.to_dict() for item in evidence],
+            "relations": [item.to_dict() for item in document.relations],
+            "decisions": [item.to_dict() for item in document.decisions],
+            "unresolved": [item.to_dict() for item in document.unresolved],
+            "parser": {
+                "selected": extraction.backend,
+                "version": extraction.backend_version,
+                "considered": list(extraction.considered_backends),
+                "selected_reason": extraction.selected_reason,
+            },
+        }
+        self._put_immutable_json(provenance_key, provenance)
+        if raw_parser_key and not self._storage.exists(raw_parser_key):
+            self._storage.put_bytes(
+                raw_parser_key,
+                extraction.raw_artifact or b"",
+                media_type="application/json",
+            )
         stored = {
             "document": self._storage.stat(document_key),
             "evidence": self._storage.stat(evidence_key),
+            "provenance": self._storage.stat(provenance_key),
         }
+        if raw_parser_key:
+            stored["parser_raw"] = self._storage.stat(raw_parser_key)
         artifacts = tuple(
             ArtifactRef(
                 f"art-{document.document_id}-{name}",
@@ -545,6 +702,7 @@ class IngestService:
             "source_sha256": asset.sha256,
             "run_id": context.run_id,
             "job_id": job_id,
+            "provenance_schema_version": PROVENANCE_SCHEMA_VERSION,
             "artifacts": {
                 name: {"artifact_id": ref.artifact_id, "uri": ref.uri}
                 for name, ref in zip(stored, artifacts, strict=True)
@@ -566,6 +724,8 @@ class IngestService:
             run_id=context.run_id,
             job_id=job_id,
             artifacts=(*artifacts, manifest_ref),
+            provenance_key=provenance_key,
+            raw_parser_key=raw_parser_key,
         )
 
     def _start_job(
@@ -690,3 +850,178 @@ class IngestService:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _canonical_structure(
+    document_id: str, extraction: ExtractionResult
+) -> tuple[tuple[PageRecord, ...], tuple[Block, ...], tuple[DocumentObject, ...]]:
+    pages: list[PageRecord] = []
+    blocks: list[Block] = []
+    objects: list[DocumentObject] = []
+    for sequence, page in enumerate(extraction.pages, start=1):
+        page_id = f"{document_id}:page-index:{page.physical_page_index}"
+        extracted_blocks = page.blocks or ()
+        page_block_ids: list[str] = []
+        if extracted_blocks:
+            for order, item in enumerate(extracted_blocks, start=1):
+                block_id = f"{page_id}:block:{order}"
+                page_block_ids.append(block_id)
+                blocks.append(
+                    Block(
+                        block_id=block_id,
+                        page_id=page_id,
+                        block_type=item.block_type,
+                        reading_order=item.reading_order,
+                        text=item.text,
+                        bbox=item.bbox,
+                        method=item.method,
+                        confidence=item.confidence,
+                    )
+                )
+        else:
+            block_id = f"{page_id}:block:1"
+            page_block_ids.append(block_id)
+            blocks.append(
+                Block(
+                    block_id=block_id,
+                    page_id=page_id,
+                    block_type="text",
+                    reading_order=1,
+                    text=page.text,
+                    method="baseline_page_text",
+                    confidence=1.0,
+                )
+            )
+        for order, item in enumerate(page.objects, start=1):
+            objects.append(
+                DocumentObject(
+                    object_id=f"{page_id}:{item.object_type}:{order}",
+                    object_type=item.object_type,
+                    page_id=page_id,
+                    caption=item.caption,
+                    text=item.text,
+                    bbox=item.bbox,
+                    method=item.method,
+                    confidence=item.confidence,
+                )
+            )
+        pages.append(
+            PageRecord(
+                page_id=page_id,
+                physical_page_index=page.physical_page_index,
+                sequence_number=sequence,
+                pdf_page_label=page.page_label,
+                printed_page_label=page.printed_page_label,
+                block_ids=tuple(page_block_ids),
+            )
+        )
+    return tuple(pages), tuple(blocks), tuple(objects)
+
+
+def _relations_and_tasks(
+    document_id: str,
+    extraction: ExtractionResult,
+    page_by_index: dict[int, str],
+) -> tuple[tuple[Relation, ...], tuple[ResolutionTask, ...]]:
+    relations: list[Relation] = []
+    tasks: list[ResolutionTask] = []
+    for page in extraction.pages:
+        default_source = page_by_index[page.physical_page_index]
+        for index, item in enumerate(page.relations, start=1):
+            source = _parser_anchor(item.source_anchor, page_by_index) or default_source
+            target = _parser_anchor(item.target_anchor, page_by_index)
+            relation_id = f"{document_id}:relation:{page.physical_page_index}:{index}"
+            if target is not None and item.status in {"resolved", "observed"}:
+                relations.append(
+                    Relation(
+                        relation_id=relation_id,
+                        source_anchor_id=source,
+                        target_anchor_id=target,
+                        relation_type=item.relation_type,
+                        status="resolved",
+                        target_text=item.target_text,
+                        method=item.method,
+                        confidence=item.confidence,
+                    )
+                )
+            else:
+                tasks.append(
+                    ResolutionTask(
+                        task_id=relation_id,
+                        source_anchor_id=source,
+                        relation_type=item.relation_type,
+                        target_text=item.target_text,
+                        context={
+                            "parser_method": item.method,
+                            "parser_confidence": item.confidence,
+                        },
+                    )
+                )
+    return tuple(relations), tuple(tasks)
+
+
+def _canonical_sections(
+    document_id: str,
+    title: str,
+    extraction: ExtractionResult,
+    pages: tuple[PageRecord, ...],
+    blocks: tuple[Block, ...],
+    evidence: tuple[Evidence, ...],
+) -> tuple[Section, ...]:
+    if not extraction.sections:
+        return (
+            Section(
+                section_id=f"{document_id}:section:1",
+                title=title,
+                evidence_ids=tuple(item.evidence_id for item in evidence),
+                page_ids=tuple(item.page_id for item in pages),
+                block_ids=tuple(item.block_id for item in blocks),
+                method="deterministic_page_sequence",
+            ),
+        )
+    page_map = {item.physical_page_index: item for item in pages}
+    evidence_map = {
+        item.physical_page_index: item
+        for item in evidence
+        if item.physical_page_index is not None
+    }
+    result: list[Section] = []
+    for index, item in enumerate(extraction.sections, start=1):
+        selected_pages = tuple(
+            page_map[page_index]
+            for page_index in range(item.start_page_index, item.end_page_index + 1)
+            if page_index in page_map
+        )
+        selected_evidence = tuple(
+            evidence_map[page.physical_page_index].evidence_id
+            for page in selected_pages
+            if page.physical_page_index in evidence_map
+        )
+        selected_blocks = tuple(
+            block_id for page in selected_pages for block_id in page.block_ids
+        )
+        result.append(
+            Section(
+                section_id=f"{document_id}:section:{index}",
+                title=item.title,
+                evidence_ids=selected_evidence,
+                page_ids=tuple(page.page_id for page in selected_pages),
+                block_ids=selected_blocks,
+                method=item.method,
+                confidence=item.confidence,
+            )
+        )
+    return tuple(result)
+
+
+def _parser_anchor(
+    value: str | None, page_by_index: dict[int, str]
+) -> str | None:
+    if value is None:
+        return None
+    if value.startswith("page:"):
+        try:
+            return page_by_index.get(int(value.split(":", 1)[1]))
+        except ValueError:
+            return None
+    return value if value in page_by_index.values() else None

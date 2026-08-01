@@ -19,26 +19,32 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "mkdocs-material>=9.5", "mkdocstrings-python>=1.12"]
-inference = ["cognityx-inference"]
+inference = ["cognityx-inference @ git+https://github.com/cognityx/cognityx-inference.git@14710786f5466d28c0e5690f4acf75e72f6d4e1d"]
+pymupdf = ["PyMuPDF>=1.25"]
+docling = ["docling>=2"]
 
 [project.scripts]
 cognityx-ingest = "cognityx_ingest.cli:main"
 
 [tool.uv.sources]
 cognityx-resource = { git = "https://github.com/cognityx/cognityx-resource.git", rev = "79f89a965f46300be6a892d4371d44e6c288fd0c" }
-cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git", rev = "c607756c3e9e2c3a858ff6d45bf0d0ea649964f6" }
-cognityx-jobs = { git = "https://github.com/cognityx/cognityx-jobs.git", rev = "c081678b6184b2212e28fea7f23ecfd21031f090" }
-cognityx-inference = { git = "https://github.com/cognityx/cognityx-inference.git" }
+cognityx-storage = { git = "https://github.com/cognityx/cognityx-storage.git", rev = "0e73a286ff3c070f5e3fb30df7f00eab08b5c02c" }
+cognityx-jobs = { git = "https://github.com/cognityx/cognityx-jobs.git", rev = "e4312fd461df97ffcefc54352b9b76f1dd6e6860" }
+cognityx-inference = { git = "https://github.com/cognityx/cognityx-inference.git", rev = "14710786f5466d28c0e5690f4acf75e72f6d4e1d" }
 
 [tool.uv]
 override-dependencies = [
   "cognityx-resource @ git+https://github.com/cognityx/cognityx-resource.git@79f89a965f46300be6a892d4371d44e6c288fd0c",
-  "cognityx-storage @ git+https://github.com/cognityx/cognityx-storage.git@c607756c3e9e2c3a858ff6d45bf0d0ea649964f6",
-  "cognityx-jobs @ git+https://github.com/cognityx/cognityx-jobs.git@c081678b6184b2212e28fea7f23ecfd21031f090",
+  "cognityx-storage @ git+https://github.com/cognityx/cognityx-storage.git@0e73a286ff3c070f5e3fb30df7f00eab08b5c02c",
+  "cognityx-jobs @ git+https://github.com/cognityx/cognityx-jobs.git@e4312fd461df97ffcefc54352b9b76f1dd6e6860",
+  "cognityx-inference @ git+https://github.com/cognityx/cognityx-inference.git@14710786f5466d28c0e5690f4acf75e72f6d4e1d",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cognityx_ingest"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

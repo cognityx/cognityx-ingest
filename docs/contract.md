@@ -5,24 +5,42 @@ are relative to the supplied artifact storage scope.
 
 | Artifact | Purpose |
 | --- | --- |
-| `document.json` | Schema version, source metadata, title, and sections |
-| `evidence.jsonl` | Evidence v2 with page text, offsets, and SourceAsset lineage |
+| `document.json` | Versioned pages, blocks, sections, objects, relations and decisions |
+| `evidence.jsonl` | Evidence v2 with exact source anchors, page facts and SourceAsset lineage |
+| `provenance.json` | Complete DataForge handoff without reopening the PDF |
+| `parser/{backend}.json` | Optional raw parser output for audit and comparison |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
 | `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
 
 `document.json` includes `schema: "cognityx.ingest.document"` and uses
-`cognityx.ingest.document/v1`. Every newly written evidence row uses
+`cognityx.ingest.document/v2`. Every newly written evidence row uses
 `cognityx.ingest.evidence/v2` and carries `source_asset_id`, `bundle_id`,
 `context_id`, `source_sha256`, parser identity, sequence number, and `run_id`.
 `Evidence.from_dict()` remains compatible with v1 rows that predate those
-fields.
+fields. `CanonicalDocument.from_dict()` and `Evidence.from_dict()` continue to
+read stored v1 records.
 
-Run manifests use `cognityx.ingest.run/v1` and are never overwritten. A folder
+Run manifests use `cognityx.ingest.run/v2` and are never overwritten. A folder
 run has one run ID, one job ID, and one run manifest even when individual PDFs
 fail.
 
-An optional enhancer may attach inferred metadata under `enhancement`; it must
-name `cognityx-inference` and never replaces page evidence.
+The immutable provenance artifact records physical page indexes, PDF and
+printed labels, reading-order blocks, cross-page sections, tables, figures,
+captions, footnotes, exact evidence, relations, decision records and unresolved
+items. Observed facts, parser results, deterministic rules and inference
+proposals retain separate `method` and confidence fields.
+
+Bounded inference uses `CognityxInferenceClient`. A named local server profile
+starts the worker and loads its configured model; external providers must pass
+availability, capability and data-classification checks. The response is only
+a proposal. Deterministic validation rejects invented anchors and disallowed
+relationship types. No chain-of-thought is stored.
+
+Reusable representations are identified by source content hash, sorted source
+anchor IDs, representation type, generation method, model version and
+configuration hash. Lightweight `KnowledgeUnit`, `RetrievalUnit`,
+`Representation` and `IndexBinding` records describe the later handoff but do
+not generate vectors, questions, summaries, graph data or SQL bindings.
 
 ## Execution boundary
 

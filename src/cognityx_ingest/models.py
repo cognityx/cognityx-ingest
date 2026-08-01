@@ -213,6 +213,125 @@ class ArtifactRef:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceAnchor:
+    """Stable address for an observed region of the original document."""
+
+    anchor_id: str
+    document_id: str
+    page_index: int
+    block_id: str | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PageRecord:
+    page_id: str
+    physical_page_index: int
+    sequence_number: int
+    pdf_page_label: str | None = None
+    printed_page_label: str | None = None
+    block_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["block_ids"] = list(self.block_ids)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class Block:
+    block_id: str
+    page_id: str
+    block_type: str
+    reading_order: int
+    text: str
+    bbox: tuple[float, float, float, float] | None = None
+    method: str = "parser"
+    confidence: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["bbox"] = list(self.bbox) if self.bbox is not None else None
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentObject:
+    object_id: str
+    object_type: str
+    page_id: str
+    caption: str | None = None
+    text: str | None = None
+    bbox: tuple[float, float, float, float] | None = None
+    method: str = "parser"
+    confidence: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["bbox"] = list(self.bbox) if self.bbox is not None else None
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class Relation:
+    relation_id: str
+    source_anchor_id: str
+    target_anchor_id: str | None
+    relation_type: str
+    status: str
+    target_text: str | None = None
+    method: str = "deterministic"
+    confidence: float | None = None
+    decision_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRecord:
+    decision_id: str
+    task_id: str
+    status: str
+    method: str
+    considered_tools: tuple[str, ...] = ()
+    invoked_tools: tuple[str, ...] = ()
+    selected_tool: str | None = None
+    selected_reason: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    backend: str | None = None
+    profile: str | None = None
+    server_profile: str | None = None
+    request_id: str | None = None
+    prompt_version: str | None = None
+    configuration_hash: str | None = None
+    usage: Mapping[str, Any] = field(default_factory=dict)
+    timings: Mapping[str, Any] = field(default_factory=dict)
+    confidence: float | None = None
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["considered_tools"] = list(self.considered_tools)
+        value["invoked_tools"] = list(self.invoked_tools)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class UnresolvedItem:
+    task_id: str
+    source_anchor_id: str
+    relation_type: str
+    target_text: str | None
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
 class SourceRecord:
     source_id: str
     filename: str
@@ -242,6 +361,15 @@ class Evidence:
     parser_name: str | None = None
     parser_version: str | None = None
     run_id: str | None = None
+    physical_page_index: int | None = None
+    pdf_page_label: str | None = None
+    printed_page_label: str | None = None
+    block_id: str | None = None
+    anchor_id: str | None = None
+    continues_from: str | None = None
+    continues_to: str | None = None
+    method: str = "observed"
+    confidence: float | None = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -260,10 +388,18 @@ class Section:
     section_id: str
     title: str
     evidence_ids: tuple[str, ...]
+    page_ids: tuple[str, ...] = ()
+    block_ids: tuple[str, ...] = ()
+    continues_from: str | None = None
+    continues_to: str | None = None
+    method: str = "deterministic"
+    confidence: float | None = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["evidence_ids"] = list(self.evidence_ids)
+        value["page_ids"] = list(self.page_ids)
+        value["block_ids"] = list(self.block_ids)
         return value
 
 
@@ -276,6 +412,13 @@ class CanonicalDocument:
     sections: tuple[Section, ...]
     enhancement: dict[str, Any] | None = None
     schema: str = CANONICAL_SCHEMA
+    aliases: tuple[str, ...] = ()
+    pages: tuple[PageRecord, ...] = ()
+    blocks: tuple[Block, ...] = ()
+    objects: tuple[DocumentObject, ...] = ()
+    relations: tuple[Relation, ...] = ()
+    decisions: tuple[DecisionRecord, ...] = ()
+    unresolved: tuple[UnresolvedItem, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -286,7 +429,36 @@ class CanonicalDocument:
             "title": self.title,
             "sections": [section.to_dict() for section in self.sections],
             "enhancement": self.enhancement,
+            "aliases": list(self.aliases),
+            "pages": [page.to_dict() for page in self.pages],
+            "blocks": [block.to_dict() for block in self.blocks],
+            "objects": [item.to_dict() for item in self.objects],
+            "relations": [relation.to_dict() for relation in self.relations],
+            "decisions": [decision.to_dict() for decision in self.decisions],
+            "unresolved": [item.to_dict() for item in self.unresolved],
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "CanonicalDocument":
+        """Read v1 documents while accepting the richer v2 fields."""
+        source = SourceRecord(**dict(value["source"]))
+        sections = tuple(Section(**dict(item)) for item in value.get("sections", ()))
+        return cls(
+            document_id=str(value["document_id"]),
+            schema_version=str(value.get("schema_version", "cognityx.ingest.document/v1")),
+            source=source,
+            title=str(value.get("title", source.filename)),
+            sections=sections,
+            enhancement=value.get("enhancement"),
+            schema=str(value.get("schema", CANONICAL_SCHEMA)),
+            aliases=tuple(value.get("aliases", ())),
+            pages=tuple(PageRecord(**dict(item)) for item in value.get("pages", ())),
+            blocks=tuple(Block(**dict(item)) for item in value.get("blocks", ())),
+            objects=tuple(DocumentObject(**dict(item)) for item in value.get("objects", ())),
+            relations=tuple(Relation(**dict(item)) for item in value.get("relations", ())),
+            decisions=tuple(DecisionRecord(**dict(item)) for item in value.get("decisions", ())),
+            unresolved=tuple(UnresolvedItem(**dict(item)) for item in value.get("unresolved", ())),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +472,8 @@ class IngestResult:
     job_id: str | None = None
     artifacts: tuple[ArtifactRef, ...] = ()
     usage: UsageReport | None = None
+    provenance_key: str = ""
+    raw_parser_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
