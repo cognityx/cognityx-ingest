@@ -287,6 +287,60 @@ class RepeatedRegion:
 
 
 @dataclass(frozen=True, slots=True)
+class TableCell:
+    column_index: int
+    column_name: str
+    text: str
+    source_anchor_ids: tuple[str, ...] = ()
+    parser_source_anchor_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["source_anchor_ids"] = list(self.source_anchor_ids)
+        value["parser_source_anchor_ids"] = list(self.parser_source_anchor_ids)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class TableRow:
+    row_number: int | None
+    row_type: str
+    cells: tuple[TableCell, ...] = ()
+    text: str | None = None
+    column_span: int = 1
+    source_anchor_ids: tuple[str, ...] = ()
+    parser_source_anchor_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["cells"] = [item.to_dict() for item in self.cells]
+        value["source_anchor_ids"] = list(self.source_anchor_ids)
+        value["parser_source_anchor_ids"] = list(self.parser_source_anchor_ids)
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class TablePart:
+    part_id: str
+    page_id: str
+    source_block_ids: tuple[str, ...]
+    parser_source_anchor_ids: tuple[str, ...]
+    row_start: int
+    row_end: int
+    repeated_header: bool
+    merged_group_row: TableRow
+    method: str = "deterministic_table_assembly"
+    confidence: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["source_block_ids"] = list(self.source_block_ids)
+        value["parser_source_anchor_ids"] = list(self.parser_source_anchor_ids)
+        value["merged_group_row"] = self.merged_group_row.to_dict()
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentObject:
     object_id: str
     object_type: str
@@ -294,13 +348,91 @@ class DocumentObject:
     caption: str | None = None
     text: str | None = None
     bbox: tuple[float, float, float, float] | None = None
+    page_ids: tuple[str, ...] = ()
+    owner_section_id: str | None = None
+    source_anchor_ids: tuple[str, ...] = ()
+    caption_anchor_id: str | None = None
+    columns: tuple[str, ...] = ()
+    rows: tuple[TableRow, ...] = ()
+    parts: tuple[TablePart, ...] = ()
+    source_backends: tuple[str, ...] = ()
     method: str = "parser"
     confidence: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["bbox"] = list(self.bbox) if self.bbox is not None else None
+        value["page_ids"] = list(self.page_ids)
+        value["source_anchor_ids"] = list(self.source_anchor_ids)
+        value["columns"] = list(self.columns)
+        value["rows"] = [item.to_dict() for item in self.rows]
+        value["parts"] = [item.to_dict() for item in self.parts]
+        value["source_backends"] = list(self.source_backends)
         return value
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "DocumentObject":
+        selected = dict(value)
+        selected["page_ids"] = tuple(value.get("page_ids", ()))
+        selected["source_anchor_ids"] = tuple(value.get("source_anchor_ids", ()))
+        selected["columns"] = tuple(value.get("columns", ()))
+        selected["source_backends"] = tuple(value.get("source_backends", ()))
+        selected["rows"] = tuple(
+            TableRow(
+                **{
+                    **dict(item),
+                    "cells": tuple(
+                        TableCell(
+                            **{
+                                **dict(cell),
+                                "source_anchor_ids": tuple(
+                                    cell.get("source_anchor_ids", ())
+                                ),
+                                "parser_source_anchor_ids": tuple(
+                                    cell.get("parser_source_anchor_ids", ())
+                                ),
+                            }
+                        )
+                        for cell in item.get("cells", ())
+                    ),
+                    "source_anchor_ids": tuple(item.get("source_anchor_ids", ())),
+                    "parser_source_anchor_ids": tuple(
+                        item.get("parser_source_anchor_ids", ())
+                    ),
+                }
+            )
+            for item in value.get("rows", ())
+        )
+        selected["parts"] = tuple(
+            TablePart(
+                **{
+                    **dict(item),
+                    "source_block_ids": tuple(item.get("source_block_ids", ())),
+                    "parser_source_anchor_ids": tuple(
+                        item.get("parser_source_anchor_ids", ())
+                    ),
+                    "merged_group_row": TableRow(
+                        **{
+                            **dict(item["merged_group_row"]),
+                            "cells": tuple(
+                                TableCell(**dict(cell))
+                                for cell in item["merged_group_row"].get("cells", ())
+                            ),
+                            "source_anchor_ids": tuple(
+                                item["merged_group_row"].get("source_anchor_ids", ())
+                            ),
+                            "parser_source_anchor_ids": tuple(
+                                item["merged_group_row"].get(
+                                    "parser_source_anchor_ids", ()
+                                )
+                            ),
+                        }
+                    ),
+                }
+            )
+            for item in value.get("parts", ())
+        )
+        return cls(**selected)
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,7 +653,9 @@ class CanonicalDocument:
                 )
                 for item in value.get("repeated_regions", ())
             ),
-            objects=tuple(DocumentObject(**dict(item)) for item in value.get("objects", ())),
+            objects=tuple(
+                DocumentObject.from_dict(item) for item in value.get("objects", ())
+            ),
             relations=tuple(Relation(**dict(item)) for item in value.get("relations", ())),
             decisions=tuple(DecisionRecord(**dict(item)) for item in value.get("decisions", ())),
             unresolved=tuple(UnresolvedItem(**dict(item)) for item in value.get("unresolved", ())),

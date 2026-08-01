@@ -42,7 +42,12 @@ retained as a rejected `continues_on` relation with no invented target and a
 deterministic reason. DataForge can consume these fields without reopening the
 PDF. Observed facts, parser results, deterministic rules and inference
 proposals retain separate `method` and confidence fields. Multi-page table
-identity and richer figure or footnote ownership remain later work.
+identity is represented as one logical table with stable ownership, caption and
+caption anchor, typed columns and ordered data rows, and ordered physical-page
+parts. Each part retains its canonical source block, parser-observation anchors,
+repeated-header status and merged group-row span. Repeated headers and group
+rows are audit facts, not duplicate data rows. Richer figure or footnote
+ownership remains later work.
 
 Bounded inference uses `CognityxInferenceClient`. A named local server profile
 starts the worker and loads its configured model; external providers must pass

@@ -73,12 +73,13 @@ def canonical_block_fragments(
     observed_type: str,
     *,
     split_terminal_sentence: bool = False,
+    split_list_items: bool = True,
 ) -> tuple[CanonicalBlockFragment, ...]:
     """Split parser-observed groups only at deterministic semantic boundaries."""
     block_type = canonical_block_type(text, observed_type)
     if block_type in {"page_header", "page_footer"}:
         return (CanonicalBlockFragment(text, block_type),)
-    if block_type == "list":
+    if block_type == "list" and split_list_items:
         items = tuple(
             item.strip()
             for item in _BULLET_BOUNDARY.split(text)

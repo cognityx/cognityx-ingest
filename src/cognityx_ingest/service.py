@@ -50,6 +50,7 @@ from cognityx_ingest.models import (
     UsageReport,
 )
 from cognityx_ingest.parser import (
+    ExtractedPage,
     ExtractionResult,
     PdfExtractor,
     PyPdfExtractor,
@@ -59,10 +60,18 @@ from cognityx_ingest.parser import (
 )
 from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_ingest.structure import (
+    CanonicalBlockFragment,
     build_continuation_relations,
     build_sections,
     canonical_block_fragments,
+    canonical_block_type,
     terminal_sentence_split_block_ids,
+)
+from cognityx_ingest.tables import (
+    ObservedLogicalTable,
+    build_table_objects,
+    detect_logical_tables,
+    table_source_groups,
 )
 
 DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v2"
@@ -459,7 +468,12 @@ class IngestService:
                     self._extractor, Path(temporary.name)
                 )
                 pages = extraction.pages
-        page_records, blocks, objects = _canonical_structure(document_id, extraction)
+        table_observations = detect_logical_tables(
+            extraction.pages, extraction.backend
+        )
+        page_records, blocks, parser_objects = _canonical_structure(
+            document_id, extraction, table_observations
+        )
         repeated_regions = _canonical_repeated_regions(document_id, page_records, blocks)
         blocks_by_id = {item.block_id: item for item in blocks}
         page_by_index = {
@@ -519,6 +533,10 @@ class IngestService:
             blocks,
             evidence,
         )
+        table_objects = build_table_objects(
+            document_id, table_observations, page_records, blocks, sections
+        )
+        objects = (*parser_objects, *table_objects)
         continuation_relations = build_continuation_relations(
             document_id, sections, page_records, blocks
         )
@@ -881,12 +899,16 @@ def _now() -> str:
 
 
 def _canonical_structure(
-    document_id: str, extraction: ExtractionResult
+    document_id: str,
+    extraction: ExtractionResult,
+    table_observations: tuple[ObservedLogicalTable, ...] = (),
 ) -> tuple[tuple[PageRecord, ...], tuple[Block, ...], tuple[DocumentObject, ...]]:
     pages: list[PageRecord] = []
     blocks: list[Block] = []
     objects: list[DocumentObject] = []
     terminal_splits = terminal_sentence_split_block_ids(extraction.pages)
+    table_parts, table_captions = table_source_groups(table_observations)
+    grouped_lists = _heading_adjacent_list_ids(extraction.pages)
     for sequence, page in enumerate(extraction.pages, start=1):
         page_id = f"{document_id}:page-index:{page.physical_page_index}"
         extracted_blocks = page.blocks or ()
@@ -895,11 +917,43 @@ def _canonical_structure(
             content_order = 0
             repeated_orders = {"page_header": 0, "page_footer": 0}
             for item in extracted_blocks:
-                for fragment in canonical_block_fragments(
-                    item.text,
-                    item.block_type,
-                    split_terminal_sentence=item.block_id in terminal_splits,
+                part_value = table_parts.get(item.block_id)
+                if (
+                    part_value is not None
+                    and item.block_id != part_value[1].source_block_ids[0]
                 ):
+                    continue
+                table = table_captions.get(item.block_id)
+                if part_value is not None:
+                    part_table, part = part_value
+                    fragment_values = (
+                        CanonicalBlockFragment(
+                            text=(
+                                f"Table {part_table.number} part {part.part_number}"
+                            ),
+                            block_type="table_part",
+                            method="deterministic_table_part_assembly",
+                        ),
+                    )
+                    observed_bbox = part.bbox
+                elif table is not None:
+                    fragment_values = (
+                        CanonicalBlockFragment(
+                            text=table.caption,
+                            block_type="caption",
+                            method="deterministic_table_caption",
+                        ),
+                    )
+                    observed_bbox = item.bbox
+                else:
+                    fragment_values = canonical_block_fragments(
+                        item.text,
+                        item.block_type,
+                        split_terminal_sentence=item.block_id in terminal_splits,
+                        split_list_items=item.block_id not in grouped_lists,
+                    )
+                    observed_bbox = item.bbox
+                for fragment in fragment_values:
                     block_type = fragment.block_type
                     if block_type in repeated_orders:
                         repeated_orders[block_type] += 1
@@ -924,7 +978,7 @@ def _canonical_structure(
                             block_type=block_type,
                             reading_order=reading_order,
                             text=fragment.text,
-                            bbox=item.bbox,
+                            bbox=observed_bbox,
                             method=method,
                             confidence=confidence,
                         )
@@ -969,6 +1023,25 @@ def _canonical_structure(
             )
         )
     return tuple(pages), tuple(blocks), tuple(objects)
+
+
+def _heading_adjacent_list_ids(pages: tuple[ExtractedPage, ...]) -> frozenset[str]:
+    grouped: set[str] = set()
+    for page in pages:
+        content = tuple(
+            block
+            for block in page.blocks
+            if block.block_type not in {"page_header", "page_footer"}
+        )
+        for position, block in enumerate(content):
+            if canonical_block_type(block.text, block.block_type) != "list":
+                continue
+            neighbors = content[max(0, position - 1) : position] + content[
+                position + 1 : position + 2
+            ]
+            if any(canonical_block_type(item.text, item.block_type) == "heading" for item in neighbors):
+                grouped.add(block.block_id)
+    return frozenset(grouped)
 
 
 def _relations_and_tasks(
