@@ -23,10 +23,10 @@ than copying the current implementation's output.
 
 ## Current Result
 
-The provenance suite has 32 focused checks when both optional parser extras
+The provenance suite has 36 focused checks when both optional parser extras
 are installed:
 
-- 23 pass; and
+- 27 pass; and
 - 9 are strict expected failures linked to the gap identifiers below.
 
 In the default dependency environment, the two optional parser modules skip
@@ -54,8 +54,12 @@ objectives remain executable expected failures.
   repeated headers and footers remain outside section content.
 - `P-09`: Section 4.3 continues across physical pages 4 and 5 only when
   unheaded top-page content flows from the active section before heading 4.4.
+  The global heading interval also carries parent Section 4 across both pages,
+  and provenance includes a resolved canonical continuation relation.
 - `P-10`: Section 4.4 ends on page 5 and records an explicit deterministic
-  false-continuation status because page 6 starts with heading 5.
+  false-continuation status because page 6 starts with heading 5. Its rejected
+  continuation relation retains the source anchor and reason without inventing
+  a target.
 - Basic parser capability: exact page text and fixture canaries are present,
   while richer structure is honestly absent.
 - `P-26`: bounded inference accepts only existing allowlisted anchors and

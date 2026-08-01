@@ -5,7 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from cognityx_ingest import IngestService, PyMuPDFParser, SourceAssetRegistry
+from cognityx_ingest import (
+    Block,
+    Evidence,
+    IngestService,
+    PageRecord,
+    PyMuPDFParser,
+    SourceAssetRegistry,
+)
 from cognityx_resource import ExecutionContext
 from cognityx_storage import (
     LocalStorageBackend,
@@ -13,6 +20,7 @@ from cognityx_storage import (
     StorageConfig,
     StorageRuntime,
 )
+from cognityx_ingest.structure import build_sections, canonical_block_fragments
 
 
 @pytest.fixture()
@@ -152,7 +160,24 @@ def test_p09_section_4_3_continues_across_pages(
     assert section.continuation_status == "deterministic_true"
     assert section.continues_from.endswith(":page-index:4:block:9")
     assert section.continues_to.endswith(":page-index:5:block:1")
-    assert section.continuation_method == "deterministic_heading_content_flow"
+    assert section.continuation_method == "deterministic_heading_content_layout_flow"
+
+    parent = next(item for item in result.document.sections if item.number == "4")
+    assert [
+        pages_by_id[page_id].physical_page_index for page_id in parent.page_ids
+    ] == [4, 5]
+    assert parent.start_block_id.endswith(":page-index:4:block:1")
+    assert parent.end_block_id.endswith(":page-index:5:block:9")
+    assert parent.block_ids == tuple(
+        [f"{parent.page_ids[0]}:block:{index}" for index in range(1, 10)]
+        + [f"{parent.page_ids[1]}:block:{index}" for index in range(1, 10)]
+    )
+    assert set(section.block_ids).issubset(parent.block_ids)
+    for child_number in ("4.1", "4.2", "4.3", "4.4"):
+        child = next(
+            item for item in result.document.sections if item.number == child_number
+        )
+        assert set(child.block_ids).issubset(parent.block_ids)
 
 
 def test_p10_section_4_4_records_explicit_non_continuation(
@@ -161,6 +186,7 @@ def test_p10_section_4_4_records_explicit_non_continuation(
     result, _storage = structured_ingest
     section = next(item for item in result.document.sections if item.number == "4.4")
     page = next(item for item in result.document.pages if item.physical_page_index == 5)
+    blocks = {item.block_id: item for item in result.document.blocks}
 
     assert section.continuation_status == "deterministic_false"
     assert section.page_ids == (page.page_id,)
@@ -168,7 +194,9 @@ def test_p10_section_4_4_records_explicit_non_continuation(
     assert section.end_block_id == f"{page.page_id}:block:9"
     assert section.continues_from is None
     assert section.continues_to is None
-    assert section.continuation_method == "deterministic_heading_content_flow"
+    assert section.continuation_method == "deterministic_heading_content_layout_flow"
+    assert blocks[section.end_block_id].block_type == "paragraph"
+    assert blocks[section.end_block_id].method == "deterministic_page_boundary_split"
 
 
 def test_dataforge_reads_exact_section_structure_from_provenance_only(
@@ -205,8 +233,17 @@ def test_dataforge_reads_true_and_false_continuation_from_provenance_only(
     handoff = json.load(storage.open(result.provenance_key))
     pages = {item["page_id"]: item for item in handoff["pages"]}
     sections = {item["number"]: item for item in handoff["sections"]}
+    relations = handoff["relations"]
     true_case = sections["4.3"]
     false_case = sections["4.4"]
+    parent = sections["4"]
+
+    assert [pages[page_id]["physical_page_index"] for page_id in parent["page_ids"]] == [
+        4,
+        5,
+    ]
+    assert parent["start_block_id"].endswith(":page-index:4:block:1")
+    assert parent["end_block_id"].endswith(":page-index:5:block:9")
 
     assert [
         pages[page_id]["physical_page_index"] for page_id in true_case["page_ids"]
@@ -223,3 +260,132 @@ def test_dataforge_reads_true_and_false_continuation_from_provenance_only(
     assert false_case["continues_from"] is None
     assert false_case["continues_to"] is None
     assert false_case["end_block_id"].endswith(":page-index:5:block:9")
+
+    resolved = next(
+        item
+        for item in relations
+        if item["relation_type"] == "continues_on"
+        and item["status"] == "resolved"
+        and item["source_anchor_id"].endswith(":page-index:4:block:9")
+    )
+    assert resolved["target_anchor_id"].endswith(":page-index:5:block:1")
+    assert resolved["method"] == "deterministic_heading_content_layout_flow"
+    assert resolved["confidence"] == 1.0
+
+    rejected = next(
+        item
+        for item in relations
+        if item["relation_type"] == "continues_on"
+        and item["status"] == "rejected"
+        and item["source_anchor_id"].endswith(":page-index:5:block:9")
+    )
+    assert rejected["target_anchor_id"] is None
+    assert rejected["reason"] == "next_page_starts_with_peer_or_higher_heading"
+
+
+def test_global_spans_include_parent_and_child_continuation() -> None:
+    pages, blocks, evidence = _synthetic_section_stream()
+
+    sections = {
+        item.number: item
+        for item in build_sections("document", pages, blocks, evidence)
+    }
+
+    assert sections["1"].page_ids == ("page-0", "page-1")
+    assert sections["1"].block_ids == (
+        "page-0:block:1",
+        "page-0:block:2",
+        "page-0:block:3",
+        "page-1:block:1",
+        "page-1:block:2",
+        "page-1:block:3",
+    )
+    assert sections["1.1"].page_ids == ("page-0", "page-1")
+
+
+def test_child_continuation_stops_at_next_child_heading() -> None:
+    pages, blocks, evidence = _synthetic_section_stream()
+
+    sections = {
+        item.number: item
+        for item in build_sections("document", pages, blocks, evidence)
+    }
+
+    assert sections["1.1"].end_block_id == "page-1:block:1"
+    assert sections["1.2"].start_block_id == "page-1:block:2"
+    assert sections["1.2"].page_ids == ("page-1",)
+    assert sections["1.2"].end_block_id == "page-1:block:3"
+
+
+def test_peer_or_higher_heading_on_next_page_rejects_continuation() -> None:
+    pages, blocks, evidence = _synthetic_section_stream()
+
+    sections = {
+        item.number: item
+        for item in build_sections("document", pages, blocks, evidence)
+    }
+
+    assert sections["1.2"].continuation_status == "deterministic_false"
+    assert sections["1.2"].page_ids == ("page-1",)
+    assert sections["2"].start_block_id == "page-2:block:1"
+
+
+def test_next_page_words_remain_ordinary_prose() -> None:
+    fragments = canonical_block_fragments(
+        "This is ordinary prose. The next page starts a new section of the discussion.",
+        "text",
+        split_terminal_sentence=True,
+    )
+
+    assert [item.block_type for item in fragments] == ["paragraph", "paragraph"]
+
+
+def _synthetic_section_stream() -> tuple[
+    tuple[PageRecord, ...], tuple[Block, ...], tuple[Evidence, ...]
+]:
+    page_text = (
+        ("1. Parent", "1.1. First child", "First child content."),
+        ("First child continues.", "1.2. Second child", "Second child content."),
+        ("2. Peer", "Peer content."),
+    )
+    pages = tuple(
+        PageRecord(
+            page_id=f"page-{page_index}",
+            physical_page_index=page_index,
+            sequence_number=page_index + 1,
+            width=100,
+            height=100,
+            block_ids=tuple(
+                f"page-{page_index}:block:{position}"
+                for position in range(1, len(texts) + 1)
+            ),
+        )
+        for page_index, texts in enumerate(page_text)
+    )
+    blocks = tuple(
+        Block(
+            block_id=f"page-{page_index}:block:{position}",
+            page_id=f"page-{page_index}",
+            block_type="heading" if text[0].isdigit() else "paragraph",
+            reading_order=position,
+            text=text,
+            bbox=(0, 5 + position * 10, 90, 10 + position * 10),
+            method="test",
+            confidence=1.0,
+        )
+        for page_index, texts in enumerate(page_text)
+        for position, text in enumerate(texts, start=1)
+    )
+    evidence = tuple(
+        Evidence(
+            evidence_id=f"evidence-{page_index}",
+            document_id="document",
+            page_number=page_index + 1,
+            text="\n".join(texts),
+            char_start=0,
+            char_end=sum(len(text) for text in texts),
+            physical_page_index=page_index,
+        )
+        for page_index, texts in enumerate(page_text)
+    )
+    return pages, blocks, evidence

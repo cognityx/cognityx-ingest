@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import re
 
-from cognityx_ingest.models import Block, Evidence, PageRecord, Section
+from cognityx_ingest.models import Block, Evidence, PageRecord, Relation, Section
+from cognityx_ingest.parser import ExtractedPage
 
 
 _NUMBERED_HEADING = re.compile(
@@ -16,10 +17,9 @@ _APPENDIX_HEADING = re.compile(
 )
 _CALLOUT = re.compile(r"^[A-Z]{2,}(?:-[A-Z0-9./]+)+(?:\s|$)")
 _BULLET_BOUNDARY = re.compile(r"(?:^|\n)•\s*\n")
-_FALSE_CONTINUATION = re.compile(
-    r"(?<=[.!?])\s+(?P<control>The next page starts (?:a )?new section.*)$",
-    re.DOTALL,
-)
+_SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=\S)")
+_EARLY_PAGE_END_RATIO = 0.3
+_CONTINUATION_METHOD = "deterministic_heading_content_layout_flow"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +69,10 @@ def canonical_block_type(text: str, observed_type: str) -> str:
 
 
 def canonical_block_fragments(
-    text: str, observed_type: str
+    text: str,
+    observed_type: str,
+    *,
+    split_terminal_sentence: bool = False,
 ) -> tuple[CanonicalBlockFragment, ...]:
     """Split parser-observed groups only at deterministic semantic boundaries."""
     block_type = canonical_block_type(text, observed_type)
@@ -90,22 +93,57 @@ def canonical_block_fragments(
                 )
                 for item in items
             )
-    false_control = _FALSE_CONTINUATION.search(text)
-    if false_control is not None:
-        content = text[: false_control.start("control")].strip()
-        control = false_control.group("control").strip()
+    sentence_boundaries = tuple(_SENTENCE_BOUNDARY.finditer(text))
+    if split_terminal_sentence and sentence_boundaries:
+        boundary = sentence_boundaries[-1]
+        content = text[: boundary.start()].strip()
+        terminal = text[boundary.end() :].strip()
         return (
             CanonicalBlockFragment(
                 content,
                 canonical_block_type(content, observed_type),
+                method="deterministic_page_boundary_split",
             ),
             CanonicalBlockFragment(
-                control,
-                "page_break_control",
-                method="deterministic_page_break_control",
+                terminal,
+                canonical_block_type(terminal, observed_type),
+                method="deterministic_page_boundary_split",
             ),
         )
     return (CanonicalBlockFragment(text, block_type),)
+
+
+def terminal_sentence_split_block_ids(
+    pages: tuple[ExtractedPage, ...],
+) -> frozenset[str]:
+    """Find parser blocks needing a terminal anchor at an early page boundary."""
+    selected: set[str] = set()
+    for page, next_page in zip(pages, pages[1:], strict=False):
+        content = tuple(
+            block
+            for block in page.blocks
+            if block.block_type not in {"page_header", "page_footer"}
+        )
+        next_content = tuple(
+            block
+            for block in next_page.blocks
+            if block.block_type not in {"page_header", "page_footer"}
+        )
+        if not content or not next_content:
+            continue
+        terminal = content[-1]
+        ends_early = bool(
+            page.height
+            and terminal.bbox
+            and terminal.bbox[3] <= page.height * _EARLY_PAGE_END_RATIO
+        )
+        if (
+            ends_early
+            and normalize_heading_candidate(next_content[0].text) is not None
+            and _SENTENCE_BOUNDARY.search(terminal.text)
+        ):
+            selected.add(terminal.block_id)
+    return frozenset(selected)
 
 
 def build_sections(
@@ -121,8 +159,9 @@ def build_sections(
         for item in evidence
         if item.physical_page_index is not None
     }
-    observed: list[tuple[PageRecord, int, Block, HeadingCandidate]] = []
+    observed: list[tuple[int, PageRecord, Block, HeadingCandidate]] = []
     content_by_page: dict[str, tuple[str, ...]] = {}
+    content_stream: list[tuple[PageRecord, Block]] = []
     for page in pages:
         content_ids = tuple(
             block_id
@@ -131,11 +170,13 @@ def build_sections(
             not in {"page_header", "page_footer"}
         )
         content_by_page[page.page_id] = content_ids
-        for position, block_id in enumerate(content_ids):
+        for block_id in content_ids:
             block = blocks_by_id[block_id]
+            stream_position = len(content_stream)
+            content_stream.append((page, block))
             candidate = normalize_heading_candidate(block.text)
             if candidate is not None:
-                observed.append((page, position, block, candidate))
+                observed.append((stream_position, page, block, candidate))
 
     if not observed:
         return ()
@@ -144,7 +185,7 @@ def build_sections(
     path_by_block: dict[str, tuple[str, ...]] = {}
     section_id_by_block: dict[str, str] = {}
     stack: list[tuple[int, str]] = []
-    for _page, _position, block, candidate in observed:
+    for _position, _page, block, candidate in observed:
         while stack and stack[-1][0] >= candidate.level:
             stack.pop()
         parent_block_id = stack[-1][1] if stack else None
@@ -159,18 +200,20 @@ def build_sections(
         stack.append((candidate.level, block.block_id))
 
     result: list[Section] = []
-    for index, (page, position, block, candidate) in enumerate(observed):
-        content_ids = content_by_page[page.page_id]
-        end_position = len(content_ids) - 1
-        later_headings = observed[index + 1 :]
-        for next_page, next_position, _next_block, next_candidate in later_headings:
-            if next_page.page_id != page.page_id:
-                break
+    for index, (position, page, block, candidate) in enumerate(observed):
+        end_position = len(content_stream)
+        for next_position, _next_page, _next_block, next_candidate in observed[index + 1 :]:
             if next_candidate.level <= candidate.level:
-                end_position = next_position - 1
+                end_position = next_position
                 break
-        selected_block_ids = content_ids[position : end_position + 1]
-        page_evidence = evidence_by_page.get(page.physical_page_index)
+        selected = content_stream[position:end_position]
+        selected_block_ids = tuple(item.block_id for _item_page, item in selected)
+        selected_pages = tuple(dict.fromkeys(item.page_id for item, _block in selected))
+        selected_evidence = tuple(
+            evidence_by_page[item.physical_page_index].evidence_id
+            for item in dict.fromkeys(item for item, _block in selected)
+            if item.physical_page_index in evidence_by_page
+        )
         result.append(
             Section(
                 section_id=section_id_by_block[block.block_id],
@@ -182,15 +225,15 @@ def build_sections(
                 heading_block_id=block.block_id,
                 start_block_id=block.block_id,
                 end_block_id=selected_block_ids[-1],
-                evidence_ids=((page_evidence.evidence_id,) if page_evidence else ()),
-                page_ids=(page.page_id,),
+                evidence_ids=selected_evidence,
+                page_ids=selected_pages,
                 block_ids=selected_block_ids,
                 method="deterministic_numbered_heading",
                 confidence=1.0,
             )
         )
     return _apply_continuation_status(
-        tuple(result), pages, content_by_page, blocks_by_id, evidence_by_page
+        tuple(result), pages, content_by_page, blocks_by_id
     )
 
 
@@ -199,66 +242,143 @@ def _apply_continuation_status(
     pages: tuple[PageRecord, ...],
     content_by_page: dict[str, tuple[str, ...]],
     blocks_by_id: dict[str, Block],
-    evidence_by_page: dict[int, Evidence],
 ) -> tuple[Section, ...]:
-    """Extend only the deepest active section when top-page content flows onward."""
-    updated = list(sections)
-    for page_index, page in enumerate(pages[:-1]):
-        content_ids = content_by_page[page.page_id]
-        if not content_ids:
-            continue
-        active = [
-            (index, section)
-            for index, section in enumerate(updated)
-            if section.page_ids == (page.page_id,)
-            and section.end_block_id == content_ids[-1]
-        ]
-        if not active:
-            continue
-        section_index, section = max(active, key=lambda item: item[1].level or 0)
-        next_page = pages[page_index + 1]
-        next_content = content_by_page[next_page.page_id]
-        first_heading = next(
-            (
-                position
-                for position, block_id in enumerate(next_content)
-                if blocks_by_id[block_id].block_type == "heading"
-            ),
-            len(next_content),
-        )
-        leading_content = next_content[:first_heading]
-        begins_at_top = bool(
-            leading_content
-            and next_page.height
-            and blocks_by_id[leading_content[0]].bbox
-            and blocks_by_id[leading_content[0]].bbox[1] <= next_page.height * 0.2
-        )
-        method = "deterministic_heading_content_flow"
-        if leading_content and begins_at_top:
-            next_evidence = evidence_by_page.get(next_page.physical_page_index)
-            updated[section_index] = replace(
-                section,
-                page_ids=(*section.page_ids, next_page.page_id),
-                block_ids=(*section.block_ids, *leading_content),
-                evidence_ids=(
-                    (*section.evidence_ids, next_evidence.evidence_id)
-                    if next_evidence
-                    else section.evidence_ids
-                ),
-                end_block_id=leading_content[-1],
-                continuation_status="deterministic_true",
-                continuation_method=method,
-                continuation_confidence=1.0,
-                continues_from=section.end_block_id,
-                continues_to=leading_content[0],
+    """Record true spans and explicit peer-or-higher boundary rejection."""
+    page_position = {page.page_id: index for index, page in enumerate(pages)}
+    updated: list[Section] = []
+    for section in sections:
+        if len(section.page_ids) > 1:
+            source, target = _first_page_transition(section.block_ids, blocks_by_id)
+            updated.append(
+                replace(
+                    section,
+                    continuation_status="deterministic_true",
+                    continuation_method=_CONTINUATION_METHOD,
+                    continuation_confidence=1.0,
+                    continues_from=source,
+                    continues_to=target,
+                )
             )
-        else:
-            updated[section_index] = replace(
+            continue
+        page_id = section.page_ids[0]
+        page_index = page_position[page_id]
+        page_content = content_by_page[page_id]
+        next_content = (
+            content_by_page[pages[page_index + 1].page_id]
+            if page_index + 1 < len(pages)
+            else ()
+        )
+        next_heading = (
+            normalize_heading_candidate(blocks_by_id[next_content[0]].text)
+            if next_content
+            else None
+        )
+        rejected = bool(
+            page_content
+            and section.end_block_id == page_content[-1]
+            and next_heading
+            and section.level
+            and next_heading.level <= section.level
+        )
+        updated.append(
+            replace(
                 section,
-                continuation_status="deterministic_false",
-                continuation_method=method,
-                continuation_confidence=1.0,
+                continuation_status=("deterministic_false" if rejected else None),
+                continuation_method=(_CONTINUATION_METHOD if rejected else None),
+                continuation_confidence=(1.0 if rejected else None),
                 continues_from=None,
                 continues_to=None,
             )
+        )
     return tuple(updated)
+
+
+def build_continuation_relations(
+    document_id: str,
+    sections: tuple[Section, ...],
+    pages: tuple[PageRecord, ...],
+    blocks: tuple[Block, ...],
+) -> tuple[Relation, ...]:
+    """Emit one canonical relation for the deepest section at each page boundary."""
+    blocks_by_id = {block.block_id: block for block in blocks}
+    content_by_page = {
+        page.page_id: tuple(
+            block_id
+            for block_id in page.block_ids
+            if blocks_by_id[block_id].block_type
+            not in {"page_header", "page_footer"}
+        )
+        for page in pages
+    }
+    relations: list[Relation] = []
+    for page, next_page in zip(pages, pages[1:], strict=False):
+        content = content_by_page[page.page_id]
+        next_content = content_by_page[next_page.page_id]
+        if not content or not next_content:
+            continue
+        source = content[-1]
+        target = next_content[0]
+        crossing = [
+            section
+            for section in sections
+            if source in section.block_ids and target in section.block_ids
+        ]
+        if (
+            crossing
+            and blocks_by_id[target].block_type != "heading"
+            and _is_top_page_block(next_page, blocks_by_id[target])
+        ):
+            relations.append(
+                Relation(
+                    relation_id=(
+                        f"{document_id}:relation:continuation:"
+                        f"{page.physical_page_index}:resolved"
+                    ),
+                    source_anchor_id=source,
+                    target_anchor_id=target,
+                    relation_type="continues_on",
+                    status="resolved",
+                    method=_CONTINUATION_METHOD,
+                    confidence=1.0,
+                )
+            )
+            continue
+        next_heading = normalize_heading_candidate(blocks_by_id[target].text)
+        rejected = [
+            section
+            for section in sections
+            if section.end_block_id == source
+            and next_heading
+            and section.level
+            and next_heading.level <= section.level
+        ]
+        if rejected and blocks_by_id[source].method == "deterministic_page_boundary_split":
+            relations.append(
+                Relation(
+                    relation_id=(
+                        f"{document_id}:relation:continuation:"
+                        f"{page.physical_page_index}:rejected"
+                    ),
+                    source_anchor_id=source,
+                    target_anchor_id=None,
+                    relation_type="continues_on",
+                    status="rejected",
+                    method=_CONTINUATION_METHOD,
+                    confidence=1.0,
+                    reason="next_page_starts_with_peer_or_higher_heading",
+                )
+            )
+    return tuple(relations)
+
+
+def _first_page_transition(
+    block_ids: tuple[str, ...], blocks_by_id: dict[str, Block]
+) -> tuple[str, str]:
+    for source, target in zip(block_ids, block_ids[1:], strict=False):
+        if blocks_by_id[source].page_id != blocks_by_id[target].page_id:
+            return source, target
+    raise ValueError("A multi-page section must contain a page transition")
+
+
+def _is_top_page_block(page: PageRecord, block: Block) -> bool:
+    return bool(page.height and block.bbox and block.bbox[1] <= page.height * 0.2)

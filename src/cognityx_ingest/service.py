@@ -59,8 +59,10 @@ from cognityx_ingest.parser import (
 )
 from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_ingest.structure import (
+    build_continuation_relations,
     build_sections,
     canonical_block_fragments,
+    terminal_sentence_split_block_ids,
 )
 
 DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v2"
@@ -517,6 +519,9 @@ class IngestService:
             blocks,
             evidence,
         )
+        continuation_relations = build_continuation_relations(
+            document_id, sections, page_records, blocks
+        )
         observed_relations, tasks = _relations_and_tasks(
             document_id, extraction, page_by_index
         )
@@ -587,7 +592,11 @@ class IngestService:
             blocks=blocks,
             repeated_regions=repeated_regions,
             objects=objects,
-            relations=(*observed_relations, *inferred_relations),
+            relations=(
+                *continuation_relations,
+                *observed_relations,
+                *inferred_relations,
+            ),
             decisions=decisions,
             unresolved=unresolved,
         )
@@ -877,6 +886,7 @@ def _canonical_structure(
     pages: list[PageRecord] = []
     blocks: list[Block] = []
     objects: list[DocumentObject] = []
+    terminal_splits = terminal_sentence_split_block_ids(extraction.pages)
     for sequence, page in enumerate(extraction.pages, start=1):
         page_id = f"{document_id}:page-index:{page.physical_page_index}"
         extracted_blocks = page.blocks or ()
@@ -885,7 +895,11 @@ def _canonical_structure(
             content_order = 0
             repeated_orders = {"page_header": 0, "page_footer": 0}
             for item in extracted_blocks:
-                for fragment in canonical_block_fragments(item.text, item.block_type):
+                for fragment in canonical_block_fragments(
+                    item.text,
+                    item.block_type,
+                    split_terminal_sentence=item.block_id in terminal_splits,
+                ):
                     block_type = fragment.block_type
                     if block_type in repeated_orders:
                         repeated_orders[block_type] += 1

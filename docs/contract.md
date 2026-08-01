@@ -30,13 +30,19 @@ more pages, evidence, observed objects, relations, decision records and
 unresolved items.
 Each numbered section carries its number, title, hierarchy level, parent, path,
 heading block, start and end block anchors, ordered page IDs and content block
-IDs. A genuine continuation also records its source and target block anchors,
-deterministic status, method and confidence. A rejected continuation records an
-explicit false status rather than relying on a missing value. DataForge can
-consume those fields without reopening the PDF. Observed facts, parser results,
-deterministic rules and inference proposals retain separate `method` and
-confidence fields. Multi-page table identity and richer figure or footnote
-ownership remain later work.
+IDs. Its span follows the complete reading-order stream until the next heading
+at the same or a higher level. Parent spans therefore contain their child
+sections even when the content crosses a page boundary.
+
+A genuine continuation records its source and target block anchors,
+deterministic status, method and confidence. It also appears in the canonical
+relation collection as a resolved `continues_on` relation. When the following
+page begins with a peer or higher-level heading, the final source anchor is
+retained as a rejected `continues_on` relation with no invented target and a
+deterministic reason. DataForge can consume these fields without reopening the
+PDF. Observed facts, parser results, deterministic rules and inference
+proposals retain separate `method` and confidence fields. Multi-page table
+identity and richer figure or footnote ownership remain later work.
 
 Bounded inference uses `CognityxInferenceClient`. A named local server profile
 starts the worker and loads its configured model; external providers must pass
