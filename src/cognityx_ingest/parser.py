@@ -64,6 +64,7 @@ class ExtractedRelation:
     status: str = "unresolved"
     method: str = "parser"
     confidence: float | None = None
+    bbox: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +188,11 @@ class PyMuPDFParser:
                         status=("resolved" if link.get("page", -1) >= 0 else "unresolved"),
                         method="native",
                         confidence=1.0,
+                        bbox=(
+                            tuple(float(value) for value in link["from"])
+                            if link.get("from") is not None
+                            else None
+                        ),
                     )
                     for order, link in enumerate(page.get_links(), start=1)
                 )
@@ -195,10 +201,11 @@ class PyMuPDFParser:
                         object_id=f"page:{index}:figure:{order}",
                         object_type="figure",
                         page_index=index,
+                        bbox=_image_bbox(page, image),
                         method="native",
                         confidence=1.0,
                     )
-                    for order, _ in enumerate(page.get_images(full=True), start=1)
+                    for order, image in enumerate(page.get_images(full=True), start=1)
                 )
                 annotations = tuple(
                     ExtractedObject(
@@ -493,6 +500,18 @@ def _pypdf_page_label(reader: PdfReader, index: int) -> str | None:
         return str(labels[index]) if index < len(labels) else None
     except Exception:
         return None
+
+
+def _image_bbox(page: Any, image: Any) -> tuple[float, float, float, float] | None:
+    rectangles = tuple(page.get_image_rects(image))
+    if not rectangles:
+        return None
+    return (
+        min(float(item.x0) for item in rectangles),
+        min(float(item.y0) for item in rectangles),
+        max(float(item.x1) for item in rectangles),
+        max(float(item.y1) for item in rectangles),
+    )
 
 
 def _docling_page_text(markdown: str, value: Any) -> str:

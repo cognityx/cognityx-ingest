@@ -20,6 +20,9 @@ _BULLET_BOUNDARY = re.compile(r"(?:^|\n)•\s*\n")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=\S)")
 _EARLY_PAGE_END_RATIO = 0.3
 _CONTINUATION_METHOD = "deterministic_heading_content_layout_flow"
+_FIGURE_CAPTION = re.compile(r"^Figure\s+\d+(?:-\d+)*\.\s+\S")
+_FOOTNOTE_BLOCK = re.compile(r"^Footnote\s+\d+\s*[—-]\s*\S")
+_VISIBLE_URL = re.compile(r"https?://[^\s]+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,12 @@ def canonical_block_type(text: str, observed_type: str) -> str:
         return observed_type
     if normalize_heading_candidate(text) is not None:
         return "heading"
+    if _FIGURE_CAPTION.match(text.strip()):
+        return "caption"
+    if _FOOTNOTE_BLOCK.match(text.strip()):
+        return "footnote"
+    if _VISIBLE_URL.search(text):
+        return "url"
     if observed_type in {"table", "figure", "caption", "footnote"}:
         return observed_type
     if observed_type in {"list", "list_item"} or text.lstrip().startswith("•"):
@@ -79,6 +88,9 @@ def canonical_block_fragments(
     block_type = canonical_block_type(text, observed_type)
     if block_type in {"page_header", "page_footer"}:
         return (CanonicalBlockFragment(text, block_type),)
+    inline_table = _inline_table_fragments(text, observed_type)
+    if inline_table is not None:
+        return inline_table
     if block_type == "list" and split_list_items:
         items = tuple(
             item.strip()
@@ -112,6 +124,46 @@ def canonical_block_fragments(
             ),
         )
     return (CanonicalBlockFragment(text, block_type),)
+
+
+def _inline_table_fragments(
+    text: str, observed_type: str
+) -> tuple[CanonicalBlockFragment, ...] | None:
+    lines = tuple(line.strip() for line in text.splitlines() if line.strip())
+    if len(lines) < 7:
+        return None
+    for position in range(len(lines) - 1, 5, -1):
+        if (position - 3) % 3 != 0:
+            continue
+        trailing = lines[position:]
+        prose = " ".join(trailing)
+        row_groups = tuple(
+            lines[index : index + 3] for index in range(3, position, 3)
+        )
+        if (
+            len(trailing) > 3
+            or not prose[:1].isupper()
+            or re.search(r"[.!?](?=\s|$)", prose) is None
+            or any(
+                re.search(r"[.!?](?=\s|$)", value) is not None
+                for group in row_groups
+                for value in group[:2]
+            )
+        ):
+            continue
+        return (
+            CanonicalBlockFragment(
+                "\n".join(lines[:position]),
+                "table",
+                method="deterministic_inline_table_split",
+            ),
+            CanonicalBlockFragment(
+                prose,
+                canonical_block_type(prose, observed_type),
+                method="deterministic_inline_table_split",
+            ),
+        )
+    return None
 
 
 def terminal_sentence_split_block_ids(

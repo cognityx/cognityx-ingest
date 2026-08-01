@@ -49,6 +49,11 @@ from cognityx_ingest.models import (
     UnresolvedItem,
     UsageReport,
 )
+from cognityx_ingest.objects import (
+    ObjectObservations,
+    build_owned_objects,
+    detect_object_observations,
+)
 from cognityx_ingest.parser import (
     ExtractedPage,
     ExtractionResult,
@@ -471,8 +476,11 @@ class IngestService:
         table_observations = detect_logical_tables(
             extraction.pages, extraction.backend
         )
+        object_observations = detect_object_observations(
+            extraction.pages, extraction.backend
+        )
         page_records, blocks, parser_objects = _canonical_structure(
-            document_id, extraction, table_observations
+            document_id, extraction, table_observations, object_observations
         )
         repeated_regions = _canonical_repeated_regions(document_id, page_records, blocks)
         blocks_by_id = {item.block_id: item for item in blocks}
@@ -536,7 +544,10 @@ class IngestService:
         table_objects = build_table_objects(
             document_id, table_observations, page_records, blocks, sections
         )
-        objects = (*parser_objects, *table_objects)
+        owned_objects, object_relations = build_owned_objects(
+            document_id, object_observations, page_records, blocks, sections
+        )
+        objects = (*parser_objects, *table_objects, *owned_objects)
         continuation_relations = build_continuation_relations(
             document_id, sections, page_records, blocks
         )
@@ -612,6 +623,7 @@ class IngestService:
             objects=objects,
             relations=(
                 *continuation_relations,
+                *object_relations,
                 *observed_relations,
                 *inferred_relations,
             ),
@@ -902,6 +914,7 @@ def _canonical_structure(
     document_id: str,
     extraction: ExtractionResult,
     table_observations: tuple[ObservedLogicalTable, ...] = (),
+    object_observations: ObjectObservations = ObjectObservations(),
 ) -> tuple[tuple[PageRecord, ...], tuple[Block, ...], tuple[DocumentObject, ...]]:
     pages: list[PageRecord] = []
     blocks: list[Block] = []
@@ -909,6 +922,10 @@ def _canonical_structure(
     terminal_splits = terminal_sentence_split_block_ids(extraction.pages)
     table_parts, table_captions = table_source_groups(table_observations)
     grouped_lists = _heading_adjacent_list_ids(extraction.pages)
+    linked_blocks = _linked_block_ids(extraction.pages)
+    used_parser_objects = {
+        item.image.object_id for item in object_observations.figures
+    }
     for sequence, page in enumerate(extraction.pages, start=1):
         page_id = f"{document_id}:page-index:{page.physical_page_index}"
         extracted_blocks = page.blocks or ()
@@ -916,7 +933,38 @@ def _canonical_structure(
         if extracted_blocks:
             content_order = 0
             repeated_orders = {"page_header": 0, "page_footer": 0}
+            pending_figures = sorted(
+                (
+                    item
+                    for item in object_observations.figures
+                    if item.page_index == page.physical_page_index
+                ),
+                key=lambda item: (item.image.bbox or (0, 0, 0, 0))[1],
+            )
             for item in extracted_blocks:
+                if item.block_type not in {"page_header", "page_footer"}:
+                    while (
+                        pending_figures
+                        and item.bbox is not None
+                        and pending_figures[0].image.bbox is not None
+                        and pending_figures[0].image.bbox[1] <= item.bbox[1]
+                    ):
+                        figure = pending_figures.pop(0)
+                        content_order += 1
+                        figure_block_id = f"{page_id}:block:{content_order}"
+                        page_block_ids.append(figure_block_id)
+                        blocks.append(
+                            Block(
+                                block_id=figure_block_id,
+                                page_id=page_id,
+                                block_type="figure",
+                                reading_order=content_order,
+                                text=f"Figure {figure.number} image",
+                                bbox=figure.image.bbox,
+                                method="parser_object_geometry",
+                                confidence=figure.image.confidence,
+                            )
+                        )
                 part_value = table_parts.get(item.block_id)
                 if (
                     part_value is not None
@@ -942,6 +990,15 @@ def _canonical_structure(
                             text=table.caption,
                             block_type="caption",
                             method="deterministic_table_caption",
+                        ),
+                    )
+                    observed_bbox = item.bbox
+                elif item.block_id in linked_blocks:
+                    fragment_values = (
+                        CanonicalBlockFragment(
+                            text=item.text,
+                            block_type="hyperlink",
+                            method="native_link_geometry",
                         ),
                     )
                     observed_bbox = item.bbox
@@ -983,6 +1040,22 @@ def _canonical_structure(
                             confidence=confidence,
                         )
                     )
+            for figure in pending_figures:
+                content_order += 1
+                figure_block_id = f"{page_id}:block:{content_order}"
+                page_block_ids.append(figure_block_id)
+                blocks.append(
+                    Block(
+                        block_id=figure_block_id,
+                        page_id=page_id,
+                        block_type="figure",
+                        reading_order=content_order,
+                        text=f"Figure {figure.number} image",
+                        bbox=figure.image.bbox,
+                        method="parser_object_geometry",
+                        confidence=figure.image.confidence,
+                    )
+                )
         else:
             block_id = f"{page_id}:block:1"
             page_block_ids.append(block_id)
@@ -998,6 +1071,8 @@ def _canonical_structure(
                 )
             )
         for order, item in enumerate(page.objects, start=1):
+            if item.object_id in used_parser_objects:
+                continue
             objects.append(
                 DocumentObject(
                     object_id=f"{page_id}:{item.object_type}:{order}",
@@ -1042,6 +1117,29 @@ def _heading_adjacent_list_ids(pages: tuple[ExtractedPage, ...]) -> frozenset[st
             if any(canonical_block_type(item.text, item.block_type) == "heading" for item in neighbors):
                 grouped.add(block.block_id)
     return frozenset(grouped)
+
+
+def _linked_block_ids(pages: tuple[ExtractedPage, ...]) -> frozenset[str]:
+    linked: set[str] = set()
+    for page in pages:
+        relation_boxes = tuple(
+            relation.bbox for relation in page.relations if relation.bbox is not None
+        )
+        for block in page.blocks:
+            if block.bbox is not None and any(
+                _bbox_intersects(block.bbox, bbox) for bbox in relation_boxes
+            ):
+                linked.add(block.block_id)
+    return frozenset(linked)
+
+
+def _bbox_intersects(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> bool:
+    overlap_x = min(first[2], second[2]) - max(first[0], second[0])
+    overlap_y = min(first[3], second[3]) - max(first[1], second[1])
+    return overlap_x > 1.0 and overlap_y > 1.0
 
 
 def _relations_and_tasks(
