@@ -104,7 +104,7 @@ def test_dataforge_handoff_contains_page_labels_and_repeated_regions(
     strict=True,
     reason="GAP-DATAFORGE-RICH: docs/provenance-gap-report.md#gap-dataforge-rich",
 )
-def test_dataforge_handoff_contains_exact_section_and_relation_anchors(
+def test_dataforge_handoff_contains_exact_relation_anchors(
     tmp_path: Path, provenance_pdf: Path, ground_truth: dict[str, object]
 ) -> None:
     runtime = StorageRuntime.from_config(StorageConfig.built_in(root=tmp_path / "runtime"))
@@ -120,9 +120,6 @@ def test_dataforge_handoff_contains_exact_section_and_relation_anchors(
     ).ingest(provenance_pdf, context=context, registry=registry)
     handoff = json.load(storage.open(result.provenance_key))
 
-    assert {section["title"] for section in handoff["sections"]} == {
-        section["title"] for section in ground_truth["sections"]
-    }
     assert {relation["target_text"] for relation in handoff["relations"]} >= {
         relation["literal"] for relation in ground_truth["relations"]
     }

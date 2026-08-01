@@ -58,6 +58,7 @@ from cognityx_ingest.parser import (
     normalize_extraction,
 )
 from cognityx_ingest.source_assets import SourceAssetRegistry
+from cognityx_ingest.structure import build_same_page_sections, canonical_block_type
 
 DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v2"
 EVIDENCE_SCHEMA_VERSION = "cognityx.ingest.evidence/v2"
@@ -455,6 +456,7 @@ class IngestService:
                 pages = extraction.pages
         page_records, blocks, objects = _canonical_structure(document_id, extraction)
         repeated_regions = _canonical_repeated_regions(document_id, page_records, blocks)
+        blocks_by_id = {item.block_id: item for item in blocks}
         page_by_index = {
             item.physical_page_index: item.page_id for item in page_records
         }
@@ -479,9 +481,15 @@ class IngestService:
                 pdf_page_label=page.page_label,
                 printed_page_label=page.printed_page_label,
                 block_id=(
-                    page_records[index - 1].block_ids[0]
-                    if page_records[index - 1].block_ids
-                    else None
+                    next(
+                        (
+                            block_id
+                            for block_id in page_records[index - 1].block_ids
+                            if blocks_by_id[block_id].block_type
+                            not in {"page_header", "page_footer"}
+                        ),
+                        None,
+                    )
                 ),
                 anchor_id=page_records[index - 1].page_id,
                 continues_from=(
@@ -871,19 +879,36 @@ def _canonical_structure(
         extracted_blocks = page.blocks or ()
         page_block_ids: list[str] = []
         if extracted_blocks:
-            for order, item in enumerate(extracted_blocks, start=1):
-                block_id = f"{page_id}:block:{order}"
+            content_order = 0
+            repeated_orders = {"page_header": 0, "page_footer": 0}
+            for item in extracted_blocks:
+                block_type = canonical_block_type(item.text, item.block_type)
+                if block_type in repeated_orders:
+                    repeated_orders[block_type] += 1
+                    block_id = (
+                        f"{page_id}:{block_type.replace('_', '-')}"
+                        f":{repeated_orders[block_type]}"
+                    )
+                    reading_order = item.reading_order
+                    method = item.method
+                    confidence = item.confidence
+                else:
+                    content_order += 1
+                    block_id = f"{page_id}:block:{content_order}"
+                    reading_order = content_order
+                    method = "deterministic_block_type"
+                    confidence = 1.0
                 page_block_ids.append(block_id)
                 blocks.append(
                     Block(
                         block_id=block_id,
                         page_id=page_id,
-                        block_type=item.block_type,
-                        reading_order=item.reading_order,
+                        block_type=block_type,
+                        reading_order=reading_order,
                         text=item.text,
                         bbox=item.bbox,
-                        method=item.method,
-                        confidence=item.confidence,
+                        method=method,
+                        confidence=confidence,
                     )
                 )
         else:
@@ -1014,6 +1039,9 @@ def _canonical_sections(
     blocks: tuple[Block, ...],
     evidence: tuple[Evidence, ...],
 ) -> tuple[Section, ...]:
+    structured = build_same_page_sections(document_id, pages, blocks, evidence)
+    if structured:
+        return structured
     content_block_ids = {
         item.block_id
         for item in blocks

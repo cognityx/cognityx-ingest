@@ -25,10 +25,14 @@ run has one run ID, one job ID, and one run manifest even when individual PDFs
 fail.
 
 The immutable provenance artifact records physical page indexes, PDF and
-printed labels, reading-order blocks, cross-page sections, tables, figures,
-captions, footnotes, exact evidence, relations, decision records and unresolved
-items. Observed facts, parser results, deterministic rules and inference
-proposals retain separate `method` and confidence fields.
+printed labels, typed reading-order blocks, exact same-page section spans,
+evidence, observed objects, relations, decision records and unresolved items.
+Each numbered section carries its number, title, hierarchy level, parent, path,
+heading block, start and end block anchors, ordered page IDs and content block
+IDs. DataForge can consume those fields without reopening the PDF. Observed
+facts, parser results, deterministic rules and inference proposals retain
+separate `method` and confidence fields. Cross-page continuation, multi-page
+table identity, and richer figure or footnote ownership remain later work.
 
 Bounded inference uses `CognityxInferenceClient`. A named local server profile
 starts the worker and loads its configured model; external providers must pass

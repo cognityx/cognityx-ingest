@@ -416,6 +416,13 @@ class Section:
     section_id: str
     title: str
     evidence_ids: tuple[str, ...]
+    number: str | None = None
+    level: int | None = None
+    parent_section_id: str | None = None
+    path: tuple[str, ...] = ()
+    heading_block_id: str | None = None
+    start_block_id: str | None = None
+    end_block_id: str | None = None
     page_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
     continues_from: str | None = None
@@ -426,6 +433,7 @@ class Section:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["evidence_ids"] = list(self.evidence_ids)
+        value["path"] = list(self.path)
         value["page_ids"] = list(self.page_ids)
         value["block_ids"] = list(self.block_ids)
         return value
@@ -472,7 +480,18 @@ class CanonicalDocument:
     def from_dict(cls, value: Mapping[str, Any]) -> "CanonicalDocument":
         """Read v1 documents while accepting the richer v2 fields."""
         source = SourceRecord(**dict(value["source"]))
-        sections = tuple(Section(**dict(item)) for item in value.get("sections", ()))
+        sections = tuple(
+            Section(
+                **{
+                    **dict(item),
+                    "evidence_ids": tuple(item.get("evidence_ids", ())),
+                    "path": tuple(item.get("path", ())),
+                    "page_ids": tuple(item.get("page_ids", ())),
+                    "block_ids": tuple(item.get("block_ids", ())),
+                }
+            )
+            for item in value.get("sections", ())
+        )
         return cls(
             document_id=str(value["document_id"]),
             schema_version=str(value.get("schema_version", "cognityx.ingest.document/v1")),

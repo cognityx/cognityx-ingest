@@ -23,19 +23,19 @@ than copying the current implementation's output.
 
 ## Current Result
 
-The provenance suite has 24 focused checks when both optional parser extras
+The provenance suite has 31 focused checks when both optional parser extras
 are installed:
 
-- 15 pass; and
-- 9 are strict expected failures linked to the gap identifiers below.
+- 20 pass; and
+- 11 are strict expected failures linked to the gap identifiers below.
 
 In the default dependency environment, the two optional parser modules skip
 cleanly. Locked local capability runs were also completed with PyMuPDF 1.28.0
 and Docling 2.117.0.
 
-The first production increment changes only normalized parser observations,
-backend-neutral provenance records, and ingest artifact assembly for P-04 and
-P-05. Later parsing objectives remain executable expected failures.
+The first two production increments now cover P-04 through P-08 using normalized
+parser observations and backend-neutral deterministic structure. Later parsing
+objectives remain executable expected failures.
 
 ## Already Passing
 
@@ -45,6 +45,13 @@ P-05. Later parsing objectives remain executable expected failures.
   logical SourceAssets while reusing one physical Blob.
 - `P-03`: all 19 zero-based physical indexes and one-based sequence numbers are
   stable.
+- `P-06`: canonical content blocks preserve stable page-local IDs, typed reading
+  order, exact parser text, page identity, observed bounding boxes, method and
+  confidence.
+- `P-07`: numbered headings and appendices preserve number, title, level,
+  parent, path and heading anchors without using a model.
+- `P-08`: sections sharing one page have distinct exact block spans, while
+  repeated headers and footers remain outside section content.
 - Basic parser capability: exact page text and fixture canaries are present,
   while richer structure is honestly absent.
 - `P-26`: bounded inference accepts only existing allowlisted anchors and
@@ -100,8 +107,6 @@ captions. This is required by the rich-profile acceptance decision and `P-25`.
 The following work must be deterministic or parser-observed, not delegated to
 a model:
 
-- `P-06` through `P-08`: typed reading order, hierarchy, and exact block-level
-  section boundaries;
 - `P-09` and `P-10`: Section 4.3 continuation across physical indexes 4–5 and
   rejection of the deliberate false continuation after Section 4.4;
 - `P-11` and `P-12`: one logical Table 9-1 across indexes 10–12, including 52
@@ -170,7 +175,8 @@ acceptance claim can be made.
 | --- | --- | --- |
 | P-01–P-03 | Pass | Existing SourceAsset and canonical page flow |
 | P-04–P-05 | Pass | Deterministic visible-label and repeated-region analysis |
-| P-06–P-14 | Expected failure | Parser observations plus deterministic canonical structure |
+| P-06–P-08 | Pass | Deterministic block typing, hierarchy and same-page spans |
+| P-09–P-14 | Expected failure | Continuation, tables, figures and footnotes |
 | P-15–P-20 | Expected failure | Deterministic relation detection |
 | P-21–P-22 | Fixture-blocked, then deterministic | Related travel fixtures |
 | P-23 | Expected failure | Deterministic unresolved emission |
@@ -187,6 +193,6 @@ acceptance claim can be made.
 
 ## Next Increment
 
-The next production increment is section boundaries and hierarchy. Later groups
-remain separate: continuation, table identity, deterministic references, parser
+The next production increment is P-09 and P-10 cross-page continuation handling.
+Later groups remain separate: table identity, deterministic references, parser
 fusion, bounded ambiguity, then the complete DataForge handoff.
