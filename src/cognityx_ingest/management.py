@@ -22,6 +22,7 @@ from cognityx_ingest.models import ExecutionContext
 _ARTIFACT_KEYS = {
     "document": "document.json",
     "evidence": "evidence.jsonl",
+    "provenance": "provenance.json",
     "manifest": "manifest.json",
 }
 _TERMINAL_JOB_STATES = {"completed", "failed", "cancelled", "interrupted"}

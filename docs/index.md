@@ -28,42 +28,85 @@ selects the configured storage roles automatically.
 
 ```bash
 # Organize original files.
-cogni doc-bundles create research/reports
-cogni assets add report.pdf --bundle research/reports
+cogni bundle create research/reports
+cogni asset add report.pdf --bundle research/reports
 
 # Ingest a path, an existing asset, or a complete bundle.
 cogni ingest report.pdf
 cogni ingest --asset src-...
-cogni ingest --bundle-id bun-...
+cogni ingest --bundle research/reports
 
 # Check work and reconnect to ordered progress.
-cogni jobs status <job-id>
-cogni jobs events <job-id>
-cogni jobs watch <job-id>
-cogni jobs cancel <job-id>
+cogni job status <job-id>
+cogni job events <job-id>
+cogni job watch <job-id>
+cogni job cancel <job-id>
 
 # Inspect or remove generated results.
 cogni runs list
 cogni runs show <run-id>
-cogni documents list
-cogni documents show <document-id>
-cogni artifacts read <document-id> evidence
+cogni document list
+cogni document show <document-id>
+cogni artifact read <document-id> provenance
 ```
 
 The ingest command returns stable run, job, bundle, asset, and document IDs.
 A normal DataForge user does not need to know the internal storage filenames.
+
+## Structure And Ambiguity
+
+The baseline parser keeps page text. Docling can provide richer document
+structure, while PyMuPDF can provide PDF-native page labels, outlines, links,
+annotations and object locations. A parser plugin is an interchangeable reader
+that produces the same Cognityx output regardless of its internal library.
+
+Extraction can use one fixed parser, deterministic routing, ordered fallback,
+multi-parser comparison, or bounded model-assisted selection. Every output
+records which parsers were considered, which one ran, and why it was selected.
+
+Native PDF facts remain separate from deterministic rules and model proposals.
+When configured, Cognityx Inference may propose a relationship for an unresolved
+reference. Ingest accepts it only when its source and target are existing stable
+anchors and its relationship type is allowed. Rejected proposals remain listed
+for later review.
+
+Local inference can start through a named Cognityx Inference server profile.
+That profile selects and loads the approved model before the worker becomes
+ready. Advanced operators configure this in an inference TOML file; ordinary
+ingest commands do not require model terminology.
+
+```toml
+[inference]
+base_url = "http://127.0.0.1:8000"
+manager_url = "http://127.0.0.1:8000"
+auto_start_local = true
+discovery_policy = "require_existing"
+max_calls = 8
+max_output_tokens = 400
+
+[[inference.targets]]
+provider = "local"
+model = "Qwen/Qwen3-8B"
+backend = "vllm"
+profile = "int4"
+server_profile = "qwen3-8b-int4"
+```
+
+The SDK accepts this as the advanced `--inference-config` override. It can also
+be selected with `COGNITYX_INGEST_INFERENCE_CONFIG`. Local hardware discovery
+does not start silently under the recommended `require_existing` policy.
 
 ## Deletion And Cleanup
 
 Deletion is split deliberately so one action cannot unexpectedly remove raw
 source bytes:
 
-- `cogni assets delete` and `cogni doc-bundles delete` mark logical records as
+- `cogni asset delete` and `cogni bundle delete` mark logical records as
   deleted. The stored bytes remain available while anything still references
   them.
 - `cogni runs delete` removes only generated metadata for that run. It does not
   remove generated documents or SourceAssets.
-- `cogni documents delete` removes only the selected generated document and its
+- `cogni document delete` removes only the selected generated document and its
   generated evidence. It does not remove the SourceAsset or job history.
 - `cogni cleanup blobs` asks Storage to find raw blobs with no live reference.
   Planning is the default; physical deletion requires `--yes`, and Storage
@@ -98,11 +141,12 @@ The following work is intentionally deferred:
 
 ## Deprecated / Compatibility
 
-The `cognityx-ingest` command, `sources` and `bundles` aliases, the short form
-without the `ingest` subcommand, `--bundle` for bundle ingestion, and
-`--storage-root` remain temporarily available. They emit compatibility
-warnings. New application documentation and scripts should use `cogni`,
-`assets`, `doc-bundles`, `--bundle-id`, and normal Storage Runtime loading.
+The `cognityx-ingest` command; plural `assets`, `doc-bundles`, `jobs`,
+`documents`, and `artifacts`; historical `sources` and `bundles`; the short
+form without the `ingest` subcommand; ID-only `--bundle-id`; and
+`--storage-root` remain compatibility forms. New application documentation and
+scripts use singular resource commands, bundle paths, and normal Storage
+Runtime loading.
 
 The old `source.pdf` generated-artifact command is no longer valid. Raw source
-bytes live in the SourceAsset Blob and are inspected through `cogni assets`.
+bytes live in the SourceAsset Blob and are inspected through `cogni asset`.

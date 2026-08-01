@@ -19,3 +19,7 @@ same implementation.
 ::: cognityx_ingest.management
 
 ::: cognityx_ingest.parser
+
+::: cognityx_ingest.enhancement
+
+::: cognityx_ingest.enrichment
