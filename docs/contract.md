@@ -46,6 +46,8 @@ folder runs append replayable `folder_discovered`, `asset_registered`,
 
 Deleting a document removes only its `ingest/documents/{document_id}/` storage
 tree through `cognityx-storage`; it does not erase durable job history.
+It also does not delete the SourceAsset Blob. Deleting a run removes only that
+run's generated metadata; documents and SourceAssets remain separate.
 
 ## SourceAsset registration boundary
 
@@ -55,6 +57,11 @@ owns BlobRef, digest calculation, content-addressed layout, deduplication,
 physical object reuse and durable profile routing. Authorization continues to
 use the existing Context, Bundle and Source action strings for compatibility;
 physical Blob identity is not an authorization resource.
+
+Physical cleanup is Storage-owned. SourceAsset and DocBundle deletion first
+remove logical references; Storage garbage collection later plans candidates,
+checks live references again, and removes only unreferenced Blobs. A future
+always-running Storage cleanup service will automate this same safe process.
 
 The catalog tables and immutable metadata namespace retain the historical
 names `bundles`, `sources`, `source_id`, `bundle.json` and `source.json`.

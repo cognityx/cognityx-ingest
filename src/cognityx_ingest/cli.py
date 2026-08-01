@@ -9,13 +9,11 @@ import json
 import re
 import sys
 import time
+import warnings
 from pathlib import Path
 
 from cognityx_jobs import JobRepository
 from cognityx_storage import (
-    DEFAULT_STORAGE_ROOT,
-    LocalStorageBackend,
-    StorageClient,
     StorageConfig,
     StorageRuntime,
 )
@@ -29,11 +27,17 @@ from cognityx_ingest.models import SourceAssetBatchResult
 
 
 def main(argv: list[str] | None = None) -> int:
+    warnings.warn(
+        "The cognityx-ingest CLI is retained for compatibility; use the cogni CLI.",
+        FutureWarning,
+        stacklevel=2,
+    )
     arguments = list(sys.argv[1:] if argv is None else argv)
     known_commands = {
         "ingest",
         "jobs",
         "documents",
+        "runs",
         "artifacts",
         "assets",
         "doc-bundles",
@@ -75,11 +79,21 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--yes", action="store_true", help="Confirm irreversible artifact deletion.")
         _add_runtime_arguments(command)
 
+    runs = commands.add_parser("runs", help="Inspect or delete generated ingest runs.")
+    run_commands = runs.add_subparsers(dest="run_command", required=True)
+    for name in ("list", "show", "delete"):
+        command = run_commands.add_parser(name)
+        if name != "list":
+            command.add_argument("run_id")
+        if name == "delete":
+            command.add_argument("--yes", action="store_true")
+        _add_runtime_arguments(command)
+
     artifacts = commands.add_parser("artifacts", help="Read one generated document artifact.")
     artifact_commands = artifacts.add_subparsers(dest="artifact_command", required=True)
     read = artifact_commands.add_parser("read")
     read.add_argument("document_id")
-    read.add_argument("name", choices=("source", "document", "evidence", "manifest"))
+    read.add_argument("name", choices=("document", "evidence", "manifest"))
     _add_runtime_arguments(read)
 
     _add_doc_bundle_commands(
@@ -243,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
         registry = SourceAssetRegistry.load(
             runtime=runtime, catalog_path=args.catalog_path
         )
-        storage, repository = _ingest_runtime(args, runtime, registry)
+        storage, repository = _runtime(args, runtime=runtime)
         service = IngestService(
             storage, jobs=repository, registry=registry
         )
@@ -299,6 +313,17 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("documents delete requires --yes.")
             manager.delete_document(context, args.document_id)
             _write({"deleted_document_id": args.document_id})
+        return 0
+    if args.command == "runs":
+        if args.run_command == "list":
+            _write(manager.list_runs(context))
+        elif args.run_command == "show":
+            _write(manager.show_run(context, args.run_id))
+        else:
+            if not args.yes:
+                parser.error("runs delete requires --yes.")
+            manager.delete_run(context, args.run_id)
+            _write({"deleted_run_id": args.run_id})
         return 0
 
     payload = manager.read_artifact(context, args.document_id, args.name)
@@ -373,23 +398,11 @@ def _add_asset_commands(
 def _add_runtime_arguments(
     parser: argparse.ArgumentParser, *, source_storage: bool = False
 ) -> None:
-    if source_storage:
-        selection = parser.add_mutually_exclusive_group()
-        selection.add_argument(
-            "--storage-root",
-            help="Local-development shortcut for a built-in filesystem Storage Runtime.",
-        )
-        selection.add_argument(
-            "--storage-config",
-            help="Explicit Cognityx Storage Runtime TOML configuration.",
-        )
-        parser.add_argument(
-            "--catalog-path",
-            help="Explicit Source catalog path; required when no local root can be derived.",
-        )
-    else:
-        parser.add_argument("--storage-root", default=str(DEFAULT_STORAGE_ROOT), help="Local root used by cognityx-storage.")
-    parser.add_argument("--jobs-database", help="SQLite job database; defaults beneath the storage root.")
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument("--storage-config", help="Advanced Storage Runtime TOML override.")
+    selection.add_argument("--storage-root", help="Deprecated local storage-root override.")
+    parser.add_argument("--catalog-path", help="Advanced SourceAsset catalog override.")
+    parser.add_argument("--jobs-database", help="Advanced SQLite jobs database override.")
     parser.add_argument("--owner-id", default="local", help="Owner scope for lifecycle commands.")
     parser.add_argument("--context", help="JSON file defining the base Cognityx context.")
     parser.add_argument("--context-type", choices=("user", "system"))
@@ -400,28 +413,14 @@ def _add_runtime_arguments(
     parser.add_argument("--scope", action="append", default=[], metavar="KEY=VALUE")
 
 
-def _runtime(args: argparse.Namespace) -> tuple[StorageClient, JobRepository]:
-    storage_root = Path(args.storage_root)
-    database = Path(args.jobs_database) if args.jobs_database else storage_root / ".cognityx-ingest" / "jobs.sqlite3"
-    database.parent.mkdir(parents=True, exist_ok=True)
-    return StorageClient(LocalStorageBackend(storage_root)).for_shared_data(), JobRepository(str(database))
-
-
-def _ingest_runtime(
-    args: argparse.Namespace,
-    runtime: StorageRuntime,
-    registry: SourceAssetRegistry,
+def _runtime(
+    args: argparse.Namespace, *, runtime: StorageRuntime | None = None
 ) -> tuple[object, JobRepository]:
-    if args.storage_root:
-        storage: object = StorageClient(
-            LocalStorageBackend(Path(args.storage_root))
-        ).for_shared_data()
-        default_database = (
-            Path(args.storage_root) / ".cognityx-ingest" / "jobs.sqlite3"
-        )
-    else:
-        storage = runtime.for_role("artifact")
-        default_database = registry.catalog_path.parent / "jobs.sqlite3"
+    selected = runtime or _source_runtime(args)
+    storage = selected.for_role("artifact")
+    default_database = selected.for_role("catalog").native_path(
+        "ingest/jobs.sqlite3"
+    )
     database = (
         Path(args.jobs_database) if args.jobs_database else default_database
     )
@@ -431,6 +430,11 @@ def _ingest_runtime(
 
 def _source_runtime(args: argparse.Namespace) -> StorageRuntime:
     if args.storage_root:
+        warnings.warn(
+            "--storage-root is deprecated; configure StorageRuntime or use --storage-config.",
+            FutureWarning,
+            stacklevel=3,
+        )
         return StorageRuntime.from_config(
             StorageConfig.built_in(root=args.storage_root)
         )

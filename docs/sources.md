@@ -71,16 +71,16 @@ the Storage profile and role using the standard Cognityx configuration
 precedence.
 
 ```bash
-cognityx-ingest assets add report.pdf
-cognityx-ingest assets add recording.mp3 --bundle research/interviews
-cognityx-ingest assets add /data/contracts --bundle legal
-cognityx-ingest assets add /data/contracts --bundle legal --structure flat
-cognityx-ingest doc-bundles list
-cognityx-ingest doc-bundles create enterprise/policies/hr
-cognityx-ingest assets list --bundle research/interviews
-cognityx-ingest assets show src-...
-cognityx-ingest assets locate src-...
-cognityx-ingest doc-bundles locate bun-...
+cogni assets add report.pdf
+cogni assets add recording.mp3 --bundle research/interviews
+cogni assets add /data/contracts --bundle legal
+cogni assets add /data/contracts --bundle legal --structure flat
+cogni doc-bundles list
+cogni doc-bundles create enterprise/policies/hr
+cogni assets list --bundle research/interviews
+cogni assets show src-...
+cogni assets locate src-...
+cogni doc-bundles locate bun-...
 ```
 
 The first add lazily creates the current Context's `default` DocBundle.
@@ -89,30 +89,20 @@ original `asset_id` and `status: already_registered`. Identical bytes in a
 different DocBundle receive a new logical `src-...` asset identity while
 physical reuse follows the configured Storage dedup policy.
 
-The historical commands remain compatible and write warnings only to stderr:
-
-```bash
-cognityx-ingest sources add report.pdf
-cognityx-ingest bundles list
-```
-
-Compatibility JSON retains `source_id`; canonical `assets` JSON uses
-`asset_id`. Both values are the same stable `src-...` identity.
-
 ### Complete folders
 
 `assets add` accepts either one regular file or a directory:
 
 ```bash
-cognityx-ingest assets add /data/contracts \
+cogni assets add /data/contracts \
   --bundle legal \
   --structure preserve
 
-cognityx-ingest assets add /data/contracts \
+cogni assets add /data/contracts \
   --bundle legal \
   --structure flat
 
-cognityx-ingest assets add /data/contracts \
+cogni assets add /data/contracts \
   --bundle legal \
   --no-recursive
 ```
@@ -129,23 +119,20 @@ symlinks, directory symlinks, special filesystem entries, and Cognityx
 Storage/catalog files encountered beneath the selected tree. `--no-recursive`
 limits discovery to direct child files.
 
-Folder registration is synchronous in Job 5A. Files are independently
+Folder registration is synchronous. Files are independently
 transactional, so a failed file is reported without rolling back successful
 files. Rerunning the same folder safely reuses existing Assets and restores
 logically deleted Assets. Durable background execution for large folders will
 be added separately.
 
-Use `--storage-root /path/to/storage` when selecting a local storage root.
-This is a local-development shortcut that creates the built-in filesystem
-Storage Runtime. For an explicit runtime configuration, use:
+For an explicit advanced runtime configuration, use:
 
 ```bash
-cognityx-ingest assets add report.pdf \
+cogni assets add report.pdf \
   --storage-config .cognityx/storage.toml
 ```
 
-`--storage-root` and `--storage-config` are mutually exclusive. Storage
-configuration otherwise follows `COGNITYX_STORAGE_CONFIG`, project
+Storage configuration otherwise follows `COGNITYX_STORAGE_CONFIG`, project
 `.cognityx/storage.toml`, user configuration, and the built-in local fallback.
 
 The SQLite catalog is resolved through the Storage `catalog` role at
@@ -163,7 +150,7 @@ object-storage item.
 Context is optional. The simple local command continues to work:
 
 ```bash
-cognityx-ingest assets add report.pdf
+cogni assets add report.pdf
 ```
 
 The effective Context is selected in this order: explicit CLI fields, then one
@@ -189,7 +176,7 @@ The selected JSON file contains only stable governance descriptors:
 They are generated for each command. Override only the fields you need:
 
 ```bash
-cognityx-ingest assets add report.pdf --context context.json \
+cogni assets add report.pdf --context context.json \
   --workspace-id testing --scope function=experiment --scope environment=dev
 ```
 
@@ -246,8 +233,8 @@ durable location is provider-neutral, for example
 Use read-only inspection when an operator needs the local backing path:
 
 ```bash
-cognityx-ingest assets locate src-...
-cognityx-ingest doc-bundles locate bun-...
+cogni assets locate src-...
+cogni doc-bundles locate bun-...
 ```
 
 `assets locate` returns `asset_id`, `blob_id`, `blob_uri`, durable
@@ -325,16 +312,6 @@ Context identity. Equivalent scope descriptors resolve to the same
 `context_id`; a changed relevant descriptor resolves a different Context.
 System work can use `context_type="system"` and service descriptors in
 `scopes`.
-
-For a direct local-development root:
-
-```python
-from cognityx_storage import StorageConfig, StorageRuntime
-
-runtime = StorageRuntime.from_config(
-    StorageConfig.built_in(root="/tmp/cognityx-storage")
-)
-```
 
 ## Storage and authorization boundary
 
@@ -414,4 +391,15 @@ The old `blobs` table is retained solely as legacy migration state. New
 registration, lookup, deduplication, authorization, reads and locate operations
 do not use it. Existing IDs remain unchanged, authoritative metadata is
 republished under the `source_asset` role, and old bytes/metadata may remain as
-unreferenced legacy data. Garbage collection is out of scope.
+unreferenced legacy data. Physical cleanup is performed through Storage's
+reference-aware Blob garbage collection.
+
+## Deprecated / Compatibility
+
+The `cognityx-ingest` command, `sources` and `bundles` aliases, direct local
+roots through `--storage-root`, and explicit local-development construction
+with `StorageConfig.built_in(root=...)` remain available temporarily. New
+application code should use `cogni` and `StorageRuntime.load()`.
+
+Compatibility JSON may retain `source_id`; canonical `assets` JSON uses
+`asset_id`. Both values are the same stable `src-...` identity.
