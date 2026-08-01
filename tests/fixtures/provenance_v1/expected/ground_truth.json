@@ -14,15 +14,14 @@
         "effective_date": "2026-08-01",
         "revision": "Enhanced Provenance Test Edition",
         "classification": "Public synthetic test material",
-        "canonical_filename": "lunavane_hr_policy_provenance_fixture_v2.docx",
-        "frozen_source_filename": "main_policy_v2.docx",
+        "canonical_filename": "lunavane_hr_policy_provenance_fixture_v2_verified.pdf",
+        "frozen_source_filename": "main_policy_v2.pdf",
         "frozen_source_sha256": "73a2dc18cc0ed79419a2208db93cc151e0a1fe092c96ed4322e449207f22630c",
         "frozen_source_container": "PDF 1.7",
-        "frozen_source_note": "Authoritative byte-for-byte copy supplied with a .pdf filename and stored under the required .docx fixture name; no reconstruction was performed.",
+        "frozen_source_note": "Authoritative visually verified PDF used directly by provenance acceptance tests.",
         "aliases": [
             "main_policy_v2.pdf",
             "lunavane_hr_policy_provenance_fixture_v2_verified.pdf",
-            "lunavane_hr_policy_provenance_fixture_v2.docx",
             "LVA-HR-260801-PV2"
         ],
         "pdf_sha256": "73a2dc18cc0ed79419a2208db93cc151e0a1fe092c96ed4322e449207f22630c",

@@ -41,6 +41,8 @@ from cognityx_ingest.models import (
     IngestRunResult,
     PageRecord,
     Relation,
+    RepeatedRegion,
+    RepeatedRegionOccurrence,
     Section,
     SourceAsset,
     SourceRecord,
@@ -52,6 +54,7 @@ from cognityx_ingest.parser import (
     PdfExtractor,
     PyPdfExtractor,
     UnsupportedInputError,
+    normalize_repeated_region_text,
     normalize_extraction,
 )
 from cognityx_ingest.source_assets import SourceAssetRegistry
@@ -451,6 +454,7 @@ class IngestService:
                 )
                 pages = extraction.pages
         page_records, blocks, objects = _canonical_structure(document_id, extraction)
+        repeated_regions = _canonical_repeated_regions(document_id, page_records, blocks)
         page_by_index = {
             item.physical_page_index: item.page_id for item in page_records
         }
@@ -570,6 +574,7 @@ class IngestService:
             aliases=(asset.original_filename, Path(asset.original_filename).stem),
             pages=page_records,
             blocks=blocks,
+            repeated_regions=repeated_regions,
             objects=objects,
             relations=(*observed_relations, *inferred_relations),
             decisions=decisions,
@@ -657,6 +662,9 @@ class IngestService:
             "aliases": list(document.aliases),
             "pages": [item.to_dict() for item in document.pages],
             "blocks": [item.to_dict() for item in document.blocks],
+            "repeated_regions": [
+                item.to_dict() for item in document.repeated_regions
+            ],
             "sections": [item.to_dict() for item in document.sections],
             "objects": [item.to_dict() for item in document.objects],
             "evidence": [item.to_dict() for item in evidence],
@@ -960,6 +968,44 @@ def _relations_and_tasks(
     return tuple(relations), tuple(tasks)
 
 
+def _canonical_repeated_regions(
+    document_id: str,
+    pages: tuple[PageRecord, ...],
+    blocks: tuple[Block, ...],
+) -> tuple[RepeatedRegion, ...]:
+    page_index = {page.page_id: page.physical_page_index for page in pages}
+    grouped: dict[tuple[str, str], list[Block]] = {}
+    for block in blocks:
+        if block.block_type not in {"page_header", "page_footer"}:
+            continue
+        key = (
+            block.block_type.removeprefix("page_"),
+            normalize_repeated_region_text(block.text),
+        )
+        grouped.setdefault(key, []).append(block)
+
+    return tuple(
+        RepeatedRegion(
+            region_id=f"{document_id}:repeated-region:{index}",
+            region_type=region_type,
+            normalized_text=normalized_text,
+            occurrences=tuple(
+                RepeatedRegionOccurrence(
+                    page_id=block.page_id,
+                    physical_page_index=page_index[block.page_id],
+                    source_page_id=block.page_id,
+                    source_block_id=block.block_id,
+                    text=block.text,
+                )
+                for block in region_blocks
+            ),
+        )
+        for index, ((region_type, normalized_text), region_blocks) in enumerate(
+            grouped.items(), start=1
+        )
+    )
+
+
 def _canonical_sections(
     document_id: str,
     title: str,
@@ -968,6 +1014,11 @@ def _canonical_sections(
     blocks: tuple[Block, ...],
     evidence: tuple[Evidence, ...],
 ) -> tuple[Section, ...]:
+    content_block_ids = {
+        item.block_id
+        for item in blocks
+        if item.block_type not in {"page_header", "page_footer"}
+    }
     if not extraction.sections:
         return (
             Section(
@@ -975,7 +1026,9 @@ def _canonical_sections(
                 title=title,
                 evidence_ids=tuple(item.evidence_id for item in evidence),
                 page_ids=tuple(item.page_id for item in pages),
-                block_ids=tuple(item.block_id for item in blocks),
+                block_ids=tuple(
+                    item.block_id for item in blocks if item.block_id in content_block_ids
+                ),
                 method="deterministic_page_sequence",
             ),
         )
@@ -998,7 +1051,10 @@ def _canonical_sections(
             if page.physical_page_index in evidence_map
         )
         selected_blocks = tuple(
-            block_id for page in selected_pages for block_id in page.block_ids
+            block_id
+            for page in selected_pages
+            for block_id in page.block_ids
+            if block_id in content_block_ids
         )
         result.append(
             Section(

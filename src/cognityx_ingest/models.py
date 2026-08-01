@@ -257,6 +257,34 @@ class Block:
 
 
 @dataclass(frozen=True, slots=True)
+class RepeatedRegionOccurrence:
+    page_id: str
+    physical_page_index: int
+    source_page_id: str
+    source_block_id: str
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class RepeatedRegion:
+    region_id: str
+    region_type: str
+    normalized_text: str
+    occurrences: tuple[RepeatedRegionOccurrence, ...]
+    detection_method: str = "deterministic_repeated_margin"
+    status: str = "deterministic"
+    confidence: float = 1.0
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["occurrences"] = [item.to_dict() for item in self.occurrences]
+        return value
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentObject:
     object_id: str
     object_type: str
@@ -415,6 +443,7 @@ class CanonicalDocument:
     aliases: tuple[str, ...] = ()
     pages: tuple[PageRecord, ...] = ()
     blocks: tuple[Block, ...] = ()
+    repeated_regions: tuple[RepeatedRegion, ...] = ()
     objects: tuple[DocumentObject, ...] = ()
     relations: tuple[Relation, ...] = ()
     decisions: tuple[DecisionRecord, ...] = ()
@@ -432,6 +461,7 @@ class CanonicalDocument:
             "aliases": list(self.aliases),
             "pages": [page.to_dict() for page in self.pages],
             "blocks": [block.to_dict() for block in self.blocks],
+            "repeated_regions": [item.to_dict() for item in self.repeated_regions],
             "objects": [item.to_dict() for item in self.objects],
             "relations": [relation.to_dict() for relation in self.relations],
             "decisions": [decision.to_dict() for decision in self.decisions],
@@ -454,6 +484,18 @@ class CanonicalDocument:
             aliases=tuple(value.get("aliases", ())),
             pages=tuple(PageRecord(**dict(item)) for item in value.get("pages", ())),
             blocks=tuple(Block(**dict(item)) for item in value.get("blocks", ())),
+            repeated_regions=tuple(
+                RepeatedRegion(
+                    **{
+                        **dict(item),
+                        "occurrences": tuple(
+                            RepeatedRegionOccurrence(**dict(occurrence))
+                            for occurrence in item.get("occurrences", ())
+                        ),
+                    }
+                )
+                for item in value.get("repeated_regions", ())
+            ),
             objects=tuple(DocumentObject(**dict(item)) for item in value.get("objects", ())),
             relations=tuple(Relation(**dict(item)) for item in value.get("relations", ())),
             decisions=tuple(DecisionRecord(**dict(item)) for item in value.get("decisions", ())),

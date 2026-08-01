@@ -21,19 +21,21 @@ source document independently of Basic, PyMuPDF, Docling, or Cognityx
 Inference. Tests compare the canonical Cognityx result with that oracle rather
 than copying the current implementation's output.
 
-## Baseline Result
+## Current Result
 
-The Jobs 1–4 baseline adds 23 focused checks when both optional parser extras
+The provenance suite has 24 focused checks when both optional parser extras
 are installed:
 
-- 13 pass; and
-- 10 are strict expected failures linked to the gap identifiers below.
+- 15 pass; and
+- 9 are strict expected failures linked to the gap identifiers below.
 
 In the default dependency environment, the two optional parser modules skip
 cleanly. Locked local capability runs were also completed with PyMuPDF 1.28.0
 and Docling 2.117.0.
 
-No production file under `src/` was changed.
+The first production increment changes only normalized parser observations,
+backend-neutral provenance records, and ingest artifact assembly for P-04 and
+P-05. Later parsing objectives remain executable expected failures.
 
 ## Already Passing
 
@@ -62,9 +64,9 @@ No production file under `src/` was changed.
 - Default CI does not install `cognityx-ingest[pymupdf]` or
   `cognityx-ingest[docling]`, so the optional capability modules skip there.
   Dedicated locked local runs pass each backend's declared baseline capability.
-- No approved Office converter is installed and the source DOCX is absent. All
-  19 supplied PDF pages were rendered and visually inspected, but visual
-  comparison against a newly converted DOCX cannot be performed.
+- The visually verified PDF is the authoritative acceptance input. Editable
+  source-authoring files and Office conversion are outside the ingest contract
+  and do not block these tests.
 - The normal UV cache points at a read-only mounted location. A task-specific
   cache works, but dependency resolution also needs network access.
 
@@ -72,10 +74,9 @@ No production file under `src/` was changed.
 
 - The Basic parser correctly provides page text but does not claim blocks,
   headings, tables, figures, links, or footnotes.
-- The current PyMuPDF adapter can observe blocks, images, links, annotations,
-  and native page labels. It currently treats native labels as printed labels,
-  but this PDF's native labels are `1`–`19` while visible labels are `i`, `ii`,
-  `1`–`14`, and `A-1`–`C-1`.
+- The PyMuPDF adapter observes native labels separately from visible labels and
+  deterministically classifies recurring positioned headers and footers. The
+  frozen PDF's visible labels are `i`, `ii`, `1`–`14`, and `A-1`–`C-1`.
 - The current PyMuPDF relation shape does not retain the complete source text
   rectangle required for native hyperlink provenance.
 - The current Docling normalization records text blocks, table/figure objects,
@@ -99,7 +100,6 @@ captions. This is required by the rich-profile acceptance decision and `P-25`.
 The following work must be deterministic or parser-observed, not delegated to
 a model:
 
-- `P-04` and `P-05`: visible page-label and repeated header/footer analysis;
 - `P-06` through `P-08`: typed reading order, hierarchy, and exact block-level
   section boundaries;
 - `P-09` and `P-10`: Section 4.3 continuation across physical indexes 4–5 and
@@ -150,11 +150,9 @@ logic does not belong in Ingest.
 
 ### GAP-FIXTURE-SOURCES
 
-The authoritative source attachment is a PDF 1.7 container even though the
-correction requires it to be stored as `main_policy_v2.docx`. The repository
-now freezes an exact byte-for-byte copy under that name. It records the actual
-container format and does not claim that renaming converted it to editable
-OOXML. No reconstruction was performed.
+The authoritative main fixture is the visually verified PDF stored as
+`main_policy_v2.pdf`. Editable source-authoring material is optional and does
+not block PDF ingestion, canonical provenance, or the DataForge handoff.
 
 The following fixtures are still required:
 
@@ -171,7 +169,8 @@ acceptance claim can be made.
 | Objectives | Baseline status | Required owner |
 | --- | --- | --- |
 | P-01–P-03 | Pass | Existing SourceAsset and canonical page flow |
-| P-04–P-14 | Expected failure | Parser observations plus deterministic canonical structure |
+| P-04–P-05 | Pass | Deterministic visible-label and repeated-region analysis |
+| P-06–P-14 | Expected failure | Parser observations plus deterministic canonical structure |
 | P-15–P-20 | Expected failure | Deterministic relation detection |
 | P-21–P-22 | Fixture-blocked, then deterministic | Related travel fixtures |
 | P-23 | Expected failure | Deterministic unresolved emission |
@@ -188,7 +187,6 @@ acceptance claim can be made.
 
 ## Next Increment
 
-Production work must begin with printed labels and repeated header/footer
-handling. Each later group remains separate: section boundaries, continuation,
-table identity, deterministic references, parser fusion, bounded ambiguity,
-then the complete DataForge handoff.
+The next production increment is section boundaries and hierarchy. Later groups
+remain separate: continuation, table identity, deterministic references, parser
+fusion, bounded ambiguity, then the complete DataForge handoff.
