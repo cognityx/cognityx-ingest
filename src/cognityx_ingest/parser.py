@@ -321,7 +321,7 @@ def _classify_repeated_page_regions(
         result.append(
             replace(
                 page,
-                text=content_text or page.text,
+                text=content_text if blocks else page.text,
                 printed_page_label=next((label for label in footer_labels if label), None),
                 blocks=blocks,
             )
