@@ -54,7 +54,7 @@ def test_cli_end_to_end_manages_job_and_generated_artifacts(tmp_path: Path, caps
 
 def test_cli_cancellation_is_owner_scoped_and_retains_job_history(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     storage_root = tmp_path / "storage"
-    database = storage_root / ".cognityx-ingest" / "jobs.sqlite3"
+    database = storage_root / "catalog" / "ingest" / "jobs.sqlite3"
     database.parent.mkdir(parents=True)
     jobs = JobRepository(str(database))
     jobs.create("job-running", "ingest.pdf", {"document_id": "pdf-example"}, owner_id="alex")
@@ -75,6 +75,44 @@ def test_cli_cancellation_is_owner_scoped_and_retains_job_history(tmp_path: Path
 def test_cli_document_delete_requires_explicit_confirmation(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         main(["documents", "delete", "pdf-0123456789abcdef", "--storage-root", str(tmp_path / "storage")])
+
+
+def test_cli_lists_shows_and_deletes_run_metadata_without_deleting_documents(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "run.pdf"
+    storage_root = tmp_path / "storage"
+    _write_pdf(source)
+
+    assert main(["ingest", str(source), "--storage-root", str(storage_root)]) == 0
+    result = _json_output(capsys)
+    run_id = result["run_id"]
+    document_id = result["documents"][0]["document_id"]
+
+    assert main(["runs", "list", "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)[0]["run_id"] == run_id
+    assert main(["runs", "show", run_id, "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["run_id"] == run_id
+    assert main(
+        ["runs", "delete", run_id, "--yes", "--storage-root", str(storage_root)]
+    ) == 0
+    assert _json_output(capsys) == {"deleted_run_id": run_id}
+    assert main(["documents", "show", document_id, "--storage-root", str(storage_root)]) == 0
+    assert _json_output(capsys)["document"]["document_id"] == document_id
+
+
+def test_source_pdf_is_not_a_generated_document_artifact(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "artifacts",
+                "read",
+                "pdf-0123456789abcdef",
+                "source",
+                "--storage-root",
+                str(tmp_path / "storage"),
+            ]
+        )
 
 
 def test_cli_registers_and_lists_sources_and_bundles(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

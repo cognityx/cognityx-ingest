@@ -1,141 +1,108 @@
 # Cognityx Ingest
 
-Ingest PDFs from paths or registered SourceAssets into canonical document
-artifacts prepared for DataForge.
+Cognityx Ingest turns PDFs into structured documents and page-level text. It
+also keeps a trace from every page back to the original registered file. That
+trace is technically called provenance.
 
-The deterministic pipeline registers source bytes, extracts page text,
-normalizes page sections and evidence, then persists artifacts through
-`cognityx-storage`. `cognityx-jobs` is optional for durable lifecycle events.
+## Where It Fits
 
-LLM assistance is optional and routed only through `cognityx-inference`.
-The optional `inference` package extra installs that client integration; normal
-PDF ingestion does not load a model runtime.
+```text
+file, folder, or existing SourceAsset
+                 ↓
+          Cognityx Ingest
+                 ↓
+ document + page evidence + stable IDs
+                 ↓
+             DataForge
+```
 
-SourceAsset registration is also available as a separate first-stage
-capability. It creates Context, DocBundle and SourceAsset resources over
-immutable storage bytes without parsing the file. Any digital file can be
-registered; the current extraction pipeline remains primarily PDF-focused.
-BlobRef, hashing, CAS layout and deduplication are owned by the Cognityx
-Storage Runtime `source_asset` role. See [Source Assets](sources.md).
+A SourceAsset is the recorded original file, such as `report.pdf`. A DocBundle
+is a named collection of SourceAssets, similar to a folder. Storage keeps the
+bytes; Ingest keeps the logical records and generated text; Jobs keeps status
+and progress.
 
-## CLI
+## Preferred Commands
+
+The simple path needs no physical storage option. `StorageRuntime.load()`
+selects the configured storage roles automatically.
 
 ```bash
-cognityx-ingest ingest ./policy.pdf --storage-root /tmp/cognityx-storage
-cognityx-ingest ingest ./pdf-folder --storage-root /tmp/cognityx-storage --owner-id alex
-cognityx-ingest ingest --asset <asset-id> --storage-root /tmp/cognityx-storage
-cognityx-ingest ingest --bundle <bundle-id> --storage-root /tmp/cognityx-storage
+# Organize original files.
+cogni doc-bundles create research/reports
+cogni assets add report.pdf --bundle research/reports
+
+# Ingest a path, an existing asset, or a complete bundle.
+cogni ingest report.pdf
+cogni ingest --asset src-...
+cogni ingest --bundle-id bun-...
+
+# Check work and reconnect to ordered progress.
+cogni jobs status <job-id>
+cogni jobs events <job-id>
+cogni jobs watch <job-id>
+cogni jobs cancel <job-id>
+
+# Inspect or remove generated results.
+cogni runs list
+cogni runs show <run-id>
+cogni documents list
+cogni documents show <document-id>
+cogni artifacts read <document-id> evidence
 ```
 
-The command prints one JSON object containing `run_id`, `job_id`,
-`root_bundle_id`, `document_count`, `failed_count`, `run_manifest_uri`,
-successful documents, and safe failure details. Folder ingest recursively
-preserves relative directories as nested DocBundles and continues after an
-individual PDF failure. The `ingest` word is optional for backward
-compatibility.
+The ingest command returns stable run, job, bundle, asset, and document IDs.
+A normal DataForge user does not need to know the internal storage filenames.
 
-## Lifecycle And Artifacts
+## Deletion And Cleanup
 
-The CLI stores jobs in `<storage-root>/.cognityx-ingest/jobs.sqlite3` by
-default. Use `--jobs-database /path/to/jobs.sqlite3` to select another durable
-SQLite database.
+Deletion is split deliberately so one action cannot unexpectedly remove raw
+source bytes:
+
+- `cogni assets delete` and `cogni doc-bundles delete` mark logical records as
+  deleted. The stored bytes remain available while anything still references
+  them.
+- `cogni runs delete` removes only generated metadata for that run. It does not
+  remove generated documents or SourceAssets.
+- `cogni documents delete` removes only the selected generated document and its
+  generated evidence. It does not remove the SourceAsset or job history.
+- `cogni cleanup blobs` asks Storage to find raw blobs with no live reference.
+  Planning is the default; physical deletion requires `--yes`, and Storage
+  checks references again immediately before deletion.
+
+This separation means deleting an extracted document does not silently delete
+the original PDF.
+
+## Advanced Configuration
+
+Normal commands load the standard Storage Runtime. An operator may select an
+explicit configuration when testing profile routing:
 
 ```bash
-# Submit an ingest and copy document_id/job_id from the JSON output.
-cognityx-ingest ingest ./policy.pdf --storage-root /tmp/cognityx-storage --owner-id alex
-
-# View only alex's jobs, then view one record and its ordered events.
-cognityx-ingest jobs list --storage-root /tmp/cognityx-storage --owner-id alex
-cognityx-ingest jobs show <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
-cognityx-ingest jobs events <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
-cognityx-ingest jobs events <job-id> --follow --storage-root /tmp/cognityx-storage --owner-id alex
-
-# Request cancellation of a queued or running job.
-cognityx-ingest jobs cancel <job-id> --storage-root /tmp/cognityx-storage --owner-id alex
-
-# Inspect generated canonical data and read one artifact as JSON-safe output.
-cognityx-ingest documents list --storage-root /tmp/cognityx-storage
-cognityx-ingest documents show <document-id> --storage-root /tmp/cognityx-storage
-cognityx-ingest artifacts read <document-id> evidence --storage-root /tmp/cognityx-storage
-
-# Permanently delete only this document's source and generated artifacts.
-cognityx-ingest documents delete <document-id> --yes --storage-root /tmp/cognityx-storage
+cogni ingest report.pdf --storage-config .cognityx/storage.toml
 ```
 
-`jobs cancel` records a durable cancellation request. Folder and bundle runs
-check it between documents; parsing of the current PDF remains synchronous.
-Document deletion retains durable job history and requires `--yes`.
+## Future Roadmap
 
-## Python API
+The following work is intentionally deferred:
 
-```python
-from cognityx_ingest import ExecutionContext, IngestService, SourceAssetRegistry
-from cognityx_storage import LocalStorageBackend, StorageClient, StorageConfig, StorageRuntime
+- Storage will gain an always-running cleanup service that periodically plans
+  and removes unreferenced blobs according to retention policy. It must use the
+  same reference checks and safe cleanup boundary as the current explicit
+  command; it will not make Ingest a blob owner.
+- Ingest may accept external object or web references without first copying the
+  bytes. This reference-only mode must define checksum, availability, and
+  permission guarantees before implementation.
+- Large folder runs may move to real distributed workers. The current engine is
+  synchronous and checks cancellation between documents; no worker framework is
+  introduced here.
 
-storage = StorageClient(LocalStorageBackend("/tmp/cognityx-storage")).for_shared_data()
-runtime = StorageRuntime.from_config(
-    StorageConfig.built_in(root="/tmp/cognityx-storage")
-)
-registry = SourceAssetRegistry.load(runtime=runtime)
-context = ExecutionContext(
-    run_id="run-123",
-    correlation_id="request-456",
-    principal_id="alex",
-    tenant_id="tenant-a",
-    scopes={"environment": "development"},
-)
-service = IngestService(storage, registry=registry)
-result = service.ingest("policy.pdf", context=context)
+## Deprecated / Compatibility
 
-print(result.document.document_id)
-print(result.usage.pages)
-for artifact in result.artifacts:
-    print(artifact.artifact_id, artifact.uri)
+The `cognityx-ingest` command, `sources` and `bundles` aliases, the short form
+without the `ingest` subcommand, `--bundle` for bundle ingestion, and
+`--storage-root` remain temporarily available. They emit compatibility
+warnings. New application documentation and scripts should use `cogni`,
+`assets`, `doc-bundles`, `--bundle-id`, and normal Storage Runtime loading.
 
-registered = registry.register_asset(context, "policy.pdf", bundle="legal")
-asset_result = service.ingest_asset(registered.asset_id, registry, context)
-```
-
-## Lifecycle Management API
-
-```python
-from cognityx_ingest import ExecutionContext, IngestManager
-from cognityx_jobs import JobRepository
-
-jobs = JobRepository("/tmp/cognityx-storage/.cognityx-ingest/jobs.sqlite3")
-manager = IngestManager(storage, jobs)
-context = ExecutionContext(run_id="run-789", correlation_id="request-999", principal_id="alex")
-
-for job in manager.list_jobs(context, owner_id="alex"):
-    print(job["job_id"], job["state"])
-
-details = manager.show_document(context, "pdf-0123456789abcdef")
-evidence_jsonl = manager.read_artifact(context, "pdf-0123456789abcdef", "evidence")
-
-# This is irreversible for the selected document artifacts only.
-manager.delete_document(context, "pdf-0123456789abcdef")
-```
-
-## Custom Control Client
-
-The local client allows standalone operation. A future deployment can replace
-it without changing the parser or canonical-document contract.
-
-```python
-from cognityx_ingest import ControlDecision, IngestService, UsageReport
-
-class CompanyControl:
-    def authorize(self, context, action, resource=None, request=None):
-        assert action in {"ingest.job.submit", "ingest.job.cancel", "ingest.result.read", "ingest.document.delete"}
-        return ControlDecision(allowed=True, limits={"max_document_size": 100_000_000})
-
-    def report_usage(self, context, usage: UsageReport):
-        print(usage.documents, usage.pages, usage.duration_ms)
-
-service = IngestService(storage, control=CompanyControl())
-result = service.ingest("policy.pdf", context=context)
-```
-
-`ControlDecision.allowed=False` raises `IngestAuthorizationError`. Currently,
-the service can enforce `max_document_size` and `max_pages`; policy evaluation
-remains outside this repository.
+The old `source.pdf` generated-artifact command is no longer valid. Raw source
+bytes live in the SourceAsset Blob and are inspected through `cogni assets`.

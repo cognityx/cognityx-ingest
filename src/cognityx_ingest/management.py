@@ -7,7 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from cognityx_jobs import JobRecord, JobRepository
-from cognityx_storage import ObjectNotFoundError, StorageClient
+from cognityx_storage import ObjectNotFoundError
 
 from cognityx_ingest.control import (
     INGEST_DOCUMENT_DELETE,
@@ -20,7 +20,6 @@ from cognityx_ingest.control import (
 from cognityx_ingest.models import ExecutionContext
 
 _ARTIFACT_KEYS = {
-    "source": "source.pdf",
     "document": "document.json",
     "evidence": "evidence.jsonl",
     "manifest": "manifest.json",
@@ -33,7 +32,7 @@ class IngestManager:
 
     def __init__(
         self,
-        storage: StorageClient,
+        storage: Any,
         jobs: JobRepository,
         *,
         control: ControlClient | None = None,
@@ -84,7 +83,7 @@ class IngestManager:
         except ObjectNotFoundError:
             return ()
         return tuple(
-            {"document_id": item.key.rsplit("/", 1)[-1], "uri": self._storage_uri(item.key), "size_bytes": item.size_bytes}
+            {"document_id": item.key.rsplit("/", 1)[-1], "uri": self._stored_uri(item), "size_bytes": item.size_bytes}
             for item in documents
             if item.is_directory
         )
@@ -111,6 +110,32 @@ class IngestManager:
         self._authorize(context, INGEST_DOCUMENT_DELETE, {"document_id": document_id})
         self._storage.delete(self._document_prefix(document_id), recursive=True)
 
+    def list_runs(self, context: ExecutionContext) -> tuple[dict[str, Any], ...]:
+        """List generated ingest runs without exposing physical storage paths."""
+        self._authorize(context, INGEST_RESULT_READ, {"collection": "runs"})
+        try:
+            runs = self._storage.list("ingest/runs")
+        except ObjectNotFoundError:
+            return ()
+        return tuple(
+            {
+                "run_id": item.key.rsplit("/", 1)[-1],
+                "uri": self._stored_uri(item),
+                "size_bytes": item.size_bytes,
+            }
+            for item in runs
+            if item.is_directory
+        )
+
+    def show_run(self, context: ExecutionContext, run_id: str) -> dict[str, Any]:
+        self._authorize(context, INGEST_RESULT_READ, {"run_id": run_id})
+        return self._read_json(f"{self._run_prefix(run_id)}/manifest.json")
+
+    def delete_run(self, context: ExecutionContext, run_id: str) -> None:
+        """Delete generated run metadata without touching documents or SourceAssets."""
+        self._authorize(context, INGEST_DOCUMENT_DELETE, {"run_id": run_id})
+        self._storage.delete(self._run_prefix(run_id), recursive=True)
+
     def _authorize(self, context: ExecutionContext, action: str, resource: object) -> None:
         decision = self._control.authorize(context, action, resource=resource)
         if not decision.allowed:
@@ -127,10 +152,17 @@ class IngestManager:
             raise ValueError("Document IDs must be canonical ingest document IDs.")
         return f"ingest/documents/{document_id}"
 
+    @staticmethod
+    def _run_prefix(run_id: str) -> str:
+        if not run_id or "/" in run_id or "\\" in run_id or run_id in {".", ".."}:
+            raise ValueError("Run IDs must be one non-empty storage-key segment.")
+        return f"ingest/runs/{run_id}"
+
     def _read_json(self, key: str) -> dict[str, Any]:
         with self._storage.open(key) as source:
             return json.load(source)
 
     @staticmethod
-    def _storage_uri(key: str) -> str:
-        return f"storage://{key}"
+    def _stored_uri(item: Any) -> str:
+        uri = str(item.uri)
+        return uri if uri.startswith("storage://") else f"storage://{item.key}"
