@@ -1,0 +1,2176 @@
+{
+    "schema": "cognityx.ingest.fixture-ground-truth/v1",
+    "fixture_id": "lunavane-provenance-v1",
+    "acceptance_levels": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+    ],
+    "document": {
+        "fixture_document_id": "LVA-HR-260801-PV2",
+        "title": "People, Rituals and Workplace Policy",
+        "version": "2.0",
+        "effective_date": "2026-08-01",
+        "revision": "Enhanced Provenance Test Edition",
+        "classification": "Public synthetic test material",
+        "canonical_filename": "lunavane_hr_policy_provenance_fixture_v2.docx",
+        "aliases": [
+            "main_policy_v2.pdf",
+            "lunavane_hr_policy_provenance_fixture_v2_verified.pdf",
+            "lunavane_hr_policy_provenance_fixture_v2.docx",
+            "LVA-HR-260801-PV2"
+        ],
+        "pdf_sha256": "73a2dc18cc0ed79419a2208db93cc151e0a1fe092c96ed4322e449207f22630c",
+        "page_count": 19,
+        "policy_family": "Lunavane People Policy"
+    },
+    "related_documents": [
+        {
+            "id": "travel-v1",
+            "document_id": "LVA-TR-260731-TS10",
+            "title": "Lunavane Travel and Aerostat Safety Manual",
+            "version": "1.0",
+            "available": false
+        },
+        {
+            "id": "travel-v2",
+            "document_id": "LVA-TR-260801-TS20",
+            "title": "Lunavane Travel and Aerostat Safety Manual",
+            "version": "2.0",
+            "available": false,
+            "supersedes": "travel-v1"
+        }
+    ],
+    "repeated_regions": {
+        "header": "LUNAVANE AEROSTAT & ARCHIVE LTD. | PEOPLE POLICY | LVA-HR-260801-PV2",
+        "footer_prefix": "Controlled synthetic provenance fixture | Version 2.0 |",
+        "classification": "observed_header_footer",
+        "include_in_section_text": false
+    },
+    "pages": [
+        {
+            "id": "page-000",
+            "physical_index": 0,
+            "sequence_number": 1,
+            "native_pdf_label": "1",
+            "printed_label": "i",
+            "kind": "front_matter",
+            "canary": "glass mango over silent river",
+            "blocks": [
+                [
+                    1,
+                    "title",
+                    "PEOPLE, RITUALS AND WORKPLACE POLICY"
+                ],
+                [
+                    2,
+                    "subtitle",
+                    "Enhanced Provenance Test Edition"
+                ],
+                [
+                    3,
+                    "table",
+                    "Document ID"
+                ],
+                [
+                    4,
+                    "paragraph",
+                    "This document is fictional"
+                ]
+            ]
+        },
+        {
+            "id": "page-001",
+            "physical_index": 1,
+            "sequence_number": 2,
+            "native_pdf_label": "2",
+            "printed_label": "ii",
+            "kind": "front_matter",
+            "canary": "Document Control and Test Contents",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "Document Control and Test Contents"
+                ],
+                [
+                    2,
+                    "table",
+                    "Policy owner"
+                ],
+                [
+                    3,
+                    "table",
+                    "Contents and printed labels"
+                ]
+            ]
+        },
+        {
+            "id": "page-002",
+            "physical_index": 2,
+            "sequence_number": 3,
+            "native_pdf_label": "3",
+            "printed_label": "1",
+            "kind": "body",
+            "canary": "PR-01 Clear Moon Principle",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "1. Purpose and Policy Principles"
+                ],
+                [
+                    2,
+                    "heading",
+                    "1.1. Purpose"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "This policy establishes"
+                ],
+                [
+                    4,
+                    "heading",
+                    "1.2. Interpretation priority"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "Where two rules conflict"
+                ],
+                [
+                    6,
+                    "callout",
+                    "PR-01 Clear Moon Principle"
+                ],
+                [
+                    7,
+                    "heading",
+                    "2. Scope and Authority"
+                ],
+                [
+                    8,
+                    "heading",
+                    "2.1. Covered persons"
+                ],
+                [
+                    9,
+                    "paragraph",
+                    "The policy applies"
+                ],
+                [
+                    10,
+                    "heading",
+                    "2.2. Order of authority"
+                ],
+                [
+                    11,
+                    "paragraph",
+                    "Applicable law"
+                ]
+            ]
+        },
+        {
+            "id": "page-003",
+            "physical_index": 3,
+            "sequence_number": 4,
+            "native_pdf_label": "4",
+            "printed_label": "2",
+            "kind": "body",
+            "canary": "CF-23/31 Copper Finch Threshold",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "3. Definitions and Named Controls"
+                ],
+                [
+                    2,
+                    "heading",
+                    "3.1. Core definitions"
+                ],
+                [
+                    3,
+                    "table",
+                    "Term Meaning"
+                ],
+                [
+                    4,
+                    "heading",
+                    "3.2. Named controls"
+                ],
+                [
+                    5,
+                    "callout",
+                    "MG-17 Morrowglass Interval"
+                ],
+                [
+                    6,
+                    "callout",
+                    "CF-23/31 Copper Finch Threshold"
+                ],
+                [
+                    7,
+                    "callout",
+                    "KG-11.5 Kaveri Gate"
+                ],
+                [
+                    8,
+                    "callout",
+                    "BL-700 Blue Lantern Rule"
+                ],
+                [
+                    9,
+                    "heading",
+                    "3.3. Exact quantities"
+                ],
+                [
+                    10,
+                    "paragraph",
+                    "Exactly means no tolerance"
+                ]
+            ]
+        },
+        {
+            "id": "page-004",
+            "physical_index": 4,
+            "sequence_number": 5,
+            "native_pdf_label": "5",
+            "printed_label": "3",
+            "kind": "body",
+            "canary": "This subsection intentionally continues",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "4. Employment Status and Working Time"
+                ],
+                [
+                    2,
+                    "heading",
+                    "4.1. Employment classes"
+                ],
+                [
+                    3,
+                    "table",
+                    "Class Normal schedule Special condition"
+                ],
+                [
+                    4,
+                    "heading",
+                    "4.2. Standard day"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "A standard office day"
+                ],
+                [
+                    6,
+                    "heading",
+                    "4.3. Kaveri Gate overtime approval"
+                ],
+                [
+                    7,
+                    "paragraph",
+                    "The 11.5-hour threshold"
+                ],
+                [
+                    8,
+                    "paragraph",
+                    "During a declared Level-Cobalt incident"
+                ],
+                [
+                    9,
+                    "paragraph",
+                    "This subsection intentionally continues"
+                ]
+            ]
+        },
+        {
+            "id": "page-005",
+            "physical_index": 5,
+            "sequence_number": 6,
+            "native_pdf_label": "6",
+            "printed_label": "4",
+            "kind": "body",
+            "canary": "must not be marked as continuation",
+            "blocks": [
+                [
+                    1,
+                    "paragraph",
+                    "Retrospective approval is due"
+                ],
+                [
+                    2,
+                    "list_item",
+                    "An employee may refuse overtime"
+                ],
+                [
+                    3,
+                    "list_item",
+                    "Emergency approval expires"
+                ],
+                [
+                    4,
+                    "list_item",
+                    "For travel-specific overtime"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "For more detail on how the source must be cited"
+                ],
+                [
+                    6,
+                    "heading",
+                    "4.4. Night work"
+                ],
+                [
+                    7,
+                    "paragraph",
+                    "A shift containing work"
+                ],
+                [
+                    8,
+                    "paragraph",
+                    "The paragraph above is complete"
+                ],
+                [
+                    9,
+                    "page_break_control",
+                    "The next page starts a new section"
+                ]
+            ]
+        },
+        {
+            "id": "page-006",
+            "physical_index": 6,
+            "sequence_number": 7,
+            "native_pdf_label": "7",
+            "printed_label": "5",
+            "kind": "body",
+            "canary": "AT-15:13 Protected pause",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "5. Attendance, Clocks and Temporal Customs"
+                ],
+                [
+                    2,
+                    "heading",
+                    "5.1. Arrival recording"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "Employees use the brass clock"
+                ],
+                [
+                    4,
+                    "heading",
+                    "5.2. Morrowglass Interval"
+                ],
+                [
+                    5,
+                    "callout",
+                    "AT-15:13 Protected pause"
+                ],
+                [
+                    6,
+                    "list",
+                    "Emergency communications may continue"
+                ],
+                [
+                    7,
+                    "heading",
+                    "5.3. Wednesday North Stair Silence"
+                ],
+                [
+                    8,
+                    "paragraph",
+                    "Between 09:40 and 10:05"
+                ],
+                [
+                    9,
+                    "heading",
+                    "5.4. Clock failure"
+                ],
+                [
+                    10,
+                    "paragraph",
+                    "If the brass clock stops"
+                ]
+            ]
+        },
+        {
+            "id": "page-007",
+            "physical_index": 7,
+            "sequence_number": 8,
+            "native_pdf_label": "8",
+            "printed_label": "6",
+            "kind": "body",
+            "canary": "Footnote 1",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "6. Dress, Insignia and Personal Presentation"
+                ],
+                [
+                    2,
+                    "heading",
+                    "6.1. General standard"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "Clothing must be safe"
+                ],
+                [
+                    4,
+                    "heading",
+                    "6.2. Tuesday umbrella colours"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "On odd-date Tuesdays"
+                ],
+                [
+                    6,
+                    "footnote",
+                    "Footnote 1"
+                ],
+                [
+                    7,
+                    "paragraph",
+                    "The colour rule is suspended"
+                ],
+                [
+                    8,
+                    "heading",
+                    "6.3. Insignia"
+                ],
+                [
+                    9,
+                    "list",
+                    "Archivists wear a silver thread tab"
+                ],
+                [
+                    10,
+                    "heading",
+                    "6.4. Fragrance and sound"
+                ],
+                [
+                    11,
+                    "paragraph",
+                    "Strong fragrance is prohibited"
+                ]
+            ]
+        },
+        {
+            "id": "page-008",
+            "physical_index": 8,
+            "sequence_number": 9,
+            "native_pdf_label": "9",
+            "printed_label": "7",
+            "kind": "body",
+            "canary": "exactly three or exactly five",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "7. Meetings, Speech and Written Communication"
+                ],
+                [
+                    2,
+                    "heading",
+                    "7.1. Meeting duration"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "Internal meetings default"
+                ],
+                [
+                    4,
+                    "heading",
+                    "7.2. Promotion and selection panels"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "A promotion, hiring, or disciplinary panel"
+                ],
+                [
+                    6,
+                    "heading",
+                    "7.3. Blue Lantern Rule"
+                ],
+                [
+                    7,
+                    "paragraph",
+                    "A message whose body exceeds"
+                ],
+                [
+                    8,
+                    "heading",
+                    "7.4. Archive voice protocol"
+                ],
+                [
+                    9,
+                    "paragraph",
+                    "In the Quiet Vault"
+                ]
+            ]
+        },
+        {
+            "id": "page-009",
+            "physical_index": 9,
+            "sequence_number": 10,
+            "native_pdf_label": "10",
+            "printed_label": "8",
+            "kind": "body",
+            "canary": "Seven-Feather Leave",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "8. Leave and Unusual Life Events"
+                ],
+                [
+                    2,
+                    "heading",
+                    "8.1. Ordinary leave"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "Full-time employees receive"
+                ],
+                [
+                    4,
+                    "heading",
+                    "8.2. Seven-Feather Leave"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "Two paid days may be taken"
+                ],
+                [
+                    6,
+                    "heading",
+                    "8.3. Shadow Leave"
+                ],
+                [
+                    7,
+                    "paragraph",
+                    "An employee who witnesses"
+                ],
+                [
+                    8,
+                    "heading",
+                    "8.4. Misplaced-name day"
+                ],
+                [
+                    9,
+                    "paragraph",
+                    "Once per employment year"
+                ]
+            ]
+        },
+        {
+            "id": "page-010",
+            "physical_index": 10,
+            "sequence_number": 11,
+            "native_pdf_label": "11",
+            "printed_label": "9",
+            "kind": "body",
+            "canary": "Table 9-1 intentionally spans",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "9. Companion Creatures and Workplace Access"
+                ],
+                [
+                    2,
+                    "heading",
+                    "9.1. Registration"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "A companion creature may enter"
+                ],
+                [
+                    4,
+                    "heading",
+                    "9.2. Permitted creatures and conditions"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "Table 9-1 intentionally spans"
+                ],
+                [
+                    6,
+                    "caption",
+                    "Table 9-1. Permitted creature matrix"
+                ],
+                [
+                    7,
+                    "table_part",
+                    "Table 9-1 part 1"
+                ]
+            ]
+        },
+        {
+            "id": "page-011",
+            "physical_index": 11,
+            "sequence_number": 12,
+            "native_pdf_label": "12",
+            "printed_label": "10",
+            "kind": "body",
+            "canary": "47 Pocket gryphon",
+            "blocks": [
+                [
+                    1,
+                    "table_part",
+                    "Table 9-1 part 2"
+                ]
+            ]
+        },
+        {
+            "id": "page-012",
+            "physical_index": 12,
+            "sequence_number": 13,
+            "native_pdf_label": "13",
+            "printed_label": "11",
+            "kind": "body",
+            "canary": "End of Table 9-1",
+            "blocks": [
+                [
+                    1,
+                    "table_part",
+                    "Table 9-1 part 3"
+                ],
+                [
+                    2,
+                    "paragraph",
+                    "End of Table 9-1"
+                ],
+                [
+                    3,
+                    "heading",
+                    "9.3. Creature identity cards"
+                ],
+                [
+                    4,
+                    "paragraph",
+                    "Replacing a lost card"
+                ],
+                [
+                    5,
+                    "heading",
+                    "9.4. Conduct and care"
+                ],
+                [
+                    6,
+                    "list",
+                    "Handlers remain responsible"
+                ],
+                [
+                    7,
+                    "heading",
+                    "9.5. Creature-related leave interaction"
+                ],
+                [
+                    8,
+                    "paragraph",
+                    "Registration alone does not create leave rights"
+                ]
+            ]
+        },
+        {
+            "id": "page-013",
+            "physical_index": 13,
+            "sequence_number": 14,
+            "native_pdf_label": "14",
+            "printed_label": "12",
+            "kind": "body",
+            "canary": "https://example.org/lunavane/plain-safety-notice",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "10. Travel, Weather and Aerostat Safety"
+                ],
+                [
+                    2,
+                    "heading",
+                    "10.1. Copper Finch Threshold"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "Outdoor meetings and open-deck work stop"
+                ],
+                [
+                    4,
+                    "heading",
+                    "10.2. Travel approval path"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "The approval sequence is shown"
+                ],
+                [
+                    6,
+                    "figure",
+                    "Figure 10-1 image"
+                ],
+                [
+                    7,
+                    "caption",
+                    "Figure 10-1. Aerostat travel approval path"
+                ],
+                [
+                    8,
+                    "table",
+                    "Approval stage Required evidence Canonical source"
+                ],
+                [
+                    9,
+                    "paragraph",
+                    "If the figure and the paragraph differ"
+                ],
+                [
+                    10,
+                    "footnote",
+                    "Footnote 2"
+                ],
+                [
+                    11,
+                    "hyperlink",
+                    "Lunavane public safety example"
+                ],
+                [
+                    12,
+                    "url",
+                    "https://example.org/lunavane/plain-safety-notice"
+                ],
+                [
+                    13,
+                    "heading",
+                    "10.3. Travel cancellation"
+                ],
+                [
+                    14,
+                    "list",
+                    "Travel may be cancelled"
+                ]
+            ]
+        },
+        {
+            "id": "page-014",
+            "physical_index": 14,
+            "sequence_number": 15,
+            "native_pdf_label": "15",
+            "printed_label": "13",
+            "kind": "body",
+            "canary": "Moonlit Conduct Handbook",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "11. Records, References and Ambiguity"
+                ],
+                [
+                    2,
+                    "heading",
+                    "11.1. Decision source path"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "Every formal decision"
+                ],
+                [
+                    4,
+                    "heading",
+                    "11.2. Exact cross-section references"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "Promotion panels follow Section 7.2"
+                ],
+                [
+                    6,
+                    "heading",
+                    "11.3. Panel review evidence"
+                ],
+                [
+                    7,
+                    "paragraph",
+                    "A panel decision must cite"
+                ],
+                [
+                    8,
+                    "heading",
+                    "11.4. Appendix and page references"
+                ],
+                [
+                    9,
+                    "paragraph",
+                    "For the canonical citation fields"
+                ],
+                [
+                    10,
+                    "heading",
+                    "11.5. Cross-document reference"
+                ],
+                [
+                    11,
+                    "paragraph",
+                    "For overseas aerostat travel"
+                ],
+                [
+                    12,
+                    "heading",
+                    "11.6. Deliberate unresolved and ambiguous references"
+                ],
+                [
+                    13,
+                    "paragraph",
+                    "For ceremonial conduct"
+                ],
+                [
+                    14,
+                    "paragraph",
+                    "When late travel occurs"
+                ]
+            ]
+        },
+        {
+            "id": "page-015",
+            "physical_index": 15,
+            "sequence_number": 16,
+            "native_pdf_label": "16",
+            "printed_label": "14",
+            "kind": "body",
+            "canary": "EX-ORCHID Orchid test",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "12. Exceptions, Discipline and Appeals"
+                ],
+                [
+                    2,
+                    "heading",
+                    "12.1. Exceptions"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "A written exception"
+                ],
+                [
+                    4,
+                    "callout",
+                    "EX-ORCHID Orchid test"
+                ],
+                [
+                    5,
+                    "heading",
+                    "12.2. Levels of misconduct"
+                ],
+                [
+                    6,
+                    "table",
+                    "Level Examples Typical response"
+                ],
+                [
+                    7,
+                    "heading",
+                    "12.3. Appeals"
+                ],
+                [
+                    8,
+                    "paragraph",
+                    "An appeal panel"
+                ]
+            ]
+        },
+        {
+            "id": "page-016",
+            "physical_index": 16,
+            "sequence_number": 17,
+            "native_pdf_label": "17",
+            "printed_label": "A-1",
+            "kind": "appendix",
+            "canary": "Distinctive Rule Index",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "Appendix A. Distinctive Rule Index"
+                ],
+                [
+                    2,
+                    "table",
+                    "Rule Exact requirement Primary provenance"
+                ],
+                [
+                    3,
+                    "paragraph",
+                    "This appendix summarises rules"
+                ]
+            ]
+        },
+        {
+            "id": "page-017",
+            "physical_index": 17,
+            "sequence_number": 18,
+            "native_pdf_label": "18",
+            "printed_label": "B-1",
+            "kind": "appendix",
+            "canary": "Canonical provenance fields",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "Appendix B. Provenance and Interpretation Guide"
+                ],
+                [
+                    2,
+                    "heading",
+                    "B.1. Canonical provenance fields"
+                ],
+                [
+                    3,
+                    "table",
+                    "Field Required value or format"
+                ],
+                [
+                    4,
+                    "heading",
+                    "B.2. Citation examples"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "Exact fact"
+                ],
+                [
+                    6,
+                    "heading",
+                    "B.3. Interpretation priorities"
+                ],
+                [
+                    7,
+                    "list",
+                    "Prefer the precise subsection"
+                ]
+            ]
+        },
+        {
+            "id": "page-018",
+            "physical_index": 18,
+            "sequence_number": 19,
+            "native_pdf_label": "19",
+            "printed_label": "C-1",
+            "kind": "appendix",
+            "canary": "NARIKELA-27-BETA-4",
+            "blocks": [
+                [
+                    1,
+                    "heading",
+                    "Appendix C. Change History and Acknowledgement"
+                ],
+                [
+                    2,
+                    "heading",
+                    "C.1. Change history"
+                ],
+                [
+                    3,
+                    "table",
+                    "Version Date Description Approved by"
+                ],
+                [
+                    4,
+                    "heading",
+                    "C.2. Version relationships"
+                ],
+                [
+                    5,
+                    "paragraph",
+                    "This document supersedes"
+                ],
+                [
+                    6,
+                    "heading",
+                    "C.3. Final integrity markers"
+                ],
+                [
+                    7,
+                    "list",
+                    "Document ID: LVA-HR-260801-PV2"
+                ],
+                [
+                    8,
+                    "paragraph",
+                    "End of controlled synthetic provenance fixture"
+                ]
+            ]
+        }
+    ],
+    "sections": [
+        {
+            "id": "sec-1",
+            "number": "1",
+            "title": "Purpose and Policy Principles",
+            "parent": null,
+            "path": [
+                "1"
+            ],
+            "start": "page-002:block-001",
+            "end": "page-002:block-006"
+        },
+        {
+            "id": "sec-1.1",
+            "number": "1.1",
+            "title": "Purpose",
+            "parent": "sec-1",
+            "path": [
+                "1",
+                "1.1"
+            ],
+            "start": "page-002:block-002",
+            "end": "page-002:block-003"
+        },
+        {
+            "id": "sec-1.2",
+            "number": "1.2",
+            "title": "Interpretation priority",
+            "parent": "sec-1",
+            "path": [
+                "1",
+                "1.2"
+            ],
+            "start": "page-002:block-004",
+            "end": "page-002:block-006"
+        },
+        {
+            "id": "sec-2",
+            "number": "2",
+            "title": "Scope and Authority",
+            "parent": null,
+            "path": [
+                "2"
+            ],
+            "start": "page-002:block-007",
+            "end": "page-002:block-011"
+        },
+        {
+            "id": "sec-2.1",
+            "number": "2.1",
+            "title": "Covered persons",
+            "parent": "sec-2",
+            "path": [
+                "2",
+                "2.1"
+            ],
+            "start": "page-002:block-008",
+            "end": "page-002:block-009"
+        },
+        {
+            "id": "sec-2.2",
+            "number": "2.2",
+            "title": "Order of authority",
+            "parent": "sec-2",
+            "path": [
+                "2",
+                "2.2"
+            ],
+            "start": "page-002:block-010",
+            "end": "page-002:block-011"
+        },
+        {
+            "id": "sec-3",
+            "number": "3",
+            "title": "Definitions and Named Controls",
+            "parent": null,
+            "path": [
+                "3"
+            ],
+            "start": "page-003:block-001",
+            "end": "page-003:block-010"
+        },
+        {
+            "id": "sec-3.1",
+            "number": "3.1",
+            "title": "Core definitions",
+            "parent": "sec-3",
+            "path": [
+                "3",
+                "3.1"
+            ],
+            "start": "page-003:block-002",
+            "end": "page-003:block-003"
+        },
+        {
+            "id": "sec-3.2",
+            "number": "3.2",
+            "title": "Named controls",
+            "parent": "sec-3",
+            "path": [
+                "3",
+                "3.2"
+            ],
+            "start": "page-003:block-004",
+            "end": "page-003:block-008"
+        },
+        {
+            "id": "sec-3.3",
+            "number": "3.3",
+            "title": "Exact quantities",
+            "parent": "sec-3",
+            "path": [
+                "3",
+                "3.3"
+            ],
+            "start": "page-003:block-009",
+            "end": "page-003:block-010"
+        },
+        {
+            "id": "sec-4",
+            "number": "4",
+            "title": "Employment Status and Working Time",
+            "parent": null,
+            "path": [
+                "4"
+            ],
+            "start": "page-004:block-001",
+            "end": "page-005:block-009"
+        },
+        {
+            "id": "sec-4.1",
+            "number": "4.1",
+            "title": "Employment classes",
+            "parent": "sec-4",
+            "path": [
+                "4",
+                "4.1"
+            ],
+            "start": "page-004:block-002",
+            "end": "page-004:block-003"
+        },
+        {
+            "id": "sec-4.2",
+            "number": "4.2",
+            "title": "Standard day",
+            "parent": "sec-4",
+            "path": [
+                "4",
+                "4.2"
+            ],
+            "start": "page-004:block-004",
+            "end": "page-004:block-005"
+        },
+        {
+            "id": "sec-4.3",
+            "number": "4.3",
+            "title": "Kaveri Gate overtime approval",
+            "parent": "sec-4",
+            "path": [
+                "4",
+                "4.3"
+            ],
+            "start": "page-004:block-006",
+            "end": "page-005:block-005",
+            "page_indexes": [
+                4,
+                5
+            ],
+            "continuation": "deterministic_true"
+        },
+        {
+            "id": "sec-4.4",
+            "number": "4.4",
+            "title": "Night work",
+            "parent": "sec-4",
+            "path": [
+                "4",
+                "4.4"
+            ],
+            "start": "page-005:block-006",
+            "end": "page-005:block-009",
+            "continuation_to_next_page": false
+        },
+        {
+            "id": "sec-5",
+            "number": "5",
+            "title": "Attendance, Clocks and Temporal Customs",
+            "parent": null,
+            "path": [
+                "5"
+            ],
+            "start": "page-006:block-001",
+            "end": "page-006:block-010"
+        },
+        {
+            "id": "sec-5.1",
+            "number": "5.1",
+            "title": "Arrival recording",
+            "parent": "sec-5",
+            "path": [
+                "5",
+                "5.1"
+            ],
+            "start": "page-006:block-002",
+            "end": "page-006:block-003"
+        },
+        {
+            "id": "sec-5.2",
+            "number": "5.2",
+            "title": "Morrowglass Interval",
+            "parent": "sec-5",
+            "path": [
+                "5",
+                "5.2"
+            ],
+            "start": "page-006:block-004",
+            "end": "page-006:block-006"
+        },
+        {
+            "id": "sec-5.3",
+            "number": "5.3",
+            "title": "Wednesday North Stair Silence",
+            "parent": "sec-5",
+            "path": [
+                "5",
+                "5.3"
+            ],
+            "start": "page-006:block-007",
+            "end": "page-006:block-008"
+        },
+        {
+            "id": "sec-5.4",
+            "number": "5.4",
+            "title": "Clock failure",
+            "parent": "sec-5",
+            "path": [
+                "5",
+                "5.4"
+            ],
+            "start": "page-006:block-009",
+            "end": "page-006:block-010"
+        },
+        {
+            "id": "sec-6",
+            "number": "6",
+            "title": "Dress, Insignia and Personal Presentation",
+            "parent": null,
+            "path": [
+                "6"
+            ],
+            "start": "page-007:block-001",
+            "end": "page-007:block-011"
+        },
+        {
+            "id": "sec-6.1",
+            "number": "6.1",
+            "title": "General standard",
+            "parent": "sec-6",
+            "path": [
+                "6",
+                "6.1"
+            ],
+            "start": "page-007:block-002",
+            "end": "page-007:block-003"
+        },
+        {
+            "id": "sec-6.2",
+            "number": "6.2",
+            "title": "Tuesday umbrella colours",
+            "parent": "sec-6",
+            "path": [
+                "6",
+                "6.2"
+            ],
+            "start": "page-007:block-004",
+            "end": "page-007:block-007"
+        },
+        {
+            "id": "sec-6.3",
+            "number": "6.3",
+            "title": "Insignia",
+            "parent": "sec-6",
+            "path": [
+                "6",
+                "6.3"
+            ],
+            "start": "page-007:block-008",
+            "end": "page-007:block-009"
+        },
+        {
+            "id": "sec-6.4",
+            "number": "6.4",
+            "title": "Fragrance and sound",
+            "parent": "sec-6",
+            "path": [
+                "6",
+                "6.4"
+            ],
+            "start": "page-007:block-010",
+            "end": "page-007:block-011"
+        },
+        {
+            "id": "sec-7",
+            "number": "7",
+            "title": "Meetings, Speech and Written Communication",
+            "parent": null,
+            "path": [
+                "7"
+            ],
+            "start": "page-008:block-001",
+            "end": "page-008:block-009"
+        },
+        {
+            "id": "sec-7.1",
+            "number": "7.1",
+            "title": "Meeting duration",
+            "parent": "sec-7",
+            "path": [
+                "7",
+                "7.1"
+            ],
+            "start": "page-008:block-002",
+            "end": "page-008:block-003"
+        },
+        {
+            "id": "sec-7.2",
+            "number": "7.2",
+            "title": "Promotion and selection panels",
+            "parent": "sec-7",
+            "path": [
+                "7",
+                "7.2"
+            ],
+            "start": "page-008:block-004",
+            "end": "page-008:block-005"
+        },
+        {
+            "id": "sec-7.3",
+            "number": "7.3",
+            "title": "Blue Lantern Rule",
+            "parent": "sec-7",
+            "path": [
+                "7",
+                "7.3"
+            ],
+            "start": "page-008:block-006",
+            "end": "page-008:block-007"
+        },
+        {
+            "id": "sec-7.4",
+            "number": "7.4",
+            "title": "Archive voice protocol",
+            "parent": "sec-7",
+            "path": [
+                "7",
+                "7.4"
+            ],
+            "start": "page-008:block-008",
+            "end": "page-008:block-009"
+        },
+        {
+            "id": "sec-8",
+            "number": "8",
+            "title": "Leave and Unusual Life Events",
+            "parent": null,
+            "path": [
+                "8"
+            ],
+            "start": "page-009:block-001",
+            "end": "page-009:block-009"
+        },
+        {
+            "id": "sec-8.1",
+            "number": "8.1",
+            "title": "Ordinary leave",
+            "parent": "sec-8",
+            "path": [
+                "8",
+                "8.1"
+            ],
+            "start": "page-009:block-002",
+            "end": "page-009:block-003"
+        },
+        {
+            "id": "sec-8.2",
+            "number": "8.2",
+            "title": "Seven-Feather Leave",
+            "parent": "sec-8",
+            "path": [
+                "8",
+                "8.2"
+            ],
+            "start": "page-009:block-004",
+            "end": "page-009:block-005"
+        },
+        {
+            "id": "sec-8.3",
+            "number": "8.3",
+            "title": "Shadow Leave",
+            "parent": "sec-8",
+            "path": [
+                "8",
+                "8.3"
+            ],
+            "start": "page-009:block-006",
+            "end": "page-009:block-007"
+        },
+        {
+            "id": "sec-8.4",
+            "number": "8.4",
+            "title": "Misplaced-name day",
+            "parent": "sec-8",
+            "path": [
+                "8",
+                "8.4"
+            ],
+            "start": "page-009:block-008",
+            "end": "page-009:block-009"
+        },
+        {
+            "id": "sec-9",
+            "number": "9",
+            "title": "Companion Creatures and Workplace Access",
+            "parent": null,
+            "path": [
+                "9"
+            ],
+            "start": "page-010:block-001",
+            "end": "page-012:block-008"
+        },
+        {
+            "id": "sec-9.1",
+            "number": "9.1",
+            "title": "Registration",
+            "parent": "sec-9",
+            "path": [
+                "9",
+                "9.1"
+            ],
+            "start": "page-010:block-002",
+            "end": "page-010:block-003"
+        },
+        {
+            "id": "sec-9.2",
+            "number": "9.2",
+            "title": "Permitted creatures and conditions",
+            "parent": "sec-9",
+            "path": [
+                "9",
+                "9.2"
+            ],
+            "start": "page-010:block-004",
+            "end": "page-012:block-002",
+            "page_indexes": [
+                10,
+                11,
+                12
+            ]
+        },
+        {
+            "id": "sec-9.3",
+            "number": "9.3",
+            "title": "Creature identity cards",
+            "parent": "sec-9",
+            "path": [
+                "9",
+                "9.3"
+            ],
+            "start": "page-012:block-003",
+            "end": "page-012:block-004"
+        },
+        {
+            "id": "sec-9.4",
+            "number": "9.4",
+            "title": "Conduct and care",
+            "parent": "sec-9",
+            "path": [
+                "9",
+                "9.4"
+            ],
+            "start": "page-012:block-005",
+            "end": "page-012:block-006"
+        },
+        {
+            "id": "sec-9.5",
+            "number": "9.5",
+            "title": "Creature-related leave interaction",
+            "parent": "sec-9",
+            "path": [
+                "9",
+                "9.5"
+            ],
+            "start": "page-012:block-007",
+            "end": "page-012:block-008"
+        },
+        {
+            "id": "sec-10",
+            "number": "10",
+            "title": "Travel, Weather and Aerostat Safety",
+            "parent": null,
+            "path": [
+                "10"
+            ],
+            "start": "page-013:block-001",
+            "end": "page-013:block-014"
+        },
+        {
+            "id": "sec-10.1",
+            "number": "10.1",
+            "title": "Copper Finch Threshold",
+            "parent": "sec-10",
+            "path": [
+                "10",
+                "10.1"
+            ],
+            "start": "page-013:block-002",
+            "end": "page-013:block-003"
+        },
+        {
+            "id": "sec-10.2",
+            "number": "10.2",
+            "title": "Travel approval path",
+            "parent": "sec-10",
+            "path": [
+                "10",
+                "10.2"
+            ],
+            "start": "page-013:block-004",
+            "end": "page-013:block-012"
+        },
+        {
+            "id": "sec-10.3",
+            "number": "10.3",
+            "title": "Travel cancellation",
+            "parent": "sec-10",
+            "path": [
+                "10",
+                "10.3"
+            ],
+            "start": "page-013:block-013",
+            "end": "page-013:block-014"
+        },
+        {
+            "id": "sec-11",
+            "number": "11",
+            "title": "Records, References and Ambiguity",
+            "parent": null,
+            "path": [
+                "11"
+            ],
+            "start": "page-014:block-001",
+            "end": "page-014:block-014"
+        },
+        {
+            "id": "sec-11.1",
+            "number": "11.1",
+            "title": "Decision source path",
+            "parent": "sec-11",
+            "path": [
+                "11",
+                "11.1"
+            ],
+            "start": "page-014:block-002",
+            "end": "page-014:block-003"
+        },
+        {
+            "id": "sec-11.2",
+            "number": "11.2",
+            "title": "Exact cross-section references",
+            "parent": "sec-11",
+            "path": [
+                "11",
+                "11.2"
+            ],
+            "start": "page-014:block-004",
+            "end": "page-014:block-005"
+        },
+        {
+            "id": "sec-11.3",
+            "number": "11.3",
+            "title": "Panel review evidence",
+            "parent": "sec-11",
+            "path": [
+                "11",
+                "11.3"
+            ],
+            "start": "page-014:block-006",
+            "end": "page-014:block-007"
+        },
+        {
+            "id": "sec-11.4",
+            "number": "11.4",
+            "title": "Appendix and page references",
+            "parent": "sec-11",
+            "path": [
+                "11",
+                "11.4"
+            ],
+            "start": "page-014:block-008",
+            "end": "page-014:block-009"
+        },
+        {
+            "id": "sec-11.5",
+            "number": "11.5",
+            "title": "Cross-document reference",
+            "parent": "sec-11",
+            "path": [
+                "11",
+                "11.5"
+            ],
+            "start": "page-014:block-010",
+            "end": "page-014:block-011"
+        },
+        {
+            "id": "sec-11.6",
+            "number": "11.6",
+            "title": "Deliberate unresolved and ambiguous references",
+            "parent": "sec-11",
+            "path": [
+                "11",
+                "11.6"
+            ],
+            "start": "page-014:block-012",
+            "end": "page-014:block-014"
+        },
+        {
+            "id": "sec-12",
+            "number": "12",
+            "title": "Exceptions, Discipline and Appeals",
+            "parent": null,
+            "path": [
+                "12"
+            ],
+            "start": "page-015:block-001",
+            "end": "page-015:block-008"
+        },
+        {
+            "id": "sec-12.1",
+            "number": "12.1",
+            "title": "Exceptions",
+            "parent": "sec-12",
+            "path": [
+                "12",
+                "12.1"
+            ],
+            "start": "page-015:block-002",
+            "end": "page-015:block-004"
+        },
+        {
+            "id": "sec-12.2",
+            "number": "12.2",
+            "title": "Levels of misconduct",
+            "parent": "sec-12",
+            "path": [
+                "12",
+                "12.2"
+            ],
+            "start": "page-015:block-005",
+            "end": "page-015:block-006"
+        },
+        {
+            "id": "sec-12.3",
+            "number": "12.3",
+            "title": "Appeals",
+            "parent": "sec-12",
+            "path": [
+                "12",
+                "12.3"
+            ],
+            "start": "page-015:block-007",
+            "end": "page-015:block-008"
+        },
+        {
+            "id": "appendix-a",
+            "number": "A",
+            "title": "Distinctive Rule Index",
+            "parent": null,
+            "path": [
+                "A"
+            ],
+            "start": "page-016:block-001",
+            "end": "page-016:block-003"
+        },
+        {
+            "id": "appendix-b",
+            "number": "B",
+            "title": "Provenance and Interpretation Guide",
+            "parent": null,
+            "path": [
+                "B"
+            ],
+            "start": "page-017:block-001",
+            "end": "page-017:block-007"
+        },
+        {
+            "id": "appendix-b.1",
+            "number": "B.1",
+            "title": "Canonical provenance fields",
+            "parent": "appendix-b",
+            "path": [
+                "B",
+                "B.1"
+            ],
+            "start": "page-017:block-002",
+            "end": "page-017:block-003"
+        },
+        {
+            "id": "appendix-b.2",
+            "number": "B.2",
+            "title": "Citation examples",
+            "parent": "appendix-b",
+            "path": [
+                "B",
+                "B.2"
+            ],
+            "start": "page-017:block-004",
+            "end": "page-017:block-005"
+        },
+        {
+            "id": "appendix-b.3",
+            "number": "B.3",
+            "title": "Interpretation priorities",
+            "parent": "appendix-b",
+            "path": [
+                "B",
+                "B.3"
+            ],
+            "start": "page-017:block-006",
+            "end": "page-017:block-007"
+        },
+        {
+            "id": "appendix-c",
+            "number": "C",
+            "title": "Change History and Acknowledgement",
+            "parent": null,
+            "path": [
+                "C"
+            ],
+            "start": "page-018:block-001",
+            "end": "page-018:block-008"
+        },
+        {
+            "id": "appendix-c.1",
+            "number": "C.1",
+            "title": "Change history",
+            "parent": "appendix-c",
+            "path": [
+                "C",
+                "C.1"
+            ],
+            "start": "page-018:block-002",
+            "end": "page-018:block-003"
+        },
+        {
+            "id": "appendix-c.2",
+            "number": "C.2",
+            "title": "Version relationships",
+            "parent": "appendix-c",
+            "path": [
+                "C",
+                "C.2"
+            ],
+            "start": "page-018:block-004",
+            "end": "page-018:block-005"
+        },
+        {
+            "id": "appendix-c.3",
+            "number": "C.3",
+            "title": "Final integrity markers",
+            "parent": "appendix-c",
+            "path": [
+                "C",
+                "C.3"
+            ],
+            "start": "page-018:block-006",
+            "end": "page-018:block-008"
+        }
+    ],
+    "objects": [
+        {
+            "id": "table-9-1",
+            "type": "table",
+            "caption": "Table 9-1. Permitted creature matrix",
+            "owner": "sec-9.2",
+            "page_indexes": [
+                10,
+                11,
+                12
+            ],
+            "logical_table_count": 1,
+            "columns": 5,
+            "data_rows": 52,
+            "header": [
+                "Row",
+                "Category",
+                "Default status",
+                "Condition",
+                "Rule code"
+            ],
+            "parts": [
+                {
+                    "page_index": 10,
+                    "rows": [
+                        1,
+                        21
+                    ],
+                    "repeated_header": false,
+                    "merged_group_row": {
+                        "text": "PART A \u2014 ORDINARY AND CONDITIONAL REGISTRATIONS",
+                        "column_span": 5
+                    }
+                },
+                {
+                    "page_index": 11,
+                    "rows": [
+                        22,
+                        47
+                    ],
+                    "repeated_header": true,
+                    "merged_group_row": {
+                        "text": "PART A \u2014 ORDINARY AND CONDITIONAL REGISTRATIONS",
+                        "column_span": 5
+                    }
+                },
+                {
+                    "page_index": 12,
+                    "rows": [
+                        48,
+                        52
+                    ],
+                    "repeated_header": true,
+                    "merged_group_row": {
+                        "text": "PART A \u2014 ORDINARY AND CONDITIONAL REGISTRATIONS",
+                        "column_span": 5
+                    }
+                }
+            ]
+        },
+        {
+            "id": "figure-10-1",
+            "type": "figure",
+            "page_index": 13,
+            "owner": "sec-10.2",
+            "caption": "Figure 10-1. Aerostat travel approval path and wind-stop condition.",
+            "image": "assets/diagram.png",
+            "png_sha256": "046fc230961f752e4ed29a35ee69b1bc81288bbacc041d2105df8038ea4e97f5",
+            "decoded_rgb_sha256": "3cf85e4f07f79eefb4bb344ff41a9b5bf2c45aa5687c3d364c0f2a6b86e15677"
+        },
+        {
+            "id": "footnote-1",
+            "type": "footnote",
+            "page_index": 7,
+            "owner": "sec-6.2",
+            "marker": "1",
+            "text": "During Fog Level Four, any high-visibility umbrella is permitted regardless of Tuesday colour."
+        },
+        {
+            "id": "footnote-2",
+            "type": "footnote",
+            "page_index": 13,
+            "owner": "sec-10.2",
+            "marker": "2",
+            "text": "The narrative text remains authoritative when a diagram is simplified; this note tests object-to-note provenance on the same page."
+        }
+    ],
+    "relations": [
+        {
+            "id": "rel-section-12",
+            "literal": "Section 12",
+            "source": "page-002:block-005",
+            "targets": [
+                "sec-12"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-section-9",
+            "literal": "Section 9",
+            "source": "page-002:block-009",
+            "targets": [
+                "sec-9"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-cont-4.3",
+            "literal": "This subsection intentionally continues onto the following physical page",
+            "source": "page-004:block-009",
+            "targets": [
+                "page-005:block-001"
+            ],
+            "type": "continues",
+            "status": "resolved",
+            "method": "deterministic_layout"
+        },
+        {
+            "id": "rel-no-cont-4.4",
+            "literal": "The next page starts a new section and must not be marked as continuation",
+            "source": "page-005:block-009",
+            "targets": [],
+            "type": "continues",
+            "status": "rejected",
+            "method": "deterministic_negative_control"
+        },
+        {
+            "id": "rel-travel-6.4",
+            "literal": "LVA-TR-260801-TS20, Version 2.0, Section 6.4",
+            "source": "page-005:block-004",
+            "targets": [
+                "travel-v2:sec-6.4"
+            ],
+            "type": "cross_document_reference",
+            "status": "unresolved",
+            "method": "deterministic_missing_fixture"
+        },
+        {
+            "id": "rel-appendix-b",
+            "literal": "Appendix B",
+            "source": "page-005:block-005",
+            "targets": [
+                "appendix-b"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-footnote-1",
+            "literal": "1",
+            "source": "page-007:block-005",
+            "targets": [
+                "footnote-1"
+            ],
+            "type": "governed_by",
+            "status": "resolved",
+            "method": "observed_marker"
+        },
+        {
+            "id": "rel-figure-10-1",
+            "literal": "Figure 10-1",
+            "source": "page-013:block-005",
+            "targets": [
+                "figure-10-1"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-diagram-below",
+            "literal": "The diagram below",
+            "source": "page-013:block-005",
+            "targets": [
+                "figure-10-1"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_layout"
+        },
+        {
+            "id": "rel-native-external",
+            "literal": "Lunavane public safety example",
+            "source": "page-013:block-011",
+            "targets": [
+                "https://example.com/lunavane/safety"
+            ],
+            "type": "hyperlink",
+            "status": "observed",
+            "method": "native_pdf"
+        },
+        {
+            "id": "rel-plain-url",
+            "literal": "https://example.org/lunavane/plain-safety-notice",
+            "source": "page-013:block-012",
+            "targets": [
+                "https://example.org/lunavane/plain-safety-notice"
+            ],
+            "type": "url",
+            "status": "resolved",
+            "method": "deterministic_url"
+        },
+        {
+            "id": "rel-exact-7.2",
+            "literal": "Section 7.2",
+            "source": "page-014:block-005",
+            "targets": [
+                "sec-7.2"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-exact-8.2",
+            "literal": "Section 8.2",
+            "source": "page-014:block-005",
+            "targets": [
+                "sec-8.2"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-plural-7.2-11.3",
+            "literal": "Sections 7.2 and 11.3",
+            "source": "page-014:block-005",
+            "targets": [
+                "sec-7.2",
+                "sec-11.3"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        },
+        {
+            "id": "rel-page-a-1",
+            "literal": "printed page A-1",
+            "source": "page-014:block-009",
+            "targets": [
+                "page-016"
+            ],
+            "type": "page_reference",
+            "status": "resolved",
+            "method": "deterministic_printed_label"
+        },
+        {
+            "id": "rel-native-internal",
+            "literal": "Section 7.2",
+            "source": "page-014:block-005",
+            "targets": [
+                "sec-7.2"
+            ],
+            "type": "hyperlink",
+            "status": "observed",
+            "method": "native_pdf"
+        },
+        {
+            "id": "rel-cross-document",
+            "literal": "Lunavane Travel and Aerostat Safety Manual, Version 2.0, Document ID LVA-TR-260801-TS20, Section 6.4",
+            "source": "page-014:block-011",
+            "targets": [
+                "travel-v2:sec-6.4"
+            ],
+            "type": "cross_document_reference",
+            "status": "unresolved",
+            "method": "deterministic_missing_fixture"
+        },
+        {
+            "id": "rel-version",
+            "literal": "That document supersedes Version 1.0",
+            "source": "page-014:block-011",
+            "targets": [
+                "travel-v1"
+            ],
+            "type": "supersedes",
+            "status": "unresolved",
+            "method": "deterministic_missing_fixture"
+        },
+        {
+            "id": "rel-missing-handbook",
+            "literal": "Moonlit Conduct Handbook, Version 9.4",
+            "source": "page-014:block-013",
+            "targets": [],
+            "type": "cross_document_reference",
+            "status": "unresolved",
+            "method": "deterministic_absent_target",
+            "reason": "document_not_in_corpus"
+        },
+        {
+            "id": "rel-ambiguous-travel",
+            "literal": "the relevant travel rule",
+            "source": "page-014:block-014",
+            "targets": [
+                "sec-10.2",
+                "travel-v2:sec-6.4"
+            ],
+            "type": "references",
+            "status": "ambiguous",
+            "method": "ambiguity_task",
+            "reason": "multiple_plausible_targets"
+        },
+        {
+            "id": "rel-appendix-a-table",
+            "literal": "Section 9.2 and Table 9-1",
+            "source": "page-016:block-002",
+            "targets": [
+                "sec-9.2",
+                "table-9-1"
+            ],
+            "type": "references",
+            "status": "resolved",
+            "method": "deterministic_exact"
+        }
+    ],
+    "decision_expectations": {
+        "methods": [
+            "observed",
+            "deterministic",
+            "parser_inferred",
+            "llm_inferred",
+            "human_verified",
+            "unresolved"
+        ],
+        "ambiguity_task": "rel-ambiguous-travel",
+        "llm_may_propose_only": true,
+        "deterministic_validation_authoritative": true,
+        "fake_anchor_result": "rejected"
+    },
+    "dataforge_handoff": {
+        "artifact": "provenance.json",
+        "must_not_reopen_pdf": true,
+        "required_unit_ids": [
+            "document_id",
+            "asset_id",
+            "source_sha256",
+            "section_id",
+            "page_id",
+            "block_id",
+            "evidence_id"
+        ],
+        "forbidden_fields": [
+            "embedding",
+            "vector_index",
+            "vector_database"
+        ]
+    },
+    "additional_fixtures_required": [
+        "main_policy_v2.docx",
+        "related_travel_policy_v1.docx",
+        "related_travel_policy_v1.pdf",
+        "related_travel_policy_v2.docx",
+        "related_travel_policy_v2.pdf",
+        "mixed_scanned_native.pdf"
+    ]
+}
