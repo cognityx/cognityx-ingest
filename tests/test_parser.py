@@ -1,37 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from cognityx_ingest import (
-    ExtractedBlock,
-    ExtractedPage,
-    ExtractionResult,
-    IngestService,
-    SourceAssetRegistry,
-)
+from cognityx_ingest import Evidence, ExtractedBlock, ExtractedPage, ExtractionResult
 from cognityx_ingest.parser import _classify_repeated_page_regions
-from cognityx_resource import ExecutionContext
-from cognityx_storage import (
-    LocalStorageBackend,
-    StorageClient,
-    StorageConfig,
-    StorageRuntime,
-)
+from cognityx_ingest.service import _canonical_sections, _canonical_structure
 
 
-class RepeatedRegionsOnlyParser:
-    name = "repeated-regions-only"
-
-    def __init__(self, pages: tuple[ExtractedPage, ...]) -> None:
-        self.pages = pages
-
-    def extract_document(self, path: Path) -> ExtractionResult:
-        return ExtractionResult(pages=self.pages, backend=self.name)
-
-
-def test_repeated_regions_only_page_has_empty_content_and_evidence(
-    tmp_path: Path,
-) -> None:
+def test_repeated_regions_only_page_has_empty_content_and_evidence() -> None:
     pages = _classify_repeated_page_regions(
         tuple(
             ExtractedPage(
@@ -67,33 +41,23 @@ def test_repeated_regions_only_page_has_empty_content_and_evidence(
     )
     assert unstructured[0].text == "Unstructured fallback"
 
-    runtime = StorageRuntime.from_config(
-        StorageConfig.built_in(root=tmp_path / "runtime")
+    extraction = ExtractionResult(pages=pages, backend="test")
+    page_records, blocks, _objects = _canonical_structure("document", extraction)
+    evidence = tuple(
+        Evidence(
+            evidence_id=f"evidence-{page.page_number}",
+            document_id="document",
+            page_number=page.page_number,
+            text=page.text,
+            char_start=0,
+            char_end=len(page.text),
+            physical_page_index=page.physical_page_index,
+        )
+        for page in pages
     )
-    registry = SourceAssetRegistry.load(runtime=runtime)
-    storage = StorageClient(LocalStorageBackend(tmp_path / "artifacts")).for_shared_data()
-    source = tmp_path / "source.pdf"
-    source.write_bytes(b"synthetic parser input")
-    result = IngestService(
-        storage, extractor=RepeatedRegionsOnlyParser(pages), registry=registry
-    ).ingest(
-        source,
-        context=ExecutionContext(
-            run_id="run-repeated-regions-only",
-            correlation_id="correlation-repeated-regions-only",
-            principal_id="parser-test",
-        ),
-        registry=registry,
+    sections = _canonical_sections(
+        "document", "title", extraction, page_records, blocks, evidence
     )
 
-    assert all(item.text == "" for item in result.evidence)
-    repeated_block_ids = {
-        block.block_id
-        for block in result.document.blocks
-        if block.block_type in {"page_header", "page_footer"}
-    }
-    assert repeated_block_ids
-    assert all(
-        repeated_block_ids.isdisjoint(section.block_ids)
-        for section in result.document.sections
-    )
+    assert all(item.text == "" for item in evidence)
+    assert all(section.block_ids == () for section in sections)
