@@ -8,6 +8,9 @@ unresolved ambiguity.
 ## Frozen files
 
 - `main_policy_v2.pdf` is the supplied, visually approved 19-page PDF.
+- `main_policy_v2.docx` is the exact byte-for-byte copy requested as the
+  authoritative source fixture. The supplied bytes are still a PDF 1.7
+  container; changing the filename does not convert them to OOXML.
 - `assets/diagram.png` is the single embedded figure extracted losslessly from
   the PDF image pixels and encoded as PNG.
 - `reference/provenance_test_specification.docx` is the supplied test
@@ -15,10 +18,9 @@ unresolved ambiguity.
 - `expected/ground_truth.json` is the hand-authored test oracle.
 - `expected/sha256sums.txt` records the frozen byte identities.
 
-The editable `main_policy_v2.docx` was not included in the supplied files. It
-must not be reconstructed from the PDF. The missing source and the required
-DOCX-to-PDF regeneration check are tracked as `GAP-FIXTURE-SOURCES` in
-`docs/provenance-gap-report.md`.
+No DOCX reconstruction or PDF-to-DOCX conversion was performed. Both named
+fixture files intentionally have the same SHA-256 because the correction
+required an exact copy of the supplied file.
 
 ## Verification boundary
 
@@ -27,15 +29,6 @@ convert, rewrite, optimize, or regenerate them. The checked-in PDF was supplied
 with `verified` in its filename. Its text, page geometry, links, and embedded
 figure were independently inspected when this package was created. All 19 pages
 were also rendered with PyMuPDF and visually inspected as a contact sheet; the
-figure page was checked at higher resolution. This verifies the supplied PDF,
-but it is not a DOCX-to-PDF equivalence check because the source DOCX was not
-supplied.
-
-When the verified DOCX becomes available, an operator must:
-
-1. place it beside the PDF as `main_policy_v2.docx`;
-2. convert it with the repository-approved Office conversion process;
-3. compare the generated PDF visually with the approved PDF;
-4. replace neither frozen file unless the fixture version is intentionally
-   advanced; and
-5. update the oracle and checksums in the same reviewed change.
+figure page was checked at higher resolution. This verifies the supplied PDF
+bytes. It does not claim that `main_policy_v2.docx` is an editable OOXML file or
+that a DOCX-to-PDF conversion was performed.
