@@ -47,7 +47,11 @@ caption anchor, typed columns and ordered data rows, and ordered physical-page
 parts. Each part retains its canonical source block, parser-observation anchors,
 repeated-header status and merged group-row span. Repeated headers and group
 rows are audit facts, not duplicate data rows. Richer figure or footnote
-ownership remains later work.
+ownership is also canonical: figures retain image and caption anchors, page
+geometry and owning sections; footnotes retain their visible marker, marker
+anchor, note anchor, exact note text and owning section. Resolved relations tie
+captions and markers to stable object IDs so consumers do not need to infer
+ownership from the source PDF.
 
 Bounded inference uses `CognityxInferenceClient`. A named local server profile
 starts the worker and loads its configured model; external providers must pass

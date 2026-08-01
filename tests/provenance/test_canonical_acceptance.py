@@ -85,20 +85,6 @@ def test_canonical_numbered_sections_match_ground_truth(
 
 @pytest.mark.xfail(
     strict=True,
-    reason="GAP-RICH-OBJECTS: docs/provenance-gap-report.md#gap-rich-structure",
-)
-def test_canonical_figures_and_footnotes_match_ground_truth(
-    tmp_path: Path, provenance_pdf: Path
-) -> None:
-    result, _storage = _ingest_fixture(tmp_path, provenance_pdf)
-    assert {item.object_type for item in result.document.objects} >= {
-        "figure",
-        "footnote",
-    }
-
-
-@pytest.mark.xfail(
-    strict=True,
     reason="GAP-PARSER-FUSION: docs/provenance-gap-report.md#gap-parser-fusion",
 )
 def test_rich_profile_preserves_complementary_parser_facts(

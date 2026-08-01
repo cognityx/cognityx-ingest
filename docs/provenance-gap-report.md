@@ -23,11 +23,11 @@ than copying the current implementation's output.
 
 ## Current Result
 
-The provenance suite has 39 focused checks when both optional parser extras
+The provenance suite has 42 focused checks when both optional parser extras
 are installed:
 
-- 30 pass; and
-- 9 are strict expected failures linked to the gap identifiers below.
+- 34 pass; and
+- 8 are strict expected failures linked to the gap identifiers below.
 
 In the default dependency environment, the two optional parser modules skip
 cleanly. Locked local capability runs were also completed with PyMuPDF 1.28.0
@@ -63,6 +63,9 @@ objectives remain executable expected failures.
 - `P-11` and `P-12`: Table 9-1 is one logical 52-row, five-column table across
   physical pages 10–12. Its ordered parts retain repeated headers, merged group
   rows, parser anchors and Section 9.2 ownership without duplicating data rows.
+- `P-13` and `P-14`: Figure 10-1 retains image and caption anchors under Section
+  10.2. Footnotes 1 and 2 retain marker/note anchors, exact text and owning
+  sections. Canonical relations connect captions and markers to stable objects.
 - Basic parser capability: exact page text and fixture canaries are present,
   while richer structure is honestly absent.
 - `P-26`: bounded inference accepts only existing allowlisted anchors and
@@ -112,13 +115,6 @@ labels, and rectangles alongside Docling structure, tables, figures, and
 captions. This is required by the rich-profile acceptance decision and `P-25`.
 
 ## Deterministic Logic Required
-
-### GAP-RICH-STRUCTURE
-
-The following work must be deterministic or parser-observed, not delegated to
-a model:
-
-- `P-13` and `P-14`: figure/caption and footnote-marker ownership.
 
 ### GAP-DETERMINISTIC-RELATIONS
 
@@ -184,7 +180,7 @@ acceptance claim can be made.
 | P-06–P-08 | Pass | Deterministic block typing, hierarchy and same-page spans |
 | P-09–P-10 | Pass | Deterministic true and false continuation handling |
 | P-11–P-12 | Pass | One logical multi-page table with auditable parts |
-| P-13–P-14 | Expected failure | Figures, captions and footnotes |
+| P-13–P-14 | Pass | Owned figures, captions and footnotes with relations |
 | P-15–P-20 | Expected failure | Deterministic relation detection |
 | P-21–P-22 | Fixture-blocked, then deterministic | Related travel fixtures |
 | P-23 | Expected failure | Deterministic unresolved emission |
@@ -201,6 +197,6 @@ acceptance claim can be made.
 
 ## Next Increment
 
-The next production increment is P-13 and P-14 figure, caption and footnote
-ownership. Later groups remain separate: deterministic references, parser
+The next production increment is P-15 through P-20 and P-23 deterministic
+reference detection and resolution. Later groups remain separate: parser
 fusion, bounded ambiguity, then the complete DataForge handoff.

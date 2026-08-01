@@ -352,6 +352,11 @@ class DocumentObject:
     owner_section_id: str | None = None
     source_anchor_ids: tuple[str, ...] = ()
     caption_anchor_id: str | None = None
+    marker: str | None = None
+    marker_anchor_id: str | None = None
+    note_anchor_id: str | None = None
+    image_anchor_id: str | None = None
+    parser_source_anchor_ids: tuple[str, ...] = ()
     columns: tuple[str, ...] = ()
     rows: tuple[TableRow, ...] = ()
     parts: tuple[TablePart, ...] = ()
@@ -364,6 +369,7 @@ class DocumentObject:
         value["bbox"] = list(self.bbox) if self.bbox is not None else None
         value["page_ids"] = list(self.page_ids)
         value["source_anchor_ids"] = list(self.source_anchor_ids)
+        value["parser_source_anchor_ids"] = list(self.parser_source_anchor_ids)
         value["columns"] = list(self.columns)
         value["rows"] = [item.to_dict() for item in self.rows]
         value["parts"] = [item.to_dict() for item in self.parts]
@@ -375,6 +381,9 @@ class DocumentObject:
         selected = dict(value)
         selected["page_ids"] = tuple(value.get("page_ids", ()))
         selected["source_anchor_ids"] = tuple(value.get("source_anchor_ids", ()))
+        selected["parser_source_anchor_ids"] = tuple(
+            value.get("parser_source_anchor_ids", ())
+        )
         selected["columns"] = tuple(value.get("columns", ()))
         selected["source_backends"] = tuple(value.get("source_backends", ()))
         selected["rows"] = tuple(
