@@ -28,3 +28,10 @@ figure were independently inspected when this package was created. All 19 pages
 were also rendered with PyMuPDF and visually inspected as a contact sheet; the
 figure page was checked at higher resolution. This verifies the supplied PDF
 bytes without requiring a DOCX-to-PDF conversion during tests.
+
+## Audit notes
+
+- 2026-08-02: corrected the native internal-link oracle to match the frozen PDF
+  observation. The link rectangle covers `Appendix B` in
+  `page-014:block-009` and targets Appendix B on physical page index 17. The
+  PDF bytes and checksum were not changed.

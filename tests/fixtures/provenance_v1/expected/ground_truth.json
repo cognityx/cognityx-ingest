@@ -2068,11 +2068,11 @@
             "method": "deterministic_printed_label"
         },
         {
-            "id": "rel-native-internal",
-            "literal": "Section 7.2",
-            "source": "page-014:block-005",
+            "id": "rel-native-appendix-b",
+            "literal": "Appendix B",
+            "source": "page-014:block-009",
             "targets": [
-                "sec-7.2"
+                "appendix-b"
             ],
             "type": "hyperlink",
             "status": "observed",
