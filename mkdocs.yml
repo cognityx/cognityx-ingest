@@ -13,5 +13,6 @@ nav:
   - Overview: index.md
   - Source Assets: sources.md
   - Contract: contract.md
+  - Provenance Capabilities: provenance-capabilities.md
   - Provenance Gap Report: provenance-gap-report.md
   - API: api.md
