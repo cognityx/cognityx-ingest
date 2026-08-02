@@ -103,6 +103,9 @@ def test_dataforge_handoff_contains_page_labels_and_repeated_regions(
 def test_dataforge_handoff_contains_exact_relation_anchors(
     tmp_path: Path, provenance_pdf: Path, ground_truth: dict[str, object]
 ) -> None:
+    pytest.importorskip(
+        "fitz", reason="Rich relation handoff requires cognityx-ingest[pymupdf]"
+    )
     runtime = StorageRuntime.from_config(StorageConfig.built_in(root=tmp_path / "runtime"))
     registry = SourceAssetRegistry.load(runtime=runtime)
     storage = StorageClient(LocalStorageBackend(tmp_path / "artifacts")).for_shared_data()

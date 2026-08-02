@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cognityx_ingest import IngestService, PyMuPDFParser, SourceAssetRegistry
 from cognityx_resource import ExecutionContext
 from cognityx_storage import (
@@ -29,6 +31,9 @@ def test_deterministic_references_preserve_exact_canonical_contract(
     provenance_pdf: Path,
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip(
+        "fitz", reason="Rich relation acceptance requires cognityx-ingest[pymupdf]"
+    )
     result = _ingest(provenance_pdf, tmp_path)
     expected = {
         item["id"]: item
@@ -64,6 +69,9 @@ def test_absent_document_reference_is_explicitly_unresolved(
     provenance_pdf: Path,
     tmp_path: Path,
 ) -> None:
+    pytest.importorskip(
+        "fitz", reason="Rich relation acceptance requires cognityx-ingest[pymupdf]"
+    )
     result = _ingest(provenance_pdf, tmp_path)
     oracle = next(
         item
