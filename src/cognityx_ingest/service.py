@@ -63,6 +63,7 @@ from cognityx_ingest.parser import (
     normalize_repeated_region_text,
     normalize_extraction,
 )
+from cognityx_ingest.references import build_reference_provenance
 from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_ingest.structure import (
     CanonicalBlockFragment,
@@ -551,8 +552,16 @@ class IngestService:
         continuation_relations = build_continuation_relations(
             document_id, sections, page_records, blocks
         )
+        deterministic_relations, deterministic_unresolved, handled_relations = (
+            build_reference_provenance(
+                document_id, extraction, page_records, blocks, sections
+            )
+        )
         observed_relations, tasks = _relations_and_tasks(
-            document_id, extraction, page_by_index
+            document_id,
+            extraction,
+            page_by_index,
+            ignored_relation_ids=handled_relations,
         )
         valid_anchor_ids = frozenset(
             [item.page_id for item in page_records]
@@ -571,15 +580,18 @@ class IngestService:
                 selected_reason=extraction.selected_reason,
             ),
         )
-        unresolved: tuple[UnresolvedItem, ...] = tuple(
-            UnresolvedItem(
-                task_id=item.task_id,
-                source_anchor_id=item.source_anchor_id,
-                relation_type=item.relation_type,
-                target_text=item.target_text,
-                reason="no_resolution_policy",
+        unresolved: tuple[UnresolvedItem, ...] = (
+            *deterministic_unresolved,
+            *(
+                UnresolvedItem(
+                    task_id=item.task_id,
+                    source_anchor_id=item.source_anchor_id,
+                    relation_type=item.relation_type,
+                    target_text=item.target_text,
+                    reason="no_resolution_policy",
+                )
+                for item in tasks
             )
-            for item in tasks
         )
         inferred_relations: tuple[Relation, ...] = ()
         if self._resolver and tasks:
@@ -595,7 +607,7 @@ class IngestService:
             )
             inferred_relations = resolution.relations
             decisions = (*decisions, *resolution.decisions)
-            unresolved = resolution.unresolved
+            unresolved = (*deterministic_unresolved, *resolution.unresolved)
         enhancement = (
             self._enhancer.enhance([item.text for item in evidence])
             if self._enhancer
@@ -624,6 +636,7 @@ class IngestService:
             relations=(
                 *continuation_relations,
                 *object_relations,
+                *deterministic_relations,
                 *observed_relations,
                 *inferred_relations,
             ),
@@ -1146,12 +1159,15 @@ def _relations_and_tasks(
     document_id: str,
     extraction: ExtractionResult,
     page_by_index: dict[int, str],
+    ignored_relation_ids: frozenset[str] = frozenset(),
 ) -> tuple[tuple[Relation, ...], tuple[ResolutionTask, ...]]:
     relations: list[Relation] = []
     tasks: list[ResolutionTask] = []
     for page in extraction.pages:
         default_source = page_by_index[page.physical_page_index]
         for index, item in enumerate(page.relations, start=1):
+            if item.relation_id in ignored_relation_ids:
+                continue
             source = _parser_anchor(item.source_anchor, page_by_index) or default_source
             target = _parser_anchor(item.target_anchor, page_by_index)
             relation_id = f"{document_id}:relation:{page.physical_page_index}:{index}"
