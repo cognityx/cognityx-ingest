@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -30,6 +31,10 @@ class ExtractedBlock:
     bbox: tuple[float, float, float, float] | None = None
     method: str = "parser"
     confidence: float | None = None
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +47,10 @@ class ExtractedObject:
     bbox: tuple[float, float, float, float] | None = None
     method: str = "parser"
     confidence: float | None = None
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +74,10 @@ class ExtractedRelation:
     method: str = "parser"
     confidence: float | None = None
     bbox: tuple[float, float, float, float] | None = None
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +94,10 @@ class ExtractedPage:
     blocks: tuple[ExtractedBlock, ...] = ()
     objects: tuple[ExtractedObject, ...] = ()
     relations: tuple[ExtractedRelation, ...] = ()
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
     @property
     def physical_page_index(self) -> int:
@@ -96,6 +113,7 @@ class ExtractionResult:
     backend_version: str | None = None
     sections: tuple[ExtractedSection, ...] = ()
     raw_artifact: bytes | None = None
+    raw_artifacts: Mapping[str, bytes] = field(default_factory=dict)
     considered_backends: tuple[str, ...] = ()
     selected_reason: str = "configured"
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
@@ -414,8 +432,7 @@ class ParserRouter:
             results = self._available_results(path, candidates)
             if not results:
                 raise ParserUnavailableError("No configured parser backend was available.")
-            selected = max(results, key=_richness_score)
-            return _with_selection(selected, candidates, "highest_normalized_structure_score")
+            return _fuse_results(results, candidates)
         if self.policy.mode == "fallback":
             errors: list[str] = []
             for name in candidates:
@@ -475,17 +492,469 @@ def _with_selection(
         backend_version=result.backend_version,
         sections=result.sections,
         raw_artifact=result.raw_artifact,
+        raw_artifacts=result.raw_artifacts,
         considered_backends=candidates,
         selected_reason=reason,
         diagnostics=result.diagnostics,
     )
 
 
-def _richness_score(result: ExtractionResult) -> tuple[int, int, int]:
-    return (
-        sum(len(page.blocks) + len(page.objects) + len(page.relations) for page in result.pages),
-        sum(bool(page.page_label) for page in result.pages),
-        sum(len(page.text) for page in result.pages),
+def _fuse_results(
+    results: Sequence[ExtractionResult], candidates: tuple[str, ...]
+) -> ExtractionResult:
+    ordered = tuple(sorted(results, key=lambda item: item.backend))
+    pages_by_index: dict[int, list[tuple[str, ExtractedPage]]] = {}
+    for result in ordered:
+        for page in result.pages:
+            pages_by_index.setdefault(page.physical_page_index, []).append(
+                (result.backend, page)
+            )
+
+    conflicts: list[dict[str, Any]] = []
+    pages = tuple(
+        _fuse_page(page_index, tuple(values), conflicts)
+        for page_index, values in sorted(pages_by_index.items())
+    )
+    raw_artifacts = {
+        result.backend: result.raw_artifact
+        for result in ordered
+        if result.raw_artifact is not None
+    }
+    source_backends = tuple(result.backend for result in ordered)
+    versions = {
+        result.backend: result.backend_version
+        for result in ordered
+        if result.backend_version is not None
+    }
+    diagnostics = {
+        "fusion": "canonical_multi_source",
+        "source_backends": list(source_backends),
+        "backend_versions": versions,
+        "conflicts": conflicts,
+    }
+    return ExtractionResult(
+        pages=pages,
+        backend="fusion",
+        sections=_fuse_sections(ordered),
+        raw_artifact=json.dumps(
+            {
+                "schema": "cognityx.ingest.parser-fusion/v1",
+                "source_backends": source_backends,
+                "backend_versions": versions,
+                "conflicts": conflicts,
+            },
+            sort_keys=True,
+        ).encode(),
+        raw_artifacts=raw_artifacts,
+        considered_backends=tuple(sorted(candidates)),
+        selected_reason="canonical_fact_level_fusion",
+        diagnostics=diagnostics,
+    )
+
+
+def _fuse_page(
+    page_index: int,
+    observed: tuple[tuple[str, ExtractedPage], ...],
+    conflicts: list[dict[str, Any]],
+) -> ExtractedPage:
+    source_backends = tuple(sorted(backend for backend, _page in observed))
+    selected: dict[str, Any] = {}
+    fact_sources: dict[str, tuple[Mapping[str, Any], ...]] = {}
+    for field_name in (
+        "text",
+        "page_label",
+        "printed_page_label",
+        "width",
+        "height",
+    ):
+        value, sources = _select_page_fact(
+            page_index, field_name, observed, conflicts
+        )
+        selected[field_name] = value
+        if sources:
+            fact_sources[field_name] = tuple(
+                {
+                    "backend": backend,
+                    "method": "parser_page_fact",
+                    "confidence": 1.0,
+                }
+                for backend in sources
+            )
+    return ExtractedPage(
+        page_number=page_index + 1,
+        page_index=page_index,
+        text=selected["text"] or "",
+        page_label=selected["page_label"],
+        printed_page_label=selected["printed_page_label"],
+        width=selected["width"],
+        height=selected["height"],
+        blocks=_fuse_blocks(page_index, observed, conflicts),
+        objects=_fuse_objects(page_index, observed, conflicts),
+        relations=_fuse_relations(page_index, observed, conflicts),
+        source_backends=source_backends,
+        fact_sources=fact_sources,
+    )
+
+
+def _select_page_fact(
+    page_index: int,
+    field_name: str,
+    observed: tuple[tuple[str, ExtractedPage], ...],
+    conflicts: list[dict[str, Any]],
+) -> tuple[Any, tuple[str, ...]]:
+    values = [
+        (backend, getattr(page, field_name))
+        for backend, page in observed
+        if getattr(page, field_name) not in {None, ""}
+    ]
+    if not values:
+        return None, ()
+    chosen_backend, chosen = min(
+        values,
+        key=lambda item: (_backend_rank(item[0], field_name), str(item[1])),
+    )
+    distinct = {str(value) for _backend, value in values}
+    if len(distinct) > 1:
+        conflicts.append(
+            {
+                "page_index": page_index,
+                "fact": field_name,
+                "observations": [
+                    {"backend": backend, "value": value}
+                    for backend, value in sorted(values, key=lambda item: item[0])
+                ],
+                "selected_backend": chosen_backend,
+                "resolution": "deterministic_backend_precedence",
+            }
+        )
+    sources = tuple(sorted(backend for backend, value in values if value == chosen))
+    return chosen, sources
+
+
+def _fuse_blocks(
+    page_index: int,
+    observed: tuple[tuple[str, ExtractedPage], ...],
+    conflicts: list[dict[str, Any]],
+) -> tuple[ExtractedBlock, ...]:
+    grouped: dict[tuple[str, int], list[tuple[str, ExtractedBlock]]] = {}
+    occurrences: Counter[tuple[str, str]] = Counter()
+    for backend, page in observed:
+        for block in page.blocks:
+            normalized_text = _normalized_fact_text(block.text)
+            occurrences[(backend, normalized_text)] += 1
+            grouped.setdefault(
+                (normalized_text, occurrences[(backend, normalized_text)]), []
+            ).append(
+                (backend, block)
+            )
+    fused: list[ExtractedBlock] = []
+    for (normalized_text, occurrence), values in sorted(grouped.items()):
+        _text_backend, text = min(
+            ((backend, block.text) for backend, block in values),
+            key=lambda item: (_backend_rank(item[0], "text"), item[1]),
+        )
+        type_backend, block_type = min(
+            ((backend, block.block_type) for backend, block in values),
+            key=lambda item: (_block_type_rank(item[1]), item[0], item[1]),
+        )
+        _bbox_backend, bbox = min(
+            (
+                (backend, block.bbox)
+                for backend, block in values
+                if block.bbox is not None
+            ),
+            key=lambda item: (_backend_rank(item[0], "bbox"), item[1]),
+            default=("", None),
+        )
+        source_backends = tuple(sorted({backend for backend, _block in values}))
+        if len({block.block_type for _backend, block in values}) > 1:
+            conflicts.append(
+                {
+                    "page_index": page_index,
+                    "fact": "block_type",
+                    "anchor_key": f"{normalized_text}:{occurrence}",
+                    "observations": [
+                        {"backend": backend, "value": block.block_type}
+                        for backend, block in sorted(values, key=lambda item: item[0])
+                    ],
+                    "selected_backend": type_backend,
+                    "resolution": "deterministic_semantic_type_precedence",
+                }
+            )
+        confidence_values = [
+            block.confidence
+            for _backend, block in values
+            if block.confidence is not None
+        ]
+        fused.append(
+            ExtractedBlock(
+                block_id=(
+                    f"fusion:{page_index}:block:"
+                    f"{hashlib.sha256(f'{normalized_text}:{occurrence}'.encode()).hexdigest()[:16]}"
+                ),
+                text=text,
+                reading_order=min(block.reading_order for _backend, block in values),
+                block_type=block_type,
+                bbox=bbox,
+                method=(
+                    "canonical_parser_fusion"
+                    if len(source_backends) > 1
+                    else values[0][1].method
+                ),
+                confidence=max(confidence_values) if confidence_values else None,
+                source_backends=source_backends,
+                fact_sources={
+                    "text": _block_fact_sources(values, "text", text),
+                    "block_type": _block_fact_sources(
+                        values, "block_type", block_type
+                    ),
+                    "bbox": _block_fact_sources(values, "bbox", bbox),
+                },
+            )
+        )
+    ordered = sorted(
+        fused,
+        key=lambda block: (
+            block.bbox[1] if block.bbox is not None else float("inf"),
+            block.bbox[0] if block.bbox is not None else float("inf"),
+            block.reading_order,
+            block.block_id,
+        ),
+    )
+    return tuple(replace(block, reading_order=index) for index, block in enumerate(ordered, 1))
+
+
+def _fuse_objects(
+    page_index: int,
+    observed: tuple[tuple[str, ExtractedPage], ...],
+    conflicts: list[dict[str, Any]],
+) -> tuple[ExtractedObject, ...]:
+    grouped: dict[tuple[str, str, int], list[tuple[str, ExtractedObject]]] = {}
+    occurrences: Counter[tuple[str, str, str]] = Counter()
+    for backend, page in observed:
+        for item in page.objects:
+            identity_text = _normalized_fact_text(item.caption or item.text or "")
+            occurrence_key = (backend, item.object_type, identity_text)
+            occurrences[occurrence_key] += 1
+            grouped.setdefault(
+                (item.object_type, identity_text, occurrences[occurrence_key]), []
+            ).append(
+                (backend, item)
+            )
+    result: list[ExtractedObject] = []
+    for (object_type, identity_text, occurrence), values in sorted(grouped.items()):
+        preferred_backend, preferred = min(
+            values, key=lambda item: (_backend_rank(item[0], "object"), item[1].object_id)
+        )
+        source_backends = tuple(sorted({backend for backend, _item in values}))
+        result.append(
+            ExtractedObject(
+                object_id=(
+                    f"fusion:{page_index}:{object_type}:"
+                    f"{hashlib.sha256(f'{identity_text}:{occurrence}'.encode()).hexdigest()[:16]}"
+                ),
+                object_type=object_type,
+                page_index=page_index,
+                caption=next(
+                    (item.caption for _backend, item in values if item.caption), None
+                ),
+                text=next((item.text for _backend, item in values if item.text), None),
+                bbox=next(
+                    (
+                        item.bbox
+                        for backend, item in sorted(
+                            values,
+                            key=lambda value: _backend_rank(value[0], "bbox"),
+                        )
+                        if item.bbox is not None
+                    ),
+                    None,
+                ),
+                method=(
+                    "canonical_parser_fusion"
+                    if len(source_backends) > 1
+                    else preferred.method
+                ),
+                confidence=max(
+                    (item.confidence for _backend, item in values if item.confidence is not None),
+                    default=None,
+                ),
+                source_backends=source_backends,
+                fact_sources={
+                    "identity": _object_fact_sources(values),
+                    "selected": (
+                        _source_detail(preferred_backend, preferred),
+                    ),
+                },
+            )
+        )
+    return tuple(result)
+
+
+def _fuse_relations(
+    page_index: int,
+    observed: tuple[tuple[str, ExtractedPage], ...],
+    conflicts: list[dict[str, Any]],
+) -> tuple[ExtractedRelation, ...]:
+    grouped: dict[
+        tuple[str, str, str, int], list[tuple[str, ExtractedRelation]]
+    ] = {}
+    occurrences: Counter[tuple[str, str, str, str]] = Counter()
+    for backend, page in observed:
+        for item in page.relations:
+            identity = (
+                item.relation_type,
+                item.target_anchor or "",
+                item.target_text or "",
+            )
+            occurrence_key = (backend, *identity)
+            occurrences[occurrence_key] += 1
+            grouped.setdefault((*identity, occurrences[occurrence_key]), []).append(
+                (backend, item)
+            )
+    result: list[ExtractedRelation] = []
+    for key, values in sorted(grouped.items()):
+        preferred_backend, preferred = min(
+            values,
+            key=lambda item: (_backend_rank(item[0], "relation"), item[1].relation_id),
+        )
+        source_backends = tuple(sorted({backend for backend, _item in values}))
+        result.append(
+            ExtractedRelation(
+                relation_id=(
+                    f"fusion:{page_index}:relation:"
+                    f"{hashlib.sha256(repr(key).encode()).hexdigest()[:16]}"
+                ),
+                source_anchor=preferred.source_anchor,
+                target_anchor=preferred.target_anchor,
+                relation_type=preferred.relation_type,
+                target_text=preferred.target_text,
+                status=preferred.status,
+                method=(
+                    "canonical_parser_fusion"
+                    if len(source_backends) > 1
+                    else preferred.method
+                ),
+                confidence=max(
+                    (item.confidence for _backend, item in values if item.confidence is not None),
+                    default=None,
+                ),
+                bbox=next(
+                    (
+                        item.bbox
+                        for backend, item in sorted(
+                            values,
+                            key=lambda value: _backend_rank(value[0], "bbox"),
+                        )
+                        if item.bbox is not None
+                    ),
+                    None,
+                ),
+                source_backends=source_backends,
+                fact_sources={
+                    "identity": _relation_fact_sources(values),
+                    "selected": (
+                        _source_detail(preferred_backend, preferred),
+                    ),
+                },
+            )
+        )
+    return tuple(result)
+
+
+def _fuse_sections(
+    results: tuple[ExtractionResult, ...]
+) -> tuple[ExtractedSection, ...]:
+    values: dict[tuple[str, int, int], list[tuple[str, ExtractedSection]]] = {}
+    for result in results:
+        for section in result.sections:
+            key = (
+                _normalized_fact_text(section.title),
+                section.start_page_index,
+                section.end_page_index,
+            )
+            values.setdefault(key, []).append((result.backend, section))
+    return tuple(
+        ExtractedSection(
+            section_id=(
+                "fusion:section:"
+                f"{hashlib.sha256(repr(key).encode()).hexdigest()[:16]}"
+            ),
+            title=min(item.title for _backend, item in group),
+            start_page_index=key[1],
+            end_page_index=key[2],
+            method="canonical_parser_fusion",
+            confidence=max(
+                (item.confidence for _backend, item in group if item.confidence is not None),
+                default=None,
+            ),
+        )
+        for key, group in sorted(values.items())
+    )
+
+
+def _backend_rank(backend: str, fact: str) -> tuple[int, str]:
+    if fact in {"page_label", "printed_page_label", "width", "height", "bbox", "relation"}:
+        preferred = {"pymupdf": 0, "docling": 1, "basic": 99}
+    elif fact in {"object"}:
+        preferred = {"docling": 0, "pymupdf": 1, "basic": 99}
+    else:
+        preferred = {"pymupdf": 0, "docling": 1, "basic": 99}
+    return preferred.get(backend, 50), backend
+
+
+def _block_type_rank(value: str) -> tuple[int, str]:
+    priority = {
+        "title": 0,
+        "section_header": 1,
+        "heading": 1,
+        "caption": 2,
+        "table": 2,
+        "figure": 2,
+        "list_item": 3,
+        "list": 3,
+        "text": 99,
+    }
+    return priority.get(value, 50), value
+
+
+def _normalized_fact_text(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _source_detail(backend: str, item: Any) -> Mapping[str, Any]:
+    return {
+        "backend": backend,
+        "method": item.method,
+        "confidence": item.confidence,
+    }
+
+
+def _block_fact_sources(
+    values: list[tuple[str, ExtractedBlock]], field_name: str, selected: Any
+) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        _source_detail(backend, block)
+        for backend, block in sorted(values, key=lambda item: item[0])
+        if getattr(block, field_name) == selected
+    )
+
+
+def _object_fact_sources(
+    values: list[tuple[str, ExtractedObject]],
+) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        _source_detail(backend, item)
+        for backend, item in sorted(values, key=lambda value: value[0])
+    )
+
+
+def _relation_fact_sources(
+    values: list[tuple[str, ExtractedRelation]],
+) -> tuple[Mapping[str, Any], ...]:
+    return tuple(
+        _source_detail(backend, item)
+        for backend, item in sorted(values, key=lambda value: value[0])
     )
 
 

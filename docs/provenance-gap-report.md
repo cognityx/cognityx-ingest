@@ -101,19 +101,22 @@ objectives remain executable expected failures.
 - The PyMuPDF adapter retains native link rectangles. Cognityx maps those
   observations to canonical source blocks and preserves the visible link text,
   destination, method, and confidence without exposing parser-private types.
-- The current Docling normalization records text blocks, table/figure objects,
-  and heading candidates, but not canonical table cells, merged spans,
-  repeated headers, table page parts, footnote ownership, or complete caption
-  relations.
+- The Docling adapter records text blocks, table/figure objects, and heading
+  candidates. Cognityx-owned deterministic stages assemble canonical table
+  parts, cells, merged spans, repeated headers, figure ownership, footnotes,
+  and caption relations from normalized observations.
 
-## Canonical Fusion Required
+## Canonical Fusion
 
 ### GAP-PARSER-FUSION
 
-`compare` currently selects one parser result by richness score. It does not
-combine complementary facts. The rich profile must retain PyMuPDF-native links,
-labels, and rectangles alongside Docling structure, tables, figures, and
-captions. This is required by the rich-profile acceptance decision and `P-25`.
+`compare` performs deterministic fact-level fusion. It aligns physical pages,
+retains PyMuPDF-native links, labels, and rectangles alongside Docling
+structure, tables, figures, and captions, and uses Basic text only when richer
+backends have no usable text. Equivalent facts are deduplicated with stable
+IDs; source backend, method, confidence, raw parser artifacts, and explicit
+conflict diagnostics remain auditable. Reversing backend order produces the
+same canonical result.
 
 ## Deterministic Logic Required
 
@@ -186,7 +189,7 @@ acceptance claim can be made.
 | P-21–P-22 | Fixture-blocked, then deterministic | Related travel fixtures |
 | P-23 | Pass | Deterministic unresolved emission |
 | P-24 | Expected failure | Deterministic ambiguity task, optional bounded inference |
-| P-25 | Partial | Canonical fusion and decision trace |
+| P-25 | Pass | Canonical fusion and parser decision trace |
 | P-26 | Pass | Existing bounded inference validator |
 | P-27–P-28 | Partial | Rich canonical output and DataForge anchors |
 | P-29 | Expected failure | Stable fusion and decision identity |
@@ -198,6 +201,5 @@ acceptance claim can be made.
 
 ## Next Increment
 
-The next production increment is P-25 canonical parser fusion. Later groups
-remain separate: bounded ambiguity after its related fixture arrives, then the
-complete DataForge handoff.
+The next production increment is the complete DataForge handoff contract.
+Bounded ambiguity remains deferred until its related fixture arrives.

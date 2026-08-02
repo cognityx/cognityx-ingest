@@ -77,6 +77,17 @@ def build_reference_provenance(
                 target_text=literal,
                 method=method,
                 confidence=confidence,
+                source_backends=source.source_backends,
+                fact_sources={
+                    "source": tuple(
+                        {
+                            "backend": backend,
+                            "method": method,
+                            "confidence": confidence,
+                        }
+                        for backend in source.source_backends
+                    )
+                },
             )
         )
 

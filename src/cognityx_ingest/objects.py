@@ -23,7 +23,7 @@ class ObservedFigure:
     page_index: int
     image: ExtractedObject
     caption_block: ExtractedBlock
-    source_backend: str
+    source_backends: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,7 @@ class ObservedFootnote:
     text: str
     page_index: int
     note_block: ExtractedBlock
-    source_backend: str
+    source_backends: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +78,12 @@ def detect_object_observations(
                     page_index=page.physical_page_index,
                     image=image,
                     caption_block=caption_block,
-                    source_backend=source_backend,
+                    source_backends=tuple(
+                        sorted(
+                            set(image.source_backends or (source_backend,))
+                            | set(caption_block.source_backends or (source_backend,))
+                        )
+                    ),
                 )
             )
         for block in content:
@@ -91,7 +96,7 @@ def detect_object_observations(
                     text=_first_sentence(match.group("text")),
                     page_index=page.physical_page_index,
                     note_block=block,
-                    source_backend=source_backend,
+                    source_backends=(block.source_backends or (source_backend,)),
                 )
             )
     return ObjectObservations(tuple(figures), tuple(footnotes))
@@ -140,7 +145,17 @@ def build_owned_objects(
                 caption_anchor_id=caption_block.block_id,
                 image_anchor_id=image_block.block_id,
                 bbox=observed.image.bbox,
-                source_backends=(observed.source_backend,),
+                source_backends=observed.source_backends,
+                fact_sources={
+                    "structure": tuple(
+                        {
+                            "backend": backend,
+                            "method": "deterministic_figure_ownership",
+                            "confidence": 1.0,
+                        }
+                        for backend in observed.source_backends
+                    )
+                },
                 method="deterministic_figure_ownership",
                 confidence=1.0,
             )
@@ -154,6 +169,17 @@ def build_owned_objects(
                 status="resolved",
                 method="deterministic_layout_ownership",
                 confidence=1.0,
+                source_backends=observed.source_backends,
+                fact_sources={
+                    "source": tuple(
+                        {
+                            "backend": backend,
+                            "method": "deterministic_layout_ownership",
+                            "confidence": 1.0,
+                        }
+                        for backend in observed.source_backends
+                    )
+                },
             )
         )
     for observed in observations.footnotes:
@@ -190,7 +216,17 @@ def build_owned_objects(
                 marker_anchor_id=marker_block.block_id,
                 note_anchor_id=note_block.block_id,
                 bbox=note_block.bbox,
-                source_backends=(observed.source_backend,),
+                source_backends=observed.source_backends,
+                fact_sources={
+                    "structure": tuple(
+                        {
+                            "backend": backend,
+                            "method": "deterministic_footnote_ownership",
+                            "confidence": 1.0,
+                        }
+                        for backend in observed.source_backends
+                    )
+                },
                 method="deterministic_footnote_ownership",
                 confidence=1.0,
             )
@@ -204,6 +240,17 @@ def build_owned_objects(
                 status="resolved",
                 method="deterministic_marker_adjacency",
                 confidence=1.0,
+                source_backends=observed.source_backends,
+                fact_sources={
+                    "source": tuple(
+                        {
+                            "backend": backend,
+                            "method": "deterministic_marker_adjacency",
+                            "confidence": 1.0,
+                        }
+                        for backend in observed.source_backends
+                    )
+                },
             )
         )
     return tuple(objects), tuple(relations)
