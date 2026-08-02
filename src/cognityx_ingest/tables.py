@@ -47,7 +47,7 @@ class ObservedLogicalTable:
     caption_source_block_id: str
     columns: tuple[str, ...]
     parts: tuple[ObservedTablePart, ...]
-    source_backend: str
+    source_backends: tuple[str, ...]
 
 
 def detect_logical_tables(
@@ -117,7 +117,17 @@ def detect_logical_tables(
                     caption_source_block_id=caption_block.block_id,
                     columns=columns,
                     parts=tuple(parts),
-                    source_backend=source_backend,
+                    source_backends=tuple(
+                        sorted(
+                            {
+                                backend
+                                for block in content
+                                for backend in (
+                                    block.source_backends or (source_backend,)
+                                )
+                            }
+                        )
+                    ),
                 )
             )
     return tuple(tables)
@@ -197,7 +207,17 @@ def build_table_objects(
                 columns=table.columns,
                 rows=tuple(canonical_rows),
                 parts=tuple(canonical_parts),
-                source_backends=(table.source_backend,),
+                source_backends=table.source_backends,
+                fact_sources={
+                    "structure": tuple(
+                        {
+                            "backend": backend,
+                            "method": "deterministic_table_assembly",
+                            "confidence": 1.0,
+                        }
+                        for backend in table.source_backends
+                    )
+                },
                 bbox=table.parts[0].bbox,
                 method="deterministic_table_assembly",
                 confidence=1.0,

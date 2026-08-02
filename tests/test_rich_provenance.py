@@ -171,8 +171,156 @@ def test_parser_policies_keep_one_normalized_contract(tmp_path: Path) -> None:
     compared = ParserRouter(plugins, policy=ExtractionPolicy("compare", ("basic", "rich")))
 
     assert fixed.extract_document(source).backend == "basic"
-    assert compared.extract_document(source).backend == "rich"
-    assert compared.extract_document(source).selected_reason == "highest_normalized_structure_score"
+    assert compared.extract_document(source).backend == "fusion"
+    assert compared.extract_document(source).selected_reason == "canonical_fact_level_fusion"
+
+
+class FactPlugin:
+    def __init__(self, result: ExtractionResult) -> None:
+        self.name = result.backend
+        self.result = result
+
+    def extract_document(self, path: Path) -> ExtractionResult:
+        return self.result
+
+
+def test_compare_fuses_facts_independently_of_backend_order(tmp_path: Path) -> None:
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"pdf")
+    basic = ExtractionResult(
+        pages=(ExtractedPage(1, "Basic fallback", page_index=0),),
+        backend="basic",
+        raw_artifact=b'{"basic":true}',
+    )
+    pymupdf = ExtractionResult(
+        pages=(
+            ExtractedPage(
+                1,
+                "Shared heading\nNative body",
+                page_index=0,
+                page_label="i",
+                printed_page_label="1",
+                width=600.0,
+                height=800.0,
+                blocks=(
+                    ExtractedBlock(
+                        "pymu-heading",
+                        "Shared heading",
+                        1,
+                        block_type="text",
+                        bbox=(10.0, 10.0, 200.0, 30.0),
+                        method="native_layout",
+                        confidence=1.0,
+                    ),
+                ),
+                relations=(
+                    ExtractedRelation(
+                        "native-link",
+                        "page:0",
+                        None,
+                        "link",
+                        target_text="https://example.test",
+                        status="observed",
+                        method="native_pdf",
+                        confidence=1.0,
+                    ),
+                ),
+            ),
+        ),
+        backend="pymupdf",
+        raw_artifact=b'{"pymupdf":true}',
+    )
+    docling = ExtractionResult(
+        pages=(
+            ExtractedPage(
+                1,
+                "Shared heading\nDocling body",
+                page_index=0,
+                blocks=(
+                    ExtractedBlock(
+                        "docling-heading",
+                        "Shared heading",
+                        1,
+                        block_type="section_header",
+                        bbox=(10.0, 10.0, 200.0, 30.0),
+                        method="docling_structure",
+                        confidence=0.9,
+                    ),
+                    ExtractedBlock(
+                        "docling-body", "Docling body", 2, block_type="text"
+                    ),
+                ),
+                objects=(
+                    ExtractedObject(
+                        "docling-table",
+                        "table",
+                        0,
+                        caption="Table A",
+                        method="docling_structure",
+                        confidence=0.9,
+                    ),
+                ),
+            ),
+        ),
+        backend="docling",
+        raw_artifact=b'{"docling":true}',
+    )
+    plugins = tuple(FactPlugin(item) for item in (basic, pymupdf, docling))
+
+    first = ParserRouter(
+        plugins,
+        policy=ExtractionPolicy("compare", ("basic", "pymupdf", "docling")),
+    ).extract_document(source)
+    second = ParserRouter(
+        tuple(reversed(plugins)),
+        policy=ExtractionPolicy("compare", ("docling", "pymupdf", "basic")),
+    ).extract_document(source)
+
+    assert first == second
+    assert first.backend == "fusion"
+    assert first.pages[0].text != "Basic fallback"
+    assert first.pages[0].page_label == "i"
+    assert first.pages[0].source_backends == ("basic", "docling", "pymupdf")
+    heading = next(block for block in first.pages[0].blocks if block.text == "Shared heading")
+    assert heading.block_type == "section_header"
+    assert heading.source_backends == ("docling", "pymupdf")
+    assert any(item.object_type == "table" for item in first.pages[0].objects)
+    assert any(item.target_text == "https://example.test" for item in first.pages[0].relations)
+    assert first.raw_artifacts.keys() == {"basic", "docling", "pymupdf"}
+    assert first.diagnostics["conflicts"]
+
+    runtime = StorageRuntime.from_config(
+        StorageConfig.built_in(root=tmp_path / "fusion-runtime")
+    )
+    registry = SourceAssetRegistry.load(runtime=runtime)
+    context = ExecutionContext(
+        run_id="run-fusion-order",
+        correlation_id="correlation-fusion-order",
+        principal_id="fusion-test",
+    )
+    asset = registry.register_asset(context, source)
+    stored: list[dict[str, object]] = []
+    for position, extraction in enumerate((first, second), start=1):
+        storage = StorageClient(
+            LocalStorageBackend(tmp_path / f"fusion-artifacts-{position}")
+        ).for_shared_data()
+        result = IngestService(
+            storage,
+            extractor=FactPlugin(extraction),
+            registry=registry,
+        ).ingest_asset(asset.asset_id, registry, context)
+        stored.append(json.load(storage.open(result.provenance_key)))
+        assert len(result.raw_parser_keys) == 4
+        assert all(storage.exists(key) for key in result.raw_parser_keys)
+
+    assert stored[0] == stored[1]
+    assert stored[0]["parser"]["diagnostics"]["conflicts"]
+    assert {item["backend"] for item in stored[0]["parser"]["raw_artifacts"]} == {
+        "basic",
+        "docling",
+        "fusion",
+        "pymupdf",
+    }
 
 
 def test_v1_document_reader_and_enrichment_identity_are_stable() -> None:

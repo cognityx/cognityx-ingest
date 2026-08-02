@@ -234,10 +234,18 @@ class PageRecord:
     width: float | None = None
     height: float | None = None
     block_ids: tuple[str, ...] = ()
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["block_ids"] = list(self.block_ids)
+        value["source_backends"] = list(self.source_backends)
+        value["fact_sources"] = {
+            key: list(sources) for key, sources in self.fact_sources.items()
+        }
         return value
 
 
@@ -251,10 +259,18 @@ class Block:
     bbox: tuple[float, float, float, float] | None = None
     method: str = "parser"
     confidence: float | None = None
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["bbox"] = list(self.bbox) if self.bbox is not None else None
+        value["source_backends"] = list(self.source_backends)
+        value["fact_sources"] = {
+            key: list(sources) for key, sources in self.fact_sources.items()
+        }
         return value
 
 
@@ -361,6 +377,9 @@ class DocumentObject:
     rows: tuple[TableRow, ...] = ()
     parts: tuple[TablePart, ...] = ()
     source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
     method: str = "parser"
     confidence: float | None = None
 
@@ -374,6 +393,9 @@ class DocumentObject:
         value["rows"] = [item.to_dict() for item in self.rows]
         value["parts"] = [item.to_dict() for item in self.parts]
         value["source_backends"] = list(self.source_backends)
+        value["fact_sources"] = {
+            key: list(sources) for key, sources in self.fact_sources.items()
+        }
         return value
 
     @classmethod
@@ -386,6 +408,10 @@ class DocumentObject:
         )
         selected["columns"] = tuple(value.get("columns", ()))
         selected["source_backends"] = tuple(value.get("source_backends", ()))
+        selected["fact_sources"] = {
+            key: tuple(sources)
+            for key, sources in value.get("fact_sources", {}).items()
+        }
         selected["rows"] = tuple(
             TableRow(
                 **{
@@ -456,9 +482,18 @@ class Relation:
     confidence: float | None = None
     decision_id: str | None = None
     reason: str | None = None
+    source_backends: tuple[str, ...] = ()
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]] = field(
+        default_factory=dict, hash=False
+    )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        value["source_backends"] = list(self.source_backends)
+        value["fact_sources"] = {
+            key: list(sources) for key, sources in self.fact_sources.items()
+        }
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -651,8 +686,36 @@ class CanonicalDocument:
             enhancement=value.get("enhancement"),
             schema=str(value.get("schema", CANONICAL_SCHEMA)),
             aliases=tuple(value.get("aliases", ())),
-            pages=tuple(PageRecord(**dict(item)) for item in value.get("pages", ())),
-            blocks=tuple(Block(**dict(item)) for item in value.get("blocks", ())),
+            pages=tuple(
+                PageRecord(
+                    **{
+                        **dict(item),
+                        "block_ids": tuple(item.get("block_ids", ())),
+                        "source_backends": tuple(item.get("source_backends", ())),
+                        "fact_sources": {
+                            key: tuple(sources)
+                            for key, sources in item.get("fact_sources", {}).items()
+                        },
+                    }
+                )
+                for item in value.get("pages", ())
+            ),
+            blocks=tuple(
+                Block(
+                    **{
+                        **dict(item),
+                        "bbox": (
+                            tuple(item["bbox"]) if item.get("bbox") is not None else None
+                        ),
+                        "source_backends": tuple(item.get("source_backends", ())),
+                        "fact_sources": {
+                            key: tuple(sources)
+                            for key, sources in item.get("fact_sources", {}).items()
+                        },
+                    }
+                )
+                for item in value.get("blocks", ())
+            ),
             repeated_regions=tuple(
                 RepeatedRegion(
                     **{
@@ -668,7 +731,19 @@ class CanonicalDocument:
             objects=tuple(
                 DocumentObject.from_dict(item) for item in value.get("objects", ())
             ),
-            relations=tuple(Relation(**dict(item)) for item in value.get("relations", ())),
+            relations=tuple(
+                Relation(
+                    **{
+                        **dict(item),
+                        "source_backends": tuple(item.get("source_backends", ())),
+                        "fact_sources": {
+                            key: tuple(sources)
+                            for key, sources in item.get("fact_sources", {}).items()
+                        },
+                    }
+                )
+                for item in value.get("relations", ())
+            ),
             decisions=tuple(DecisionRecord(**dict(item)) for item in value.get("decisions", ())),
             unresolved=tuple(UnresolvedItem(**dict(item)) for item in value.get("unresolved", ())),
         )
@@ -687,6 +762,7 @@ class IngestResult:
     usage: UsageReport | None = None
     provenance_key: str = ""
     raw_parser_key: str | None = None
+    raw_parser_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

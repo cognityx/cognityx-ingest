@@ -575,9 +575,14 @@ class IngestService:
                 status="accepted",
                 method="parser_policy",
                 considered_tools=extraction.considered_backends,
-                invoked_tools=(extraction.backend,),
+                invoked_tools=tuple(
+                    extraction.diagnostics.get("source_backends", ())
+                )
+                or (extraction.backend,),
                 selected_tool=extraction.backend,
                 selected_reason=extraction.selected_reason,
+                confidence=1.0,
+                reason=extraction.selected_reason,
             ),
         )
         unresolved: tuple[UnresolvedItem, ...] = (
@@ -682,6 +687,7 @@ class IngestService:
             usage=usage,
             provenance_key=result.provenance_key,
             raw_parser_key=result.raw_parser_key,
+            raw_parser_keys=result.raw_parser_keys,
         )
 
     def _persist(
@@ -699,10 +705,21 @@ class IngestService:
         evidence_key = f"{prefix}/evidence.jsonl"
         manifest_key = f"{prefix}/manifest.json"
         provenance_key = f"{prefix}/provenance.json"
-        raw_parser_key = (
-            f"{prefix}/parser/{extraction.backend}.json"
-            if extraction.raw_artifact is not None
-            else None
+        raw_payloads = dict(extraction.raw_artifacts)
+        if extraction.raw_artifact is not None:
+            raw_payloads[extraction.backend] = extraction.raw_artifact
+        raw_parser_items = tuple(
+            (backend, f"{prefix}/parser/{backend}.json", payload)
+            for backend, payload in sorted(raw_payloads.items())
+        )
+        raw_parser_keys = tuple(key for _backend, key, _payload in raw_parser_items)
+        raw_parser_key = next(
+            (
+                key
+                for backend, key, _payload in raw_parser_items
+                if backend == extraction.backend
+            ),
+            raw_parser_keys[0] if raw_parser_keys else None,
         )
         self._put_immutable_json(document_key, document.to_dict())
         payload = "".join(
@@ -739,22 +756,33 @@ class IngestService:
                 "version": extraction.backend_version,
                 "considered": list(extraction.considered_backends),
                 "selected_reason": extraction.selected_reason,
+                "diagnostics": dict(extraction.diagnostics),
+                "raw_artifacts": [
+                    {"backend": backend, "uri": self._artifact_uri(key)}
+                    for backend, key, _payload in raw_parser_items
+                ],
             },
         }
         self._put_immutable_json(provenance_key, provenance)
-        if raw_parser_key and not self._storage.exists(raw_parser_key):
-            self._storage.put_bytes(
-                raw_parser_key,
-                extraction.raw_artifact or b"",
-                media_type="application/json",
-            )
+        for _backend, key, raw_payload in raw_parser_items:
+            if not self._storage.exists(key):
+                self._storage.put_bytes(
+                    key,
+                    raw_payload,
+                    media_type="application/json",
+                )
         stored = {
             "document": self._storage.stat(document_key),
             "evidence": self._storage.stat(evidence_key),
             "provenance": self._storage.stat(provenance_key),
         }
-        if raw_parser_key:
-            stored["parser_raw"] = self._storage.stat(raw_parser_key)
+        for backend, key, _payload in raw_parser_items:
+            name = (
+                "parser_raw"
+                if backend == extraction.backend
+                else f"parser_raw_{backend.replace('-', '_')}"
+            )
+            stored[name] = self._storage.stat(key)
         artifacts = tuple(
             ArtifactRef(
                 f"art-{document.document_id}-{name}",
@@ -797,6 +825,7 @@ class IngestService:
             artifacts=(*artifacts, manifest_ref),
             provenance_key=provenance_key,
             raw_parser_key=raw_parser_key,
+            raw_parser_keys=raw_parser_keys,
         )
 
     def _start_job(
@@ -976,6 +1005,11 @@ def _canonical_structure(
                                 bbox=figure.image.bbox,
                                 method="parser_object_geometry",
                                 confidence=figure.image.confidence,
+                                source_backends=(
+                                    figure.image.source_backends
+                                    or (extraction.backend,)
+                                ),
+                                fact_sources=figure.image.fact_sources,
                             )
                         )
                 part_value = table_parts.get(item.block_id)
@@ -1051,6 +1085,10 @@ def _canonical_structure(
                             bbox=observed_bbox,
                             method=method,
                             confidence=confidence,
+                            source_backends=(
+                                item.source_backends or (extraction.backend,)
+                            ),
+                            fact_sources=item.fact_sources,
                         )
                     )
             for figure in pending_figures:
@@ -1067,6 +1105,10 @@ def _canonical_structure(
                         bbox=figure.image.bbox,
                         method="parser_object_geometry",
                         confidence=figure.image.confidence,
+                        source_backends=(
+                            figure.image.source_backends or (extraction.backend,)
+                        ),
+                        fact_sources=figure.image.fact_sources,
                     )
                 )
         else:
@@ -1081,6 +1123,8 @@ def _canonical_structure(
                     text=page.text,
                     method="baseline_page_text",
                     confidence=1.0,
+                    source_backends=(page.source_backends or (extraction.backend,)),
+                    fact_sources=page.fact_sources,
                 )
             )
         for order, item in enumerate(page.objects, start=1):
@@ -1094,6 +1138,8 @@ def _canonical_structure(
                     caption=item.caption,
                     text=item.text,
                     bbox=item.bbox,
+                    source_backends=(item.source_backends or (extraction.backend,)),
+                    fact_sources=item.fact_sources,
                     method=item.method,
                     confidence=item.confidence,
                 )
@@ -1108,6 +1154,8 @@ def _canonical_structure(
                 width=page.width,
                 height=page.height,
                 block_ids=tuple(page_block_ids),
+                source_backends=(page.source_backends or (extraction.backend,)),
+                fact_sources=page.fact_sources,
             )
         )
     return tuple(pages), tuple(blocks), tuple(objects)
@@ -1182,6 +1230,10 @@ def _relations_and_tasks(
                         target_text=item.target_text,
                         method=item.method,
                         confidence=item.confidence,
+                        source_backends=(
+                            item.source_backends or (extraction.backend,)
+                        ),
+                        fact_sources=item.fact_sources,
                     )
                 )
             else:
