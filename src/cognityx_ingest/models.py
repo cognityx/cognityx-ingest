@@ -498,6 +498,9 @@ class UnresolvedItem:
     relation_type: str
     target_text: str | None
     reason: str
+    status: str = "unresolved"
+    method: str = "deterministic"
+    confidence: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

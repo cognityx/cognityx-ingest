@@ -100,13 +100,12 @@ def test_dataforge_handoff_contains_page_labels_and_repeated_regions(
     assert section_blocks.isdisjoint(repeated_blocks)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="GAP-DATAFORGE-RICH: docs/provenance-gap-report.md#gap-dataforge-rich",
-)
 def test_dataforge_handoff_contains_exact_relation_anchors(
     tmp_path: Path, provenance_pdf: Path, ground_truth: dict[str, object]
 ) -> None:
+    pytest.importorskip(
+        "fitz", reason="Rich relation handoff requires cognityx-ingest[pymupdf]"
+    )
     runtime = StorageRuntime.from_config(StorageConfig.built_in(root=tmp_path / "runtime"))
     registry = SourceAssetRegistry.load(runtime=runtime)
     storage = StorageClient(LocalStorageBackend(tmp_path / "artifacts")).for_shared_data()
@@ -116,10 +115,47 @@ def test_dataforge_handoff_contains_exact_relation_anchors(
         principal_id="dataforge-test",
     )
     result = IngestService(
-        storage, extractor=PyPdfExtractor(), registry=registry
+        storage, extractor=PyMuPDFParser(), registry=registry
     ).ingest(provenance_pdf, context=context, registry=registry)
     handoff = json.load(storage.open(result.provenance_key))
 
-    assert {relation["target_text"] for relation in handoff["relations"]} >= {
-        relation["literal"] for relation in ground_truth["relations"]
+    required_literals = {
+        relation["literal"]
+        for relation in ground_truth["relations"]
+        if relation["id"]
+        in {
+            "rel-exact-7.2",
+            "rel-exact-8.2",
+            "rel-plural-7.2-11.3",
+            "rel-appendix-b",
+            "rel-page-a-1",
+            "rel-plain-url",
+            "rel-native-external",
+            "rel-native-appendix-b",
+        }
     }
+    relations = handoff["relations"]
+    unresolved = handoff["unresolved"]
+    anchor_ids = {
+        *(page["page_id"] for page in handoff["pages"]),
+        *(block["block_id"] for block in handoff["blocks"]),
+        *(section["section_id"] for section in handoff["sections"]),
+        *(item["object_id"] for item in handoff["objects"]),
+    }
+
+    assert {item["target_text"] for item in relations} >= required_literals
+    assert all(item["source_anchor_id"] in anchor_ids for item in relations)
+    assert all(
+        item["target_anchor_id"] in anchor_ids
+        or str(item["target_anchor_id"]).startswith("https://")
+        for item in relations
+        if item["target_anchor_id"] is not None
+    )
+    missing = next(
+        item
+        for item in unresolved
+        if item["target_text"] == "Moonlit Conduct Handbook, Version 9.4"
+    )
+    assert missing["status"] == "unresolved"
+    assert missing["reason"] == "document_not_in_corpus"
+    assert not missing.get("gold", False)

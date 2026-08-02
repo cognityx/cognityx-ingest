@@ -98,8 +98,9 @@ objectives remain executable expected failures.
 - The PyMuPDF adapter observes native labels separately from visible labels and
   deterministically classifies recurring positioned headers and footers. The
   frozen PDF's visible labels are `i`, `ii`, `1`–`14`, and `A-1`–`C-1`.
-- The current PyMuPDF relation shape does not retain the complete source text
-  rectangle required for native hyperlink provenance.
+- The PyMuPDF adapter retains native link rectangles. Cognityx maps those
+  observations to canonical source blocks and preserves the visible link text,
+  destination, method, and confidence without exposing parser-private types.
 - The current Docling normalization records text blocks, table/figure objects,
   and heading candidates, but not canonical table cells, merged spans,
   repeated headers, table page parts, footnote ownership, or complete caption
@@ -116,16 +117,16 @@ captions. This is required by the rich-profile acceptance decision and `P-25`.
 
 ## Deterministic Logic Required
 
-### GAP-DETERMINISTIC-RELATIONS
+### Deterministic relations
 
-The following must use literal detection and exact lookup:
+The following use literal detection and exact lookup:
 
 - `P-15` and `P-16`: exact and plural numbered-section references;
 - `P-17` and `P-18`: appendix and printed-page references;
-- `P-19` and `P-20`: native hyperlinks and visible plain URLs;
-- `P-21` and `P-22`: cross-document/version resolution once related fixtures
-  exist; and
+- `P-19` and `P-20`: native hyperlinks and visible plain URLs; and
 - `P-23`: explicit unresolved output for the absent Moonlit Conduct Handbook.
+
+`P-21` and `P-22` cross-document/version resolution remain fixture-blocked.
 
 Models must not be used to invent missing documents or resolve exact numbered
 references.
@@ -181,9 +182,9 @@ acceptance claim can be made.
 | P-09–P-10 | Pass | Deterministic true and false continuation handling |
 | P-11–P-12 | Pass | One logical multi-page table with auditable parts |
 | P-13–P-14 | Pass | Owned figures, captions and footnotes with relations |
-| P-15–P-20 | Expected failure | Deterministic relation detection |
+| P-15–P-20 | Pass | Deterministic relation detection and exact lookup |
 | P-21–P-22 | Fixture-blocked, then deterministic | Related travel fixtures |
-| P-23 | Expected failure | Deterministic unresolved emission |
+| P-23 | Pass | Deterministic unresolved emission |
 | P-24 | Expected failure | Deterministic ambiguity task, optional bounded inference |
 | P-25 | Partial | Canonical fusion and decision trace |
 | P-26 | Pass | Existing bounded inference validator |
@@ -197,6 +198,6 @@ acceptance claim can be made.
 
 ## Next Increment
 
-The next production increment is P-15 through P-20 and P-23 deterministic
-reference detection and resolution. Later groups remain separate: parser
-fusion, bounded ambiguity, then the complete DataForge handoff.
+The next production increment is P-25 canonical parser fusion. Later groups
+remain separate: bounded ambiguity after its related fixture arrives, then the
+complete DataForge handoff.
