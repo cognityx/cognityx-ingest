@@ -24,7 +24,15 @@ Run manifests use `cognityx.ingest.run/v2` and are never overwritten. A folder
 run has one run ID, one job ID, and one run manifest even when individual PDFs
 fail.
 
-The immutable provenance artifact records physical page indexes, PDF and
+The immutable provenance artifact is the complete package another program
+needs to understand the document without opening the PDF again. This handoff
+is technically called `provenance.json`. Version 2 records the run and job,
+the SourceAsset and its SHA-256, the bundle and document, aliases, and stable
+`storage://` locations for every generated artifact. The SourceAsset keeps its
+separate `sourceasset://` logical identity because Storage, not Ingest, owns
+the raw Blob.
+
+The artifact records physical page indexes, PDF and
 printed labels, typed reading-order blocks, exact section spans across one or
 more pages, evidence, observed objects, relations, decision records and
 unresolved items.
@@ -52,6 +60,21 @@ geometry and owning sections; footnotes retain their visible marker, marker
 anchor, note anchor, exact note text and owning section. Resolved relations tie
 captions and markers to stable object IDs so consumers do not need to infer
 ownership from the source PDF.
+
+Every relation has a `gold` eligibility flag for downstream use. Only an
+observed or deterministically resolved relation with a concrete target is
+eligible. Rejected, ambiguous and unresolved results are always non-gold and
+remain visible for audit. The explicit `ambiguous` and `unresolved`
+collections let DataForge avoid silently treating uncertainty as truth.
+
+## Using the handoff
+
+DataForge reads the `provenance` URI returned by ingest and can form candidate
+knowledge spans from each section's ordered page, block and evidence IDs. It
+must retain the `document_id`, `asset_id`, source SHA-256 and those anchor IDs
+on every later record. It must not reopen the PDF to rediscover structure or
+provenance. Ingest does not create embeddings, vectors, questions, answers or
+training records; those remain DataForge responsibilities.
 
 Bounded inference uses `CognityxInferenceClient`. A named local server profile
 starts the worker and loads its configured model; external providers must pass

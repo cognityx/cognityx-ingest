@@ -70,11 +70,13 @@ objectives remain executable expected failures.
   while richer structure is honestly absent.
 - `P-26`: bounded inference accepts only existing allowlisted anchors and
   rejects invented anchors deterministically.
-- `P-27`, partial: `provenance.json` is immutable and contains pages, blocks,
-  sections, evidence, relations, decisions, and unresolved collections. The
-  collections do not yet contain all rich fixture facts.
-- `P-28` and `D-01`, baseline: DataForge can load `provenance.json` by Storage
-  URI without reopening the PDF.
+- `P-27` and `P-28`: immutable `provenance.json` contains the complete rich
+  structure, lineage, decisions, relation eligibility and stable artifact
+  Storage URIs. A DataForge-only consumer builds candidate spans without
+  receiving or reopening the PDF.
+- `D-01` through `D-04`: the handoff retains document, SourceAsset, SHA-256,
+  section, page, block and evidence identities and validates referenced
+  anchors before downstream use.
 - `D-05`: the handoff has no vector-database or embedding schema.
 - `P-30`: stored v1 documents remain readable.
 - Existing lifecycle tests already cover safe failure, document/run deletion,
@@ -136,6 +138,8 @@ references.
 
 ## Bounded Inference Required
 
+### GAP-BOUNDED-AMBIGUITY
+
 The only main-fixture case that genuinely needs optional model help is `P-24`,
 the phrase “the relevant travel rule.” It has two plausible candidates:
 Section 10.2 and the related travel manual's Section 6.4. The deterministic
@@ -147,15 +151,16 @@ around that bounded task. The proposal validation boundary already passes; the
 fixture-driven ambiguity task and reproducible canonical decision identity do
 not yet exist.
 
-## DataForge Gap
+## DataForge Handoff
 
 ### GAP-DATAFORGE-RICH
 
-The baseline handoff is readable without the PDF, but `D-02` through `D-04` and
-`D-06` require the rich anchors and relations above. Every derived unit must
+The handoff is readable without the PDF and contains the rich anchors and
+relations needed by `D-02` through `D-04` and `D-06`. Every derived unit must
 retain document, SourceAsset, SHA-256, section, page, block, and evidence IDs.
-Ambiguous and unresolved relations must remain non-gold. DataForge generation
-logic does not belong in Ingest.
+Only concrete observed or resolved relations are marked gold; rejected,
+ambiguous and unresolved results remain non-gold. DataForge generation logic
+does not belong in Ingest.
 
 ## Fixture Gaps
 
@@ -191,15 +196,16 @@ acceptance claim can be made.
 | P-24 | Expected failure | Deterministic ambiguity task, optional bounded inference |
 | P-25 | Pass | Canonical fusion and parser decision trace |
 | P-26 | Pass | Existing bounded inference validator |
-| P-27–P-28 | Partial | Rich canonical output and DataForge anchors |
+| P-27–P-28 | Pass | Complete provenance-only DataForge handoff |
 | P-29 | Expected failure | Stable fusion and decision identity |
 | P-30 | Pass | Existing compatibility reader |
 | D-01 | Pass | Existing Storage URI handoff |
-| D-02–D-04 | Partial/expected failure | Rich canonical provenance |
+| D-02–D-04 | Pass | Validated rich canonical provenance anchors |
 | D-05 | Pass | Existing backend-neutral contract |
-| D-06 | Expected failure | Relation strength and unresolved safeguards |
+| D-06 | Pass | Explicit gold eligibility and unresolved safeguards |
 
-## Next Increment
+## Deferred Roadmap
 
-The next production increment is the complete DataForge handoff contract.
-Bounded ambiguity remains deferred until its related fixture arrives.
+Bounded ambiguity remains deferred until its related travel-policy fixture
+arrives. Cross-document travel-policy resolution, mixed native/scanned OCR and
+DataForge dataset generation also remain intentionally outside this increment.

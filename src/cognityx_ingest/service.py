@@ -83,7 +83,7 @@ from cognityx_ingest.tables import (
 DOCUMENT_SCHEMA_VERSION = "cognityx.ingest.document/v2"
 EVIDENCE_SCHEMA_VERSION = "cognityx.ingest.evidence/v2"
 RUN_SCHEMA_VERSION = "cognityx.ingest.run/v2"
-PROVENANCE_SCHEMA_VERSION = "cognityx.ingest.provenance/v1"
+PROVENANCE_SCHEMA_VERSION = "cognityx.ingest.provenance/v2"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -729,17 +729,61 @@ class IngestService:
             self._storage.put_bytes(
                 evidence_key, payload, media_type="application/x-ndjson"
             )
+        relation_records = [
+            {**item.to_dict(), "gold": _relation_is_gold(item)}
+            for item in document.relations
+        ]
+        unresolved_records = [
+            {**item.to_dict(), "gold": False} for item in document.unresolved
+        ]
+        ambiguous_records = [
+            item for item in unresolved_records if item["status"] == "ambiguous"
+        ]
+        artifact_uris = {
+            "document": self._artifact_uri(document_key),
+            "evidence": self._artifact_uri(evidence_key),
+            "provenance": self._artifact_uri(provenance_key),
+            "manifest": self._artifact_uri(manifest_key),
+            "parser": {
+                backend: self._artifact_uri(key)
+                for backend, key, _payload in raw_parser_items
+            },
+        }
         provenance = {
             "schema": "cognityx.ingest.provenance",
             "schema_version": PROVENANCE_SCHEMA_VERSION,
             "document_id": document.document_id,
+            "run_id": context.run_id,
+            "job_id": job_id,
+            "document": {
+                "document_id": document.document_id,
+                "title": document.title,
+                "aliases": list(document.aliases),
+                "schema_version": document.schema_version,
+            },
             "source_asset": {
                 "asset_id": asset.asset_id,
                 "bundle_id": asset.bundle_id,
                 "context_id": asset.context_id,
                 "blob_sha256": asset.sha256,
+                "logical_uri": document.source.storage_key,
+                "filename": asset.original_filename,
+                "media_type": asset.media_type,
+                "size_bytes": asset.size_bytes,
+                "storage_role": "source_asset",
             },
             "aliases": list(document.aliases),
+            "lineage": {
+                "run_id": context.run_id,
+                "job_id": job_id,
+                "context_id": asset.context_id,
+                "bundle_id": asset.bundle_id,
+                "asset_id": asset.asset_id,
+                "source_sha256": asset.sha256,
+                "document_id": document.document_id,
+            },
+            "artifact_uris": artifact_uris,
+            "artifact_storage_role": "artifacts",
             "pages": [item.to_dict() for item in document.pages],
             "blocks": [item.to_dict() for item in document.blocks],
             "repeated_regions": [
@@ -748,9 +792,10 @@ class IngestService:
             "sections": [item.to_dict() for item in document.sections],
             "objects": [item.to_dict() for item in document.objects],
             "evidence": [item.to_dict() for item in evidence],
-            "relations": [item.to_dict() for item in document.relations],
+            "relations": relation_records,
             "decisions": [item.to_dict() for item in document.decisions],
-            "unresolved": [item.to_dict() for item in document.unresolved],
+            "ambiguous": ambiguous_records,
+            "unresolved": unresolved_records,
             "parser": {
                 "selected": extraction.backend,
                 "version": extraction.backend_version,
@@ -946,6 +991,13 @@ class IngestService:
     def _stored_uri(stored: object) -> str:
         uri = str(stored.uri)
         return uri if uri.startswith("storage://") else f"storage://{stored.key}"
+
+
+def _relation_is_gold(relation: Relation) -> bool:
+    """Mark only concrete, non-ambiguous relation observations as usable truth."""
+    return relation.status in {"observed", "resolved"} and bool(
+        relation.target_anchor_id
+    )
 
 
 def _now() -> str:
