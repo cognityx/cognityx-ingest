@@ -73,3 +73,14 @@ This PDF is reused as-is. It is not replaced, duplicated, or regenerated.
 - source graph and provenance address APIs
 - DataForge handoff APIs beyond the existing contract
 - SDK-facing surface updates
+
+## T00 validation commands
+
+- `uv sync --extra dev`
+- `uv run pytest --collect-only -q tests/v3_2`
+- `uv run pytest -q tests/v3_2`
+- `uv run pytest`
+- `python tests/fixtures/v3_2_focused/verify_fixture_pack.py --repo-root .`
+- `uv run mkdocs build --strict`
+- `uv build`
+- `git diff --check`
