@@ -12,6 +12,7 @@ from pathlib import Path
 
 import cognityx_ingest.canonical_content as canonical_content
 import cognityx_ingest.native_artifacts as native_artifacts
+import cognityx_ingest.parser as parser
 import cognityx_ingest.parser_capabilities as parser_capabilities
 import cognityx_ingest.parser_fusion as parser_fusion
 import cognityx_ingest.parser_routing as parser_routing
@@ -428,6 +429,12 @@ def test_parser_fusion_module_has_substantial_architectural_docstring() -> None:
         "fact-family",
         "replays",
         "missing confidence",
+        "parser-local source-region",
+        "value hashing only as a uniquely identifying fallback",
+        "fails rather than selecting an arbitrary",
+        "ordered reviewed priority",
+        "exactly three fields",
+        "cross-validated against the observation set",
         "t04",
         "t06",
         "source graph",
@@ -494,6 +501,9 @@ def test_named_parser_fusion_algorithms_have_invariant_documentation() -> None:
         "_adjudicate_fact",
         "_build_region_decisions",
         "_enrich_compatibility_fact_sources",
+        "_enrich_source_details",
+        "_select_compatibility_observation",
+        "_processing_activity_threshold",
         "_strict_json_loads",
     }
     functions = {
@@ -503,3 +513,64 @@ def test_named_parser_fusion_algorithms_have_invariant_documentation() -> None:
     }
     assert required <= set(functions)
     assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_parser_fusion_guide_explains_exact_binding_and_priority_semantics() -> None:
+    """Pin occurrence, activity, preference, consumers, and future boundaries."""
+    repository_root = Path(parser_fusion.__file__).parents[2]
+    guide = " ".join(
+        (
+            repository_root / "docs" / "parser-alignment-fusion-adjudication.md"
+        ).read_text(encoding="utf-8").lower().split()
+    )
+    for concept in (
+        "exact parser-occurrence binding",
+        "source anchor",
+        "value-hash fallback",
+        "more than one match raises",
+        "source text is not copied",
+        "ordered reviewed priority",
+        "first listed value that occurs",
+        "exactly three fields",
+        "cross-validated against the observation set",
+        "recomputing a fusion id cannot rescue",
+        "canonicalfactsource",
+        "t06",
+        "t08",
+    ):
+        assert concept in guide, concept
+
+
+def test_compatibility_projection_helpers_document_occurrence_provenance() -> None:
+    """Require changed parser helpers to explain identity, consumers, and scope."""
+    required = {
+        "_fuse_page",
+        "_fuse_blocks",
+        "_fuse_objects",
+        "_fuse_relations",
+        "_source_detail",
+        "_parser_source_region_id",
+        "_block_fact_sources",
+        "_object_fact_sources",
+        "_relation_fact_sources",
+    }
+    functions = {
+        node.name: node
+        for node in ast.walk(_module_tree(parser))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert required <= set(functions)
+    documentation = " ".join(
+        (ast.get_docstring(functions[name]) or "").lower() for name in required
+    )
+    for concept in (
+        "source-region",
+        "anchor",
+        "occurrence",
+        "compatibility",
+        "audit",
+        "source text",
+        "t06",
+        "t08",
+    ):
+        assert concept in documentation, concept

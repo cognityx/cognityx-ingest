@@ -160,8 +160,10 @@ Its strategies have these concrete behaviors:
   incompatible values for the same fact as complementary.
 - `preserve-conflict` retains and rejects every incompatible observation without
   choosing one.
-- `prefer-explicit-value` accepts only observations matching an exact reviewed
-  value, rejects the others, and keeps the state as conflict.
+- `prefer-explicit-value` reads preferred values as an ordered reviewed
+  priority. It finds the first listed value that occurs, accepts observations
+  matching only that value, rejects all others, and keeps the state as conflict.
+  If no preferred value occurs, it accepts none and preserves the conflict.
 - `require-review` makes incompatible values unresolved, accepts none, and
   records a required review action.
 - `preserve-segmentation-variants` retains split and merged alternatives as
@@ -171,6 +173,11 @@ Policies may target one exact fact or one bounded fact family: textual,
 geometry, segmentation, structure, relation, or object. An exact fact policy
 overrides its family policy. Duplicate ownership and
 `retain_all_observations=false` are rejected because T05 never deletes evidence.
+An explicit-value policy must contain at least one preferred value, and those
+values must have different canonical SHA-256 identities. Every other strategy
+rejects preferred values because they would have no defined effect. Strict JSON
+loading preserves the supplied order; it never sorts or silently deduplicates
+the reviewed priority.
 
 There is no global backend-precedence table. A policy can accept one observation
 inside a conflict, but the state remains `conflict` and every rejected
@@ -250,6 +257,29 @@ marked as a compatibility projection with false gold eligibility.
 The authoritative state remains in `ParserFusionArtifact`. Compatibility fields
 must not be described as accepted evidence merely because they are populated.
 
+### Exact Parser-Occurrence Binding
+
+Two blocks can contain the same words on the same page. A value hash alone then
+cannot tell which block produced a compatibility field. T05 keeps the original
+parser occurrence identity in additive fact-source metadata. A page uses a
+region such as `page:0`; a block keeps its parser block anchor, source-region ID,
+and duplicate occurrence number when needed. Objects and relations keep the
+equivalent parser-local record and endpoint anchors. Source text is not copied
+into this metadata.
+
+Enrichment uses the strongest locator available. It first tries the exact
+source-region ID, then the parser-local source anchor, then the complete parser,
+fact, value hash, page, bounding box, and occurrence identity. The older
+value-hash fallback is allowed only when exactly one observation remains. Zero
+matches leave the old source unenriched. More than one match raises
+`ParserFusionCompatibilityError`; choosing the alphabetically smallest
+observation would create false provenance.
+
+The resulting observation and decision IDs identify the same source occurrence
+in `CanonicalFactSource`. Canonical builders and audit tools use them now. T06
+may later use the references for non-copying segmentation views, and T08 may use
+accepted references for graph provenance, but T05 creates neither future API.
+
 ## v1 Compatibility and v3.2 Artifact
 
 The existing raw compare artifact remains available as
@@ -297,11 +327,30 @@ and reapplies retained policy records. Changing observation bytes while keeping
 the same observation-set ID fails the SHA binding; changing policy strategy,
 preferred values, or resolution fails fusion integrity.
 
+### Processing-Activity Binding
+
+The processing activity explains which deterministic fusion operation created
+the artifact. Its shape has exactly three fields: `activity_id`,
+`bbox_iou_threshold`, and `method`. Missing and additional fields are rejected.
+The method must be `deterministic-parser-fusion`, and the overlap threshold must
+use its exact canonical text representation so replay reads one unambiguous
+number.
+
+The processing activity is included in the fusion identity and is also
+cross-validated against the observation set. Its `activity_id` must equal the
+observation set's processing activity ID. When that ID is legitimately absent,
+the only allowed fallback is `activity-parser-fusion`. Recomputing a fusion ID
+cannot rescue a mismatched activity because cross-validation is a separate
+semantic check. The stored threshold must reproduce the same alignment evidence,
+groups, fact decisions, and region decisions during replay.
+
 ## Canonical Fact Sources
 
 Compatibility page and block fact sources can carry parser ID, method,
-confidence, observation ID, decision ID, adjudication state, accepted or
-rejected status, compatibility-projection status, and gold eligibility.
+confidence, parser-local source-region ID, source anchor, occurrence index,
+observation ID, decision ID, adjudication state, accepted or rejected status,
+compatibility-projection status, and gold eligibility. Object and relation
+compatibility sources retain equivalent parser-local identities.
 
 Canonical text nodes retain complete T05 references through optional typed fact
 sources. Empty metadata is omitted, preserving older canonical-content bytes and

@@ -222,6 +222,18 @@ def test_canonical_fact_sources_retain_observation_and_adjudication_ids(
     assert {item["adjudication_state"] for item in sources} == {"agreement"}
     assert all(item["accepted"] is True for item in sources)
     assert "value" not in json.dumps(sources)
+    observations = ParserObservationSet.from_json_bytes(
+        storage.open(result.observation_artifact_key).read()
+    )
+    fusion = ParserFusionArtifact.from_json_bytes(
+        storage.open(result.fusion_artifact_key).read()
+    )
+    decisions = {item.decision_id: item for item in fusion.fact_decisions}
+    for source in sources:
+        observation = observations.get(source["observation_id"])
+        decision = decisions[source["decision_id"]]
+        assert observation.source_region.source_region_id == "page:0"
+        assert source["observation_id"] in decision.observation_ids
 
 
 def test_document_cleanup_removes_both_document_local_t05_artifacts(tmp_path: Path) -> None:

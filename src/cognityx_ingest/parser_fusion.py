@@ -64,7 +64,22 @@ variant preservation are separate executable strategies. A bounded fact-family
 vocabulary supports reviewed defaults, while an exact fact policy takes
 precedence. Validation replays these retained policies and rejects changed
 strategies, preferred values, resolutions, or arbitrary replacement identities.
-No policy can discard an observation.
+For explicit-value policy, preferred values are an ordered reviewed priority:
+only the first listed value present in the observations is accepted. No policy
+can discard an observation.
+
+Compatibility fact sources retain parser-local source-region and anchor identity
+before enrichment. The enrichment stage first uses that exact occurrence
+identity and uses value hashing only as a uniquely identifying fallback. If two
+observations remain possible, fusion fails rather than selecting an arbitrary
+stable ID. This lets canonical fact sources, audit tools, and later T06 and T08
+consumers point to the occurrence that actually produced the legacy projection.
+
+The fusion processing activity has exactly three fields: activity ID, canonical
+bounding-box threshold, and deterministic method. It contributes to fusion
+identity and is separately cross-validated against the observation set. This
+prevents recomputing a self-consistent fusion ID around an activity record that
+belongs to another observation process.
 
 Missing confidence stays absent. Page records have no native page-level
 confidence field, so page observations use ``None`` instead of an invented zero
@@ -107,6 +122,7 @@ from cognityx_ingest.parser import (
     ExtractedRelation,
     ExtractedSection,
     ExtractionResult,
+    _parser_source_region_id,
 )
 
 
@@ -155,6 +171,13 @@ _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
 _PARSER_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 _FACT_PATTERN = re.compile(r"^[a-z][a-z0-9._-]{0,127}$")
 _UNSAFE_GOLD_STATES = {"ambiguous", "contradicted", "unresolved"}
+_PROCESSING_ACTIVITY_KEYS = (
+    "activity_id",
+    "bbox_iou_threshold",
+    "method",
+)
+_PROCESSING_ACTIVITY_METHOD = "deterministic-parser-fusion"
+_PROCESSING_ACTIVITY_FALLBACK_ID = "activity-parser-fusion"
 
 
 class ParserFusionError(Exception):
@@ -299,7 +322,9 @@ class ParserFusionCompatibilityError(ParserFusionError):
     Used by:
         ``ParserRouter(mode="compare")`` and existing ingest composition.
     Main algorithm:
-        Preserve the old result shape while attaching the authoritative artifact.
+        Preserve the old result shape, bind each selected fact to one exact
+        parser occurrence, and reject ambiguous provenance before attaching the
+        authoritative artifact.
     Invariants:
         Projection never changes a conflict or unresolved state into acceptance.
     Lifecycle/persistence:
@@ -1064,10 +1089,12 @@ class FactAdjudicationPolicy:
     Used by:
         Fact adjudication after alignment and value comparison.
     Main algorithm:
-        Match a fact, apply one named strategy, and optionally prefer an explicit
-        canonical value while retaining all observations.
+        Match a fact, apply one named strategy, and for explicit preference
+        select the first present value in reviewed tuple order while retaining
+        all observations.
     Invariants:
-        Strategies are bounded data; no executable callable or expression exists.
+        Strategies are bounded data; preferred values are nonempty and hash
+        unique only for explicit preference; no executable expression exists.
     Lifecycle/persistence:
         Applied policy records persist inside the fusion artifact so strict
         readers can replay decisions without executable policy code.
@@ -1091,7 +1118,14 @@ class FactAdjudicationPolicy:
     gold_eligible_on_accept: bool = False
 
     def __post_init__(self) -> None:
-        """Validate policy targeting, strategy, immutable values, and identifiers."""
+        """Validate bounded policy ownership and ordered preference semantics.
+
+        Policy authors and strict readers use the same invariant boundary. The
+        algorithm preserves preferred-value tuple order, requires at least one
+        hash-unique value for ``prefer-explicit-value``, and rejects preferences
+        for strategies where they have no defined effect. Validation is pure and
+        raises ``ParserAdjudicationError`` before a policy can reach replay.
+        """
         _require_id(self.policy_id, "policy_id", adjudication=True)
         if (self.fact is None) == (self.fact_family is None):
             raise ParserAdjudicationError("Policy requires exactly one fact target.")
@@ -1108,6 +1142,20 @@ class FactAdjudicationPolicy:
             raise ParserAdjudicationError("Policy strategy is unsupported.")
         if not all(isinstance(item, ObservationValue) for item in self.preferred_values):
             raise ParserAdjudicationError("preferred_values must be immutable observation values.")
+        preferred_hashes = tuple(item.sha256 for item in self.preferred_values)
+        if self.strategy == "prefer-explicit-value":
+            if not preferred_hashes:
+                raise ParserAdjudicationError(
+                    "prefer-explicit-value requires at least one preferred value."
+                )
+            if len(set(preferred_hashes)) != len(preferred_hashes):
+                raise ParserAdjudicationError(
+                    "preferred_values must have unique canonical SHA-256 values."
+                )
+        elif preferred_hashes:
+            raise ParserAdjudicationError(
+                "preferred_values are valid only for prefer-explicit-value."
+            )
         if not self.retain_all_observations:
             raise ParserAdjudicationError(
                 "v3.2 policies must retain every parser observation."
@@ -1115,7 +1163,12 @@ class FactAdjudicationPolicy:
         _bounded_text(self.resolution_code, "resolution_code", adjudication=True)
 
     def to_dict(self) -> dict[str, object]:
-        """Serialize policy data without executable behavior."""
+        """Serialize policy data while preserving reviewed priority order.
+
+        Artifact writers call this pure method after validation. It emits no
+        executable behavior, retains ``preferred_values`` in contractual tuple
+        order, and returns detached JSON-safe values for strict replay consumers.
+        """
         return {
             "policy_id": self.policy_id,
             "fact": self.fact,
@@ -1132,9 +1185,10 @@ class FactAdjudicationPolicy:
         """Read one bounded data-only policy for persistence replay.
 
         Fusion artifact readers call this strict constructor. It accepts only the
-        declared scalar fields and canonical preferred values, performs no code
-        evaluation, and raises ``ParserAdjudicationError`` for unsupported policy
-        ownership or behavior.
+        declared scalar fields and canonical preferred values, preserving their
+        supplied priority order without sorting or deduplication. It performs no
+        code evaluation and raises ``ParserAdjudicationError`` for unsupported
+        policy ownership or behavior.
         """
         required = {
             "policy_id", "fact", "fact_family", "strategy", "preferred_values",
@@ -1378,7 +1432,9 @@ class ParserFusionArtifact:
         Validate all cross-record references and serialize stable JSON bytes.
     Invariants:
         Schema and ordering are exact; decisions reference observations rather
-        than repeating accepted text; state counts match fact decisions.
+        than repeating accepted text; state counts match fact decisions; the
+        three-field processing activity is canonical and contributes to fusion
+        identity before cross-validation against its observation set.
     Lifecycle/persistence:
         Stored as additive document-local ``fusion-decisions.json`` beside the
         separately durable and SHA-bound ``observations.json`` artifact.
@@ -1413,7 +1469,14 @@ class ParserFusionArtifact:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ParserFusionArtifact":
-        """Parse one strict JSON-safe artifact mapping and validate every record."""
+        """Parse one strict JSON-safe artifact mapping and validate every record.
+
+        Persistence and audit readers call this trust boundary. It converts all
+        nested records, wraps invalid retained policy semantics as
+        ``ParserFusionValidationError``, and then invokes complete aggregate
+        validation. The method performs no parser execution or I/O and returns a
+        frozen artifact only when every persisted field is trustworthy.
+        """
         required = {
             "schema", "fusion_id", "observation_set_id", "observation_set_sha256", "source_backends",
             "backend_versions", "alignment_evidence", "aligned_groups",
@@ -1421,6 +1484,17 @@ class ParserFusionArtifact:
             "processing_activity", "state_counts",
         }
         _require_fields(value, required=required, optional=set(), fusion=True)
+        try:
+            policies = tuple(
+                FactAdjudicationPolicy.from_dict(item)
+                for item in _object_array(
+                    value["adjudication_policies"], "adjudication_policies"
+                )
+            )
+        except ParserAdjudicationError as exc:
+            raise ParserFusionValidationError(
+                "Retained adjudication policy semantics are invalid."
+            ) from exc
         return cls(
             schema=_text_field(value, "schema", fusion=True),
             fusion_id=_text_field(value, "fusion_id", fusion=True),
@@ -1440,10 +1514,7 @@ class ParserFusionArtifact:
             region_decisions=tuple(
                 _region_decision_from_dict(item) for item in _object_array(value["region_decisions"], "region_decisions")
             ),
-            adjudication_policies=tuple(
-                FactAdjudicationPolicy.from_dict(item)
-                for item in _object_array(value["adjudication_policies"], "adjudication_policies")
-            ),
+            adjudication_policies=policies,
             policy_ids=_string_tuple(value["policy_ids"], "policy_ids", fusion=True),
             processing_activity=_string_mapping_tuple(value["processing_activity"], "processing_activity"),
             state_counts=_count_mapping_tuple(value["state_counts"]),
@@ -1484,8 +1555,10 @@ class ParserFusionArtifact:
         """Validate schema, deterministic ordering, identities, and references.
 
         Construction and untrusted reads call this idempotent pure method. It
-        performs no parser, network, provider, or LLM operation and raises only
-        ``ParserFusionValidationError`` for aggregate contract failures.
+        requires the exact three-field processing-activity shape and canonical
+        threshold before recomputing every stable identity and cross-reference.
+        It performs no parser, network, provider, or LLM operation and raises
+        only ``ParserFusionValidationError`` for aggregate contract failures.
         """
         if self.schema != PARSER_FUSION_ARTIFACT_SCHEMA:
             raise ParserFusionValidationError("Fusion artifact schema is unsupported.")
@@ -1497,6 +1570,24 @@ class ParserFusionArtifact:
         _validate_ordered_unique(self.policy_ids, "policy_ids")
         _validate_pair_order(self.backend_versions, "backend_versions")
         _validate_pair_order(self.processing_activity, "processing_activity")
+        if tuple(
+            key for key, _value in self.processing_activity
+        ) != _PROCESSING_ACTIVITY_KEYS:
+            raise ParserFusionValidationError(
+                "processing_activity must contain exactly activity_id, "
+                "bbox_iou_threshold, and method."
+            )
+        activity = dict(self.processing_activity)
+        _require_id(
+            activity["activity_id"],
+            "processing_activity.activity_id",
+            fusion=True,
+        )
+        if activity["method"] != _PROCESSING_ACTIVITY_METHOD:
+            raise ParserFusionValidationError(
+                "Fusion processing method is unsupported."
+            )
+        _processing_activity_threshold(activity)
         if tuple(name for name, _count in self.state_counts) != FUSION_STATES:
             raise ParserFusionValidationError("state_counts must use contractual state order.")
         if any(isinstance(count, bool) or count < 0 for _name, count in self.state_counts):
@@ -1623,10 +1714,13 @@ class ParserFusionArtifact:
 
         ``IngestService`` and strict readers call this before trusting or writing
         either artifact. Validation binds both the set ID and SHA-256, recomputes
-        parser/version indexes, reruns deterministic region alignment using the
-        persisted threshold, reapplies retained data-only policies, and requires
-        every group, fact decision, and region summary to match exactly. The pure
-        replay performs no parser, provider, network, or LLM call.
+        parser/version indexes, requires the exact three-field processing activity
+        ID to equal the observation set ID or documented fallback, reruns
+        deterministic region alignment using the canonical persisted threshold,
+        reapplies retained data-only policies, and requires every group, fact
+        decision, and region summary to match exactly. Fusion-ID recomputation
+        cannot bypass the separate activity check. The pure replay performs no
+        parser, provider, network, or LLM call.
         """
         self.validate()
         observation_set.validate()
@@ -1722,16 +1816,15 @@ class ParserFusionArtifact:
                     "Unsafe observation state cannot be gold eligible."
                 )
         activity = dict(self.processing_activity)
-        if activity.get("method") != "deterministic-parser-fusion":
-            raise ParserFusionValidationError("Fusion processing method is unsupported.")
-        try:
-            threshold = float(activity["bbox_iou_threshold"])
-        except (KeyError, TypeError, ValueError) as exc:
+        expected_activity_id = (
+            observation_set.processing_activity_id
+            or _PROCESSING_ACTIVITY_FALLBACK_ID
+        )
+        if activity["activity_id"] != expected_activity_id:
             raise ParserFusionValidationError(
-                "Fusion bbox threshold is missing or invalid."
-            ) from exc
-        if not math.isfinite(threshold) or not 0 <= threshold <= 1:
-            raise ParserFusionValidationError("Fusion bbox threshold is out of range.")
+                "Fusion processing activity does not match the observation set."
+            )
+        threshold = _processing_activity_threshold(activity)
         expected_evidence, expected_groups = ParserFusionService(
             bbox_iou_threshold=threshold
         ).align(observation_set)
@@ -1961,11 +2054,14 @@ class ParserFusionService:
         }))
         observation_bytes = observation_set.to_json_bytes()
         observation_sha256 = hashlib.sha256(observation_bytes).hexdigest()
-        activity_id = observation_set.processing_activity_id or "activity-parser-fusion"
+        activity_id = (
+            observation_set.processing_activity_id
+            or _PROCESSING_ACTIVITY_FALLBACK_ID
+        )
         processing_activity = (
             ("activity_id", activity_id),
             ("bbox_iou_threshold", format(self._bbox_iou_threshold, ".17g")),
-            ("method", "deterministic-parser-fusion"),
+            ("method", _PROCESSING_ACTIVITY_METHOD),
         )
         state_counts = tuple(
             (state, sum(item.state == state for item in fact_decisions))
@@ -2080,9 +2176,11 @@ def _enrich_compatibility_fact_sources(
     """Attach T05 IDs and state to legacy fact sources without copying values.
 
     Compatibility projection calls this after adjudication. It matches existing
-    selected page and block sources to exact parser/fact/value observations on the
-    same page, then adds decision metadata. The algorithm does not change selected
-    values or execute external work. Unmatched legacy metadata remains intact.
+    selected page and block sources to exact parser-local source regions or
+    anchors before considering occurrence and value identity, then adds decision
+    metadata. The algorithm does not change selected values or execute external
+    work. Unmatched legacy metadata remains intact; ambiguous matches raise a
+    typed compatibility error rather than choosing an arbitrary observation.
     """
     decision_by_observation = {
         observation_id: decision
@@ -2103,7 +2201,13 @@ def _enrich_compatibility_page(
     observations: tuple[ParserObservation, ...],
     decision_by_observation: Mapping[str, FactFusionDecision],
 ) -> ExtractedPage:
-    """Enrich one projected page and its blocks while preserving all field values."""
+    """Enrich one projected page and its blocks without changing legacy values.
+
+    Compatibility projection calls this for each physical page. It delegates
+    exact occurrence lookup for page and block fact sources, returns immutable
+    replacements, and leaves object, relation, and selected field values intact.
+    Ambiguity propagates as ``ParserFusionCompatibilityError`` before persistence.
+    """
     page_sources = {
         fact: _enrich_source_details(
             sources,
@@ -2146,31 +2250,33 @@ def _enrich_source_details(
     *,
     bbox: tuple[float, float, float, float] | None = None,
 ) -> tuple[Mapping[str, object], ...]:
-    """Match selected legacy sources to exact T05 evidence and mark projection use."""
+    """Bind selected legacy sources to one exact T05 observation occurrence.
+
+    The compatibility layer calls this after it has selected an unchanged legacy
+    value. For each parser source, the algorithm prefers exact source-region ID,
+    then parser-local anchor, then page/bbox/occurrence identity. The historical
+    parser/fact/value/page/bbox match is allowed only when it leaves one candidate.
+    Zero matches preserve the original source; multiple matches raise
+    ``ParserFusionCompatibilityError``. The result adds only IDs and decision
+    state, never source text, for canonical, audit, T06, and T08 consumers.
+    """
     try:
         selected_hash = ObservationValue.from_value(selected_value).sha256  # type: ignore[arg-type]
     except ParserObservationValidationError:
         return sources
     enriched: list[Mapping[str, object]] = []
     for source in sources:
-        parser_id = source.get("backend") or source.get("parser_id")
-        candidates = tuple(
-            item
-            for item in observations
-            if item.parser_id == parser_id
-            and item.fact == fact
-            and item.value_sha256 == selected_hash
-            and item.source_region.physical_page_index == page_index
-            and (
-                bbox is None
-                or item.source_region.bbox is None
-                or item.source_region.bbox == bbox
-            )
+        observation = _select_compatibility_observation(
+            source,
+            fact,
+            selected_hash,
+            page_index,
+            bbox,
+            observations,
         )
-        if not candidates:
+        if observation is None:
             enriched.append(source)
             continue
-        observation = min(candidates, key=lambda item: item.observation_id)
         decision = decision_by_observation[observation.observation_id]
         accepted = observation.observation_id in decision.accepted_observation_ids
         rejected = observation.observation_id in decision.rejected_observation_ids
@@ -2189,6 +2295,113 @@ def _enrich_source_details(
             }
         )
     return tuple(enriched)
+
+
+def _select_compatibility_observation(
+    source: Mapping[str, object],
+    fact: str,
+    selected_hash: str,
+    page_index: int,
+    bbox: tuple[float, float, float, float] | None,
+    observations: tuple[ParserObservation, ...],
+) -> ParserObservation | None:
+    """Select one parser observation using strongest available occurrence identity.
+
+    ``_enrich_source_details`` calls this pure matcher for one compatibility
+    source. It progressively narrows parser/fact/value candidates by exact region,
+    anchor, and occurrence-aware page/geometry. A legacy value-only fallback is
+    accepted only when unique. Malformed identity metadata or any remaining
+    ambiguity raises ``ParserFusionCompatibilityError`` without exposing values.
+    """
+    parser_id = source.get("backend") or source.get("parser_id")
+    candidates = tuple(
+        item
+        for item in observations
+        if item.parser_id == parser_id
+        and item.fact == fact
+        and item.value_sha256 == selected_hash
+    )
+
+    source_region_id = source.get("source_region_id")
+    if source_region_id is not None:
+        if not isinstance(source_region_id, str):
+            raise ParserFusionCompatibilityError(
+                "Compatibility source_region_id must be a string."
+            )
+        candidates = tuple(
+            item
+            for item in candidates
+            if item.source_region.source_region_id == source_region_id
+        )
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else None
+
+    source_anchor = source.get("source_anchor")
+    if source_anchor is not None:
+        if not isinstance(source_anchor, str):
+            raise ParserFusionCompatibilityError(
+                "Compatibility source_anchor must be a string."
+            )
+        candidates = tuple(
+            item
+            for item in candidates
+            if item.source_region.source_anchor == source_anchor
+        )
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else None
+
+    occurrence_index = source.get("occurrence_index")
+    if occurrence_index is not None and (
+        isinstance(occurrence_index, bool)
+        or not isinstance(occurrence_index, int)
+        or occurrence_index < 1
+    ):
+        raise ParserFusionCompatibilityError(
+            "Compatibility occurrence_index must be a positive integer."
+        )
+    identity_candidates = tuple(
+        item
+        for item in candidates
+        if item.source_region.physical_page_index == page_index
+        and (
+            bbox is None
+            or item.source_region.bbox is None
+            or item.source_region.bbox == bbox
+        )
+        and (
+            occurrence_index is None
+            or item.occurrence_index == occurrence_index
+        )
+    )
+    if len(identity_candidates) == 1:
+        return identity_candidates[0]
+    if len(identity_candidates) > 1:
+        raise ParserFusionCompatibilityError(
+            "Compatibility source matches multiple parser observations."
+        )
+    if occurrence_index is not None:
+        return None
+
+    fallback_candidates = tuple(
+        item
+        for item in observations
+        if item.parser_id == parser_id
+        and item.fact == fact
+        and item.value_sha256 == selected_hash
+        and item.source_region.physical_page_index == page_index
+        and (
+            bbox is None
+            or item.source_region.bbox is None
+            or item.source_region.bbox == bbox
+        )
+    )
+    if len(fallback_candidates) == 1:
+        return fallback_candidates[0]
+    if len(fallback_candidates) > 1:
+        raise ParserFusionCompatibilityError(
+            "Compatibility value fallback matches multiple parser observations."
+        )
+    return None
 
 
 def _canonical_value_bytes(value: object) -> bytes:
@@ -2267,6 +2480,33 @@ def _canonical_json_bytes(value: object) -> bytes:
         ).encode("utf-8")
     except (TypeError, ValueError) as exc:
         raise ParserFusionValidationError("Fusion record is not JSON-safe.") from exc
+
+
+def _processing_activity_threshold(activity: Mapping[str, str]) -> float:
+    """Validate and return the exact canonical fusion alignment threshold.
+
+    Artifact construction and replay share this pure boundary. It accepts only a
+    finite unit-interval number whose text is exactly Python's stable ``.17g``
+    representation, preventing equivalent-looking but noncanonical activity
+    records from acquiring distinct fusion identities. Invalid persisted data
+    raises ``ParserFusionValidationError`` before alignment replay.
+    """
+    try:
+        raw_threshold = activity["bbox_iou_threshold"]
+        threshold = float(raw_threshold)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ParserFusionValidationError(
+            "Fusion bbox threshold is missing or invalid."
+        ) from exc
+    if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+        raise ParserFusionValidationError(
+            "Fusion bbox threshold is out of range."
+        )
+    if raw_threshold != format(threshold, ".17g"):
+        raise ParserFusionValidationError(
+            "Fusion bbox threshold is not in canonical form."
+        )
+    return threshold
 
 
 def _sha256_json(value: object) -> str:
@@ -2538,10 +2778,20 @@ def _block_region(
     block: ExtractedBlock,
     resource_id: str | None,
 ) -> ObservationSourceRegion:
-    """Build block location evidence while keeping parser-native block identity."""
+    """Build block location evidence shared with compatibility projection.
+
+    The extraction-result adapter calls this for every parser block. It uses the
+    parser module's bounded region-ID algorithm so compatibility metadata names
+    the same occurrence, retains the parser block ID as an anchor, and stores
+    only a text digest rather than copied text. Alignment and canonical audit
+    consumers use the resulting immutable region; T06 view creation remains out
+    of scope.
+    """
     digest = hashlib.sha256(block.text.encode("utf-8")).hexdigest() if block.text else None
     return ObservationSourceRegion(
-        source_region_id=f"block:{parser_id}:{page_index}:{_safe_component(block.block_id)}",
+        source_region_id=_parser_source_region_id(
+            "block", parser_id, page_index, block.block_id
+        ),
         resource_id=resource_id,
         physical_page_index=page_index,
         source_anchor=block.block_id,
@@ -2556,21 +2806,23 @@ def _object_region(
     item: ExtractedObject,
     resource_id: str | None,
 ) -> ObservationSourceRegion:
-    """Build object location evidence without importing parser-private classes."""
+    """Build object location evidence shared with compatibility projection.
+
+    The adapter calls this for each normalized object. It binds the parser-local
+    object ID to the same bounded source-region identity emitted by legacy
+    compatibility metadata, while retaining optional page geometry. T05
+    alignment and audit consumers use the locator without copying caption or
+    object text; T08 graph materialization remains a later responsibility.
+    """
     return ObservationSourceRegion(
-        source_region_id=f"object:{parser_id}:{page_index}:{_safe_component(item.object_id)}",
+        source_region_id=_parser_source_region_id(
+            "object", parser_id, page_index, item.object_id
+        ),
         resource_id=resource_id,
         physical_page_index=page_index,
         source_anchor=item.object_id,
         bbox=item.bbox,
     )
-
-
-def _safe_component(value: str) -> str:
-    """Convert a parser-local identifier into a bounded non-path source-region part."""
-    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
-    return digest
-
 
 @dataclass(frozen=True, slots=True)
 class _SourceRegionAggregate:
@@ -3125,7 +3377,9 @@ def _adjudicate_fact(
     requires equivalent bytes from at least two distinct parser IDs. Every
     strategy classifies all observations as accepted or rejected, never chooses
     by confidence, and preserves conflict or unresolved state when review is
-    required.
+    required. Explicit-value policy walks reviewed preferences in tuple order,
+    chooses only the first observed value, and accepts every observation with
+    that one hash so contradictory preferred values cannot both be accepted.
     """
     ids = tuple(item.observation_id for item in observations)
     values = {item.value_sha256 for item in observations}
@@ -3157,11 +3411,19 @@ def _adjudicate_fact(
         state = "conflict"
         strategy = policy.strategy if policy is not None else "preserve-conflict"
         if strategy == "prefer-explicit-value":
-            preferred_hashes = {item.sha256 for item in policy.preferred_values} if policy else set()
+            observed_hashes = {item.value_sha256 for item in observations}
+            chosen_hash = next(
+                (
+                    item.sha256
+                    for item in policy.preferred_values
+                    if item.sha256 in observed_hashes
+                ),
+                None,
+            ) if policy is not None else None
             accepted = tuple(
                 item.observation_id
                 for item in observations
-                if item.value_sha256 in preferred_hashes
+                if item.value_sha256 == chosen_hash
             )
             rejected = tuple(item for item in ids if item not in set(accepted))
         elif strategy == "require-review":

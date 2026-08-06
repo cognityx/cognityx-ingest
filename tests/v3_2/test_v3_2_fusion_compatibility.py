@@ -9,16 +9,22 @@ import pytest
 
 import cognityx_ingest.parser as parser_module
 from cognityx_ingest import (
+    ExtractedBlock,
+    ExtractedObject,
     ExtractedPage,
+    ExtractedRelation,
     ExtractionPolicy,
     ExtractionResult,
     FusionOutcome,
+    ObservationSourceRegion,
     ParserFusionArtifact,
     ParserFusionCompatibilityError,
     ParserFusionService,
+    ParserObservation,
     ParserObservationSet,
     ParserRouter,
 )
+from cognityx_ingest.parser_fusion import _enrich_source_details
 
 
 class _ResultPlugin:
@@ -50,6 +56,62 @@ def _results() -> tuple[ExtractionResult, ExtractionResult]:
             raw_artifact=b'{"native":"pymupdf"}',
         ),
     )
+
+
+def _repeated_block_results(
+    *, reverse_results: bool = False, reverse_blocks: bool = False
+) -> tuple[ExtractionResult, ExtractionResult]:
+    """Build parser results with repeated text and distinct local block identities.
+
+    Provenance tests use this production-shaped input to verify that compatibility
+    projection binds identical values to parser occurrences rather than relying
+    on text or input sequence order. The helper performs no parser execution and
+    returns fresh immutable records for each test.
+    """
+    results = tuple(
+        ExtractionResult(
+            pages=(
+                ExtractedPage(
+                    1,
+                    f"{backend} page",
+                    page_index=0,
+                    blocks=tuple(
+                        reversed(
+                            (
+                                ExtractedBlock(
+                                    f"{backend}-block-a",
+                                    "Repeated policy text",
+                                    reading_order=1,
+                                ),
+                                ExtractedBlock(
+                                    f"{backend}-block-b",
+                                    "Repeated policy text",
+                                    reading_order=2,
+                                ),
+                            )
+                        )
+                        if reverse_blocks
+                        else (
+                            ExtractedBlock(
+                                f"{backend}-block-a",
+                                "Repeated policy text",
+                                reading_order=1,
+                            ),
+                            ExtractedBlock(
+                                f"{backend}-block-b",
+                                "Repeated policy text",
+                                reading_order=2,
+                            ),
+                        )
+                    ),
+                ),
+            ),
+            backend=backend,
+            backend_version="1",
+        )
+        for backend in ("docling", "pymupdf")
+    )
+    return tuple(reversed(results)) if reverse_results else results  # type: ignore[return-value]
 
 
 def test_fuse_results_delegates_to_production_t05_service(monkeypatch) -> None:
@@ -156,3 +218,235 @@ def test_fusion_outcome_requires_both_exact_public_aggregate_bytes() -> None:
     )
     with pytest.raises(ParserFusionCompatibilityError):
         FusionOutcome(changed, outcome.fusion_artifact, outcome.extraction_result)
+
+
+def test_identical_blocks_without_bbox_bind_to_exact_parser_occurrences() -> None:
+    """Bind repeated same-page text by source region instead of value ordering."""
+    outcome = ParserFusionService().fuse_extraction_results(
+        _repeated_block_results(), ("docling", "pymupdf")
+    )
+    observations = {
+        item.observation_id: item for item in outcome.observation_set.observations
+    }
+    blocks = outcome.extraction_result.pages[0].blocks
+    assert len(blocks) == 2
+    assert "Repeated policy text" not in json.dumps(
+        [block.fact_sources for block in blocks]
+    )
+    for block in blocks:
+        for source in block.fact_sources["text"]:
+            observation = observations[source["observation_id"]]
+            assert observation.source_region.bbox is None
+            assert observation.source_region.source_region_id == source["source_region_id"]
+            assert observation.source_region.source_anchor == source["source_anchor"]
+
+
+def test_different_parser_block_ids_select_their_own_observations() -> None:
+    """Keep parser-local anchors distinct even when source values are identical."""
+    outcome = ParserFusionService().fuse_extraction_results(
+        _repeated_block_results(), ("docling", "pymupdf")
+    )
+    observation_index = {
+        item.observation_id: item for item in outcome.observation_set.observations
+    }
+    anchors = set()
+    for block in outcome.extraction_result.pages[0].blocks:
+        for source in block.fact_sources["text"]:
+            observation = observation_index[source["observation_id"]]
+            anchors.add(source["source_anchor"])
+            assert source["backend"] in source["source_anchor"]
+            assert observation.parser_id == source["backend"]
+            assert observation.source_region.source_anchor == source["source_anchor"]
+    assert anchors == {
+        "docling-block-a",
+        "docling-block-b",
+        "pymupdf-block-a",
+        "pymupdf-block-b",
+    }
+
+
+def test_occurrence_index_disambiguates_repeated_value_in_one_region() -> None:
+    """Use explicit occurrence identity when region and value identity repeat."""
+    region = ObservationSourceRegion(
+        "block:docling:0:shared", physical_page_index=0
+    )
+    observations = tuple(
+        ParserObservation.create(
+            parser_id="docling",
+            parser_version=None,
+            source_region=region,
+            fact="text",
+            value="Repeated policy text",
+            occurrence_index=index,
+        )
+        for index in (1, 2)
+    )
+    artifact = ParserFusionService().fuse(
+        ParserObservationSet.create(observations)
+    )
+    decision_by_observation = {
+        observation_id: decision
+        for decision in artifact.fact_decisions
+        for observation_id in decision.observation_ids
+    }
+    sources = _enrich_source_details(
+        (
+            {
+                "backend": "docling",
+                "method": "parser",
+                "confidence": None,
+                "source_region_id": region.source_region_id,
+                "occurrence_index": 2,
+            },
+        ),
+        "text",
+        "Repeated policy text",
+        0,
+        observations,
+        decision_by_observation,
+    )
+    assert sources[0]["observation_id"] == observations[1].observation_id
+
+
+def test_exact_block_anchor_selects_the_matching_observation() -> None:
+    """Prefer a parser block anchor over a nonunique value-only fallback."""
+    regions = tuple(
+        ObservationSourceRegion(
+            f"block:docling:0:{suffix}",
+            physical_page_index=0,
+            source_anchor=f"block-{suffix}",
+        )
+        for suffix in ("a", "b")
+    )
+    observations = tuple(
+        ParserObservation.create(
+            parser_id="docling",
+            parser_version=None,
+            source_region=region,
+            fact="text",
+            value="Repeated policy text",
+        )
+        for region in regions
+    )
+    artifact = ParserFusionService().fuse(
+        ParserObservationSet.create(observations)
+    )
+    decisions = {
+        observation_id: decision
+        for decision in artifact.fact_decisions
+        for observation_id in decision.observation_ids
+    }
+    enriched = _enrich_source_details(
+        (
+            {
+                "backend": "docling",
+                "method": "parser",
+                "confidence": None,
+                "source_anchor": "block-b",
+            },
+        ),
+        "text",
+        "Repeated policy text",
+        0,
+        observations,
+        decisions,
+    )
+    assert enriched[0]["observation_id"] == observations[1].observation_id
+    assert enriched[0]["decision_id"] == decisions[
+        observations[1].observation_id
+    ].decision_id
+
+
+def test_ambiguous_value_only_compatibility_binding_raises_typed_error() -> None:
+    """Fail closed when legacy metadata cannot identify one repeated occurrence."""
+    observations = tuple(
+        ParserObservation.create(
+            parser_id="docling",
+            parser_version=None,
+            source_region=ObservationSourceRegion(
+                f"block:docling:0:{suffix}", physical_page_index=0
+            ),
+            fact="text",
+            value="Repeated policy text",
+        )
+        for suffix in ("a", "b")
+    )
+    with pytest.raises(ParserFusionCompatibilityError, match="multiple"):
+        _enrich_source_details(
+            ({"backend": "docling", "method": "parser", "confidence": None},),
+            "text",
+            "Repeated policy text",
+            0,
+            observations,
+            {},
+        )
+
+
+def test_reversed_result_and_block_order_produces_identical_enrichment() -> None:
+    """Normalize parser and block order before assigning duplicate occurrences."""
+    service = ParserFusionService()
+    first = service.fuse_extraction_results(
+        _repeated_block_results(), ("docling", "pymupdf")
+    )
+    reversed_outcome = service.fuse_extraction_results(
+        _repeated_block_results(reverse_results=True, reverse_blocks=True),
+        ("docling", "pymupdf"),
+    )
+    assert first.observation_set.to_json_bytes() == (
+        reversed_outcome.observation_set.to_json_bytes()
+    )
+    assert first.fusion_artifact.to_json_bytes() == (
+        reversed_outcome.fusion_artifact.to_json_bytes()
+    )
+    assert first.extraction_result.pages == reversed_outcome.extraction_result.pages
+
+
+def test_object_and_relation_sources_retain_parser_local_identity_without_text() -> None:
+    """Carry bounded object and relation anchors without copying source values."""
+    results = tuple(
+        ExtractionResult(
+            pages=(
+                ExtractedPage(
+                    1,
+                    "Page source text",
+                    page_index=0,
+                    objects=(
+                        ExtractedObject(
+                            object_id=f"{backend}-object-1",
+                            object_type="table",
+                            page_index=0,
+                            caption="Sensitive object caption",
+                        ),
+                    ),
+                    relations=(
+                        ExtractedRelation(
+                            relation_id=f"{backend}-relation-1",
+                            source_anchor=f"{backend}-object-1",
+                            target_anchor=f"{backend}-target-1",
+                            relation_type="references",
+                            target_text="Sensitive relation target",
+                        ),
+                    ),
+                ),
+            ),
+            backend=backend,
+        )
+        for backend in ("docling", "pymupdf")
+    )
+    projected = ParserFusionService().fuse_extraction_results(
+        results, ("docling", "pymupdf")
+    ).extraction_result.pages[0]
+    object_sources = projected.objects[0].fact_sources
+    relation_sources = projected.relations[0].fact_sources
+    for source in (*object_sources["identity"], *object_sources["selected"]):
+        assert source["source_region_id"].startswith("object:")
+        assert source["source_anchor"].endswith("-object-1")
+        assert source["occurrence_index"] == 1
+    for source in (*relation_sources["identity"], *relation_sources["selected"]):
+        assert source["source_region_id"].startswith("relation:")
+        assert source["source_anchor"].endswith("-object-1")
+        assert source["parser_relation_id"].endswith("-relation-1")
+        assert source["occurrence_index"] == 1
+    metadata = json.dumps((object_sources, relation_sources))
+    assert "Sensitive object caption" not in metadata
+    assert "Sensitive relation target" not in metadata

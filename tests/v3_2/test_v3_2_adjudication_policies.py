@@ -18,6 +18,46 @@ from cognityx_ingest import (
 )
 
 
+def _priority_observation_set(
+    values: tuple[tuple[str, str], ...],
+) -> ParserObservationSet:
+    """Build one conflicting fact set for ordered-preference production tests.
+
+    The helper creates normal public observations in a shared source region so
+    ``ParserFusionService`` executes its real policy path. Parser/value pairs are
+    explicit and no expected decision is derived inside the fixture.
+    """
+    region = ObservationSourceRegion("region-priority-policy")
+    return ParserObservationSet.create(
+        tuple(
+            ParserObservation.create(
+                parser_id=parser_id,
+                parser_version=None,
+                source_region=region,
+                fact="classification",
+                value=value,
+            )
+            for parser_id, value in values
+        )
+    )
+
+
+def _priority_policy(*values: str) -> FactAdjudicationPolicy:
+    """Create the reviewed ordered-value policy used by priority tests.
+
+    Tests supply values in contractual order. The helper wraps each value in the
+    production immutable representation without sorting or deduplicating it, so
+    policy validation and replay remain responsible for enforcing semantics.
+    """
+    return FactAdjudicationPolicy(
+        "policy-priority",
+        fact="classification",
+        strategy="prefer-explicit-value",
+        preferred_values=tuple(ObservationValue.from_value(item) for item in values),
+        resolution_code="reviewed-priority",
+    )
+
+
 def test_object_type_policy_accepts_table_but_retains_conflict(
     fusion_cases, build_fusion_observation_set
 ) -> None:
@@ -279,3 +319,127 @@ def test_policy_cannot_disable_observation_retention() -> None:
             fact="text",
             retain_all_observations=False,
         )
+
+
+@pytest.mark.parametrize(
+    ("preferred", "observed", "accepted_value"),
+    (
+        (
+            ("approved", "fallback"),
+            (("docling", "approved"), ("pymupdf", "draft")),
+            "approved",
+        ),
+        (
+            ("absent", "fallback"),
+            (("docling", "fallback"), ("pymupdf", "draft")),
+            "fallback",
+        ),
+    ),
+)
+def test_first_present_preferred_value_wins_in_policy_order(
+    preferred: tuple[str, ...],
+    observed: tuple[tuple[str, str], ...],
+    accepted_value: str,
+) -> None:
+    """Choose the first listed value that actually occurs in observations."""
+    observation_set = _priority_observation_set(observed)
+    decision = ParserFusionService().fuse(
+        observation_set, policies=(_priority_policy(*preferred),)
+    ).fact_decisions[0]
+    accepted = tuple(
+        observation_set.get(item).value.to_value()
+        for item in decision.accepted_observation_ids
+    )
+    assert accepted == (accepted_value,)
+    assert decision.state == "conflict"
+
+
+def test_both_preferred_values_present_accepts_only_first_priority() -> None:
+    """Never accept contradictory preferred values in the same conflict decision."""
+    observation_set = _priority_observation_set(
+        (("docling", "first"), ("pymupdf", "second"), ("basic", "first"))
+    )
+    decision = ParserFusionService().fuse(
+        observation_set, policies=(_priority_policy("first", "second"),)
+    ).fact_decisions[0]
+    accepted_values = {
+        observation_set.get(item).value.to_value()
+        for item in decision.accepted_observation_ids
+    }
+    rejected_values = {
+        observation_set.get(item).value.to_value()
+        for item in decision.rejected_observation_ids
+    }
+    assert accepted_values == {"first"}
+    assert rejected_values == {"second"}
+    assert len(decision.accepted_observation_ids) == 2
+    assert decision.state == "conflict"
+
+
+def test_absent_preferred_values_accept_none_and_retain_conflict() -> None:
+    """Preserve unresolved preference when no reviewed value is observed."""
+    observation_set = _priority_observation_set(
+        (("docling", "draft"), ("pymupdf", "rejected"))
+    )
+    decision = ParserFusionService().fuse(
+        observation_set, policies=(_priority_policy("approved", "fallback"),)
+    ).fact_decisions[0]
+    assert decision.state == "conflict"
+    assert decision.accepted_observation_ids == ()
+    assert decision.rejected_observation_ids == decision.observation_ids
+
+
+def test_preferred_value_policy_rejects_empty_and_duplicate_priorities() -> None:
+    """Require a nonempty canonical-hash-unique reviewed priority list."""
+    with pytest.raises(ParserAdjudicationError, match="at least one"):
+        _priority_policy()
+    with pytest.raises(ParserAdjudicationError, match="unique canonical SHA-256"):
+        _priority_policy("approved", "approved")
+
+
+def test_nonpreference_strategy_rejects_unused_preferred_values() -> None:
+    """Reject policy data that would otherwise have undefined silent effect."""
+    with pytest.raises(ParserAdjudicationError, match="only"):
+        FactAdjudicationPolicy(
+            "policy-invalid-preference",
+            fact="classification",
+            strategy="preserve-conflict",
+            preferred_values=(ObservationValue.from_value("approved"),),
+        )
+
+
+def test_policy_round_trip_preserves_priority_and_replays_decision() -> None:
+    """Retain supplied priority order and reproduce accepted and rejected IDs."""
+    observation_set = _priority_observation_set(
+        (("docling", "first"), ("pymupdf", "second"))
+    )
+    policy = _priority_policy("second", "first")
+    artifact = ParserFusionService().fuse(observation_set, policies=(policy,))
+    reloaded = ParserFusionArtifact.from_json_bytes(artifact.to_json_bytes())
+    assert tuple(
+        item.to_value() for item in reloaded.adjudication_policies[0].preferred_values
+    ) == ("second", "first")
+    reloaded.validate_against_observation_set(observation_set)
+    assert reloaded.fact_decisions[0].accepted_observation_ids == (
+        artifact.fact_decisions[0].accepted_observation_ids
+    )
+    assert reloaded.fact_decisions[0].rejected_observation_ids == (
+        artifact.fact_decisions[0].rejected_observation_ids
+    )
+
+
+def test_changing_preferred_order_changes_decision_and_fusion_identity() -> None:
+    """Make reviewed tuple priority observable in decisions and stable identity."""
+    observation_set = _priority_observation_set(
+        (("docling", "first"), ("pymupdf", "second"))
+    )
+    first = ParserFusionService().fuse(
+        observation_set, policies=(_priority_policy("first", "second"),)
+    )
+    second = ParserFusionService().fuse(
+        observation_set, policies=(_priority_policy("second", "first"),)
+    )
+    assert first.fact_decisions[0].accepted_observation_ids != (
+        second.fact_decisions[0].accepted_observation_ids
+    )
+    assert first.fusion_id != second.fusion_id
