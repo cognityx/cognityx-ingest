@@ -1,0 +1,37 @@
+{
+  "schema": "cognityx.ingest.routing-plan/v3.2",
+  "mode": "deterministic",
+  "input_facts": {
+    "media_type": "application/pdf",
+    "native_text_ratio": 0.98,
+    "requires": [
+      "hierarchy",
+      "tables",
+      "native_links"
+    ]
+  },
+  "rules_evaluated": [
+    "prefer-docling-for-structured-native-pdf",
+    "supplement-pymupdf-for-native-links"
+  ],
+  "selected_invocations": [
+    {
+      "parser_id": "docling",
+      "scope": "document",
+      "purpose": [
+        "hierarchy",
+        "tables"
+      ]
+    },
+    {
+      "parser_id": "pymupdf",
+      "scope": "document",
+      "purpose": [
+        "native_links",
+        "page_labels",
+        "geometry"
+      ]
+    }
+  ],
+  "llm_used": false
+}

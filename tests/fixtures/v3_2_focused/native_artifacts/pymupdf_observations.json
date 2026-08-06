@@ -1,0 +1,25 @@
+{
+  "schema": "fixture.pymupdf-observations/v1",
+  "source_resource_id": "res-policy-v2",
+  "pages": [
+    {
+      "page_index": 0,
+      "page_label": "1",
+      "links": [
+        {
+          "observation_id": "pm-link-1",
+          "source_text": "Section 7.1",
+          "rect": [
+            412.0,
+            318.0,
+            478.0,
+            331.0
+          ],
+          "target": {
+            "page_index": 1
+          }
+        }
+      ]
+    }
+  ]
+}

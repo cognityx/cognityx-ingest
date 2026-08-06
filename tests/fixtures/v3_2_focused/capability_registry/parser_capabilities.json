@@ -1,0 +1,170 @@
+{
+  "schema": "cognityx.ingest.parser-capability-registry/v3.2",
+  "registry_version": "2026-08-06.1",
+  "allowed_capability_source_classes": [
+    "parser-discovered",
+    "human-guided",
+    "auto-learned"
+  ],
+  "allowed_routing_modes": [
+    "deterministic",
+    "hybrid",
+    "llm-directed"
+  ],
+  "parsers": [
+    {
+      "parser_id": "docling",
+      "version_scope": "2.x",
+      "capability_sources": {
+        "parser-discovered": {
+          "runtime_probe": {
+            "installed": false,
+            "reason": "Fixture simulates optional parser not installed."
+          },
+          "official_documentation": [
+            {
+              "evidence_id": "docling-doc-model-20260806",
+              "source_url": "https://docling-project.github.io/docling/concepts/docling_document/",
+              "retrieved_on": "2026-08-06",
+              "summary": "Unified document representation includes text, tables, pictures, hierarchy, body/furniture, layout and provenance."
+            },
+            {
+              "evidence_id": "docling-chunking-20260806",
+              "source_url": "https://docling-project.github.io/docling/concepts/chunking/",
+              "retrieved_on": "2026-08-06",
+              "summary": "Native BaseChunker supports pluggable chunkers; documented implementations include hybrid, hierarchical and line-based token chunking."
+            },
+            {
+              "evidence_id": "docling-formats-20260806",
+              "source_url": "https://docling-project.github.io/docling/usage/supported_formats/",
+              "retrieved_on": "2026-08-06",
+              "summary": "Official documentation lists broad input formats and lossless Docling Document JSON output."
+            }
+          ],
+          "capabilities": {
+            "document_hierarchy": "declared",
+            "tables": "declared",
+            "pictures": "declared",
+            "bounding_boxes": "declared-when-available",
+            "provenance": "declared",
+            "native_chunker_interface": "declared",
+            "runtime_available": false
+          }
+        },
+        "human-guided": {
+          "guidance": [
+            {
+              "condition": "born-digital structured policy or procedure",
+              "recommendation": "preferred-primary"
+            },
+            {
+              "condition": "native PDF links and annotations are mandatory",
+              "recommendation": "supplement-with-pymupdf"
+            }
+          ]
+        },
+        "auto-learned": {
+          "benchmark_profile": "fixture-no-production-claim",
+          "measurements": [
+            {
+              "document_class": "native-policy-pdf",
+              "metric": "structure_recall",
+              "value": 0.94,
+              "sample_count": 50
+            },
+            {
+              "document_class": "mixed-scanned-pdf",
+              "metric": "structure_recall",
+              "value": 0.68,
+              "sample_count": 20
+            }
+          ]
+        }
+      },
+      "conflicts": [
+        {
+          "capability": "document_hierarchy",
+          "advertised": true,
+          "runtime_available": false,
+          "resolution": "declared-but-currently-unavailable"
+        }
+      ]
+    },
+    {
+      "parser_id": "pymupdf",
+      "version_scope": "1.x",
+      "capability_sources": {
+        "parser-discovered": {
+          "runtime_probe": {
+            "installed": true
+          },
+          "official_documentation": [
+            {
+              "evidence_id": "pymupdf-page-api-20260806",
+              "source_url": "https://pymupdf.readthedocs.io/en/latest/page.html",
+              "retrieved_on": "2026-08-06",
+              "summary": "Page API exposes text, OCR text pages, links, annotations and PDF page labels."
+            }
+          ],
+          "capabilities": {
+            "native_pdf_text": "available",
+            "native_links": "available",
+            "annotations": "available",
+            "page_labels": "available",
+            "semantic_document_hierarchy": "not-declared"
+          }
+        },
+        "human-guided": {
+          "guidance": [
+            {
+              "condition": "native links, annotations, page labels or exact PDF geometry required",
+              "recommendation": "preferred-complementary"
+            }
+          ]
+        },
+        "auto-learned": {
+          "benchmark_profile": "fixture-no-production-claim",
+          "measurements": [
+            {
+              "document_class": "native-policy-pdf",
+              "metric": "native_link_recall",
+              "value": 1.0,
+              "sample_count": 20
+            }
+          ]
+        }
+      },
+      "conflicts": []
+    },
+    {
+      "parser_id": "future-parser",
+      "version_scope": "fixture-1",
+      "capability_sources": {
+        "parser-discovered": {
+          "runtime_probe": {
+            "installed": true
+          },
+          "official_documentation": [],
+          "capabilities": {
+            "paragraph_text": "available",
+            "text_position_selectors": "available",
+            "tables": "unsupported"
+          }
+        },
+        "human-guided": {
+          "guidance": [
+            {
+              "condition": "parser-neutral substitution test",
+              "recommendation": "allowed"
+            }
+          ]
+        },
+        "auto-learned": {
+          "benchmark_profile": "fixture",
+          "measurements": []
+        }
+      },
+      "conflicts": []
+    }
+  ]
+}

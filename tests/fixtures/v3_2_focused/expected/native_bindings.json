@@ -1,0 +1,44 @@
+{
+  "schema": "cognityx.ingest.native-bindings/v3.2",
+  "artifacts": [
+    {
+      "artifact_id": "art-docling-001",
+      "parser_id": "docling",
+      "media_type": "application/vnd.docling.document+json",
+      "path": "native_artifacts/docling_document_opaque.json",
+      "sha256": "59ccc76e9f4cfffb4b43fee89619923e27ca633d889f54a8c588d1c623a22705",
+      "retention_class": "temporary-audit"
+    },
+    {
+      "artifact_id": "art-pymupdf-001",
+      "parser_id": "pymupdf",
+      "media_type": "application/json",
+      "path": "native_artifacts/pymupdf_observations.json",
+      "sha256": "3183331386ea781a6cc8b828249eede2a2c8523de53bd490ae38523132ac18e7",
+      "retention_class": "temporary-audit"
+    }
+  ],
+  "bindings": [
+    {
+      "binding_id": "bind-pol-heading-42-docling",
+      "canonical_id": "pol-heading-42",
+      "artifact_id": "art-docling-001",
+      "native_pointer": "#/texts/0",
+      "binding_role": "structural-source"
+    },
+    {
+      "binding_id": "bind-pol-p2-docling",
+      "canonical_id": "pol-p2",
+      "artifact_id": "art-docling-001",
+      "native_pointer": "#/texts/1",
+      "binding_role": "text-source"
+    },
+    {
+      "binding_id": "bind-pol-p3-pymupdf-link",
+      "canonical_id": "rel-policy-to-7.1",
+      "artifact_id": "art-pymupdf-001",
+      "native_pointer": "#/pages/0/links/0",
+      "binding_role": "native-link-source"
+    }
+  ]
+}

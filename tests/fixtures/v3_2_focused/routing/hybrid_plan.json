@@ -1,0 +1,20 @@
+{
+  "schema": "cognityx.ingest.routing-plan/v3.2",
+  "mode": "hybrid",
+  "deterministic_boundary": {
+    "allowlist": [
+      "docling",
+      "pymupdf"
+    ],
+    "external_services_allowed": false,
+    "max_parser_runs": 2
+  },
+  "frozen_llm_proposal": {
+    "selected": [
+      "docling",
+      "pymupdf"
+    ],
+    "reason": "Use structural parser plus native PDF fact complement."
+  },
+  "validation_result": "accepted"
+}

@@ -1,0 +1,42 @@
+{
+  "schema": "cognityx.ingest.fixture-manifest/v3.2",
+  "fixture_id": "v3_2_focused",
+  "fixture_version": "3.2.0",
+  "frozen_on": "2026-08-06",
+  "base_fixture": {
+    "repository": "cognityx/cognityx-ingest",
+    "path": "tests/fixtures/provenance_v1/main_policy_v2.pdf",
+    "sha256": "73a2dc18cc0ed79419a2208db93cc151e0a1fe092c96ed4322e449207f22630c",
+    "must_reuse_existing_bytes": true
+  },
+  "synthetic_source_truth": [
+    {
+      "path": "sources/segmentation_policy.md",
+      "sha256": "08ce21d34cc5efbbda589676c3d4b0fdcdcba0162c9afb80cef35bf09f3e4862"
+    },
+    {
+      "path": "sources/authority_matrix_v2.md",
+      "sha256": "454ea5900391d4c8f18223b2b881eed77cf1f9e9ff7a93b655486dbb6c8034c6"
+    },
+    {
+      "path": "sources/future_parser_sample.txt",
+      "sha256": "e557cebed0192f2b670475fc602ce279a2c46d3ce7820d06d192355930d5bf4e"
+    }
+  ],
+  "contract_groups": [
+    "native-parser-preservation",
+    "parser-neutral-canonical-overlay",
+    "three-source-capability-registry",
+    "three-mode-routing",
+    "parser-observation-fusion",
+    "non-copying-segmentation-views",
+    "retention-and-reuse",
+    "source-graph-and-provenance-addresses",
+    "dataforge-paragraph-qa",
+    "dataforge-composite-ku",
+    "cli-sdk-compatibility"
+  ],
+  "normal_ci_requires_network": false,
+  "normal_ci_requires_docling": false,
+  "normal_ci_requires_pymupdf": false
+}

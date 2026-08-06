@@ -1,0 +1,201 @@
+{
+  "schema": "cognityx.ingest.segmentation-views/v3.2",
+  "canonical_content_artifact": "../expected/canonical_content.json",
+  "invariant": "No segment stores source text. Text is reconstructed from canonical node IDs and optional character ranges.",
+  "views": [
+    {
+      "view_id": "view-paragraph-v1",
+      "strategy": "paragraph",
+      "profile": {
+        "implementation": "cognityx",
+        "version": "fixture-1"
+      },
+      "segments": [
+        {
+          "segment_id": "para-1",
+          "node_spans": [
+            {
+              "node_id": "pol-p1"
+            }
+          ]
+        },
+        {
+          "segment_id": "para-2",
+          "node_spans": [
+            {
+              "node_id": "pol-p2"
+            }
+          ]
+        },
+        {
+          "segment_id": "para-3",
+          "node_spans": [
+            {
+              "node_id": "pol-p3"
+            }
+          ]
+        },
+        {
+          "segment_id": "para-4",
+          "node_spans": [
+            {
+              "node_id": "pol-p4"
+            }
+          ]
+        },
+        {
+          "segment_id": "para-5",
+          "node_spans": [
+            {
+              "node_id": "pol-p5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "view_id": "view-direct-division-v1",
+      "strategy": "direct-division",
+      "segments": [
+        {
+          "segment_id": "div-42-direct",
+          "division_id": "div-policy-4.2",
+          "node_spans": [
+            {
+              "node_id": "pol-heading-42"
+            },
+            {
+              "node_id": "pol-p1"
+            },
+            {
+              "node_id": "pol-p2"
+            },
+            {
+              "node_id": "pol-p3"
+            },
+            {
+              "node_id": "pol-p4"
+            }
+          ]
+        },
+        {
+          "segment_id": "div-71-direct",
+          "division_id": "div-policy-7.1",
+          "node_spans": [
+            {
+              "node_id": "pol-heading-71"
+            },
+            {
+              "node_id": "pol-p5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "view_id": "view-docling-structure-v1",
+      "strategy": "parser-native-structure",
+      "profile": {
+        "chunker_id": "docling-hierarchical",
+        "native_artifact_id": "art-docling-001"
+      },
+      "segments": [
+        {
+          "segment_id": "docling-chunk-1",
+          "native_chunk_pointer": "#/chunks/0",
+          "node_spans": [
+            {
+              "node_id": "pol-p2"
+            }
+          ]
+        },
+        {
+          "segment_id": "docling-chunk-2",
+          "native_chunk_pointer": "#/chunks/1",
+          "node_spans": [
+            {
+              "node_id": "pol-p3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "view_id": "view-fixed-sentence-safe-v1",
+      "strategy": "sentence-safe-fixed-size",
+      "profile": {
+        "max_tokens": 80,
+        "tokenizer": "fixture-tokenizer"
+      },
+      "segments": [
+        {
+          "segment_id": "fixed-1",
+          "node_spans": [
+            {
+              "node_id": "pol-p1"
+            },
+            {
+              "node_id": "pol-p2"
+            }
+          ]
+        },
+        {
+          "segment_id": "fixed-2",
+          "node_spans": [
+            {
+              "node_id": "pol-p3"
+            },
+            {
+              "node_id": "pol-p4"
+            }
+          ]
+        },
+        {
+          "segment_id": "fixed-3",
+          "node_spans": [
+            {
+              "node_id": "pol-p5"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "view_id": "view-sentence-window-v1",
+      "strategy": "sentence-window",
+      "segments": [
+        {
+          "segment_id": "window-pol-p2",
+          "seed": {
+            "node_id": "pol-p2"
+          },
+          "context": [
+            {
+              "node_id": "pol-p1"
+            },
+            {
+              "node_id": "pol-p3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "view_id": "view-parent-child-v1",
+      "strategy": "parent-child",
+      "segments": [
+        {
+          "segment_id": "child-pol-p2",
+          "retrieval_node_spans": [
+            {
+              "node_id": "pol-p2"
+            }
+          ],
+          "return_scope": {
+            "division_id": "div-policy-4.2"
+          }
+        }
+      ]
+    }
+  ]
+}
