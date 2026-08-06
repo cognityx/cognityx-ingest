@@ -24,6 +24,8 @@ same implementation.
 
 ::: cognityx_ingest.canonical_content
 
+::: cognityx_ingest.parser_capabilities
+
 ::: cognityx_ingest.enhancement
 
 ::: cognityx_ingest.enrichment

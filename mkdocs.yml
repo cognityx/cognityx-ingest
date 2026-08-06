@@ -15,6 +15,7 @@ nav:
   - Contract: contract.md
   - Native Parser Artifacts: native-parser-artifacts.md
   - Canonical Content: canonical-content.md
+  - Parser Capability Registry: parser-capability-registry.md
   - Provenance Capabilities: provenance-capabilities.md
   - Provenance Gap Report: provenance-gap-report.md
   - API: api.md

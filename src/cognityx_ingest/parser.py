@@ -398,7 +398,14 @@ class ExtractionPolicy:
 
 
 class ParserRouter:
-    """Apply one bounded selection policy while keeping output fixed."""
+    """Apply one bounded selection policy while keeping output fixed.
+
+    The ingest composition root constructs this router from parser plugins and an
+    ``ExtractionPolicy``. Existing callers use it to execute fixed, rule,
+    fallback, compare, or agent policies. T03 capability discovery may inspect a
+    deterministic immutable snapshot of registered plugins, but it cannot mutate
+    the registry or select and execute a parser through that inspection seam.
+    """
 
     def __init__(
         self,
@@ -411,6 +418,17 @@ class ParserRouter:
         self._plugins = {item.name: item for item in available}
         self.policy = policy or ExtractionPolicy()
         self.selector = selector
+
+    def registered_plugins(self) -> tuple[ParserPlugin, ...]:
+        """Return registered adapters in parser-ID order without executing them.
+
+        Capability-registry construction calls this read-only method before any
+        document is parsed. It snapshots the private plugin mapping as a tuple,
+        preserving plugin objects for bounded class/package inspection while
+        exposing neither the mutable dictionary nor a mutation API. Repeated
+        calls are side-effect free and deterministically ordered.
+        """
+        return tuple(self._plugins[name] for name in sorted(self._plugins))
 
     def extract_document(self, path: Path) -> ExtractionResult:
         candidates = tuple(self.policy.backends)

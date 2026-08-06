@@ -42,6 +42,12 @@ payload recomputes its byte count and SHA-256 before returning it. The descripto
 does not replace or reduce the original bytes; see [Native Parser
 Artifacts](native-parser-artifacts.md).
 
+The parser capability registry is a separate versioned evidence snapshot. It
+keeps current adapter/package observations, frozen official documentation,
+approved human guidance, and measured outcomes in three distinct source
+classes. It does not choose a parser or change extraction output. See [Parser
+Capability Registry](parser-capability-registry.md).
+
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff
 is technically called `provenance.json`. Version 2 records the run and job,

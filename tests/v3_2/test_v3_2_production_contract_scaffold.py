@@ -13,7 +13,6 @@ import pytest
 from cognityx_ingest import ParserRouter
 
 
-@pytest.mark.xfail(strict=True, reason="T03: parser capability registry API is not implemented")
 def test_parser_capability_registry_api_exposes_three_source_classes(v3_2_fixture_root):
     """Call the planned ParserCapabilityRegistry API instead of parser diagnostics."""
     from cognityx_ingest.parser_capabilities import ParserCapabilityRegistry
