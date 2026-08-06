@@ -18,6 +18,12 @@ IDs and child division IDs; they never copy titles or subtree text. Selectors,
 representations, relations, activities, bindings, and artifact descriptors carry
 references and facts rather than quoted source content.
 
+A typed presentation label preserves why a visible page label exists. PDF page
+tree labels and labels printed on a page remain separate facts even when both
+say ``"1"``. A representation-owned selector similarly preserves observed
+page, geometry, source-anchor, and parser-anchor facts for an image or table
+without copying its caption or object text.
+
 Processing flow
 ---------------
 ``CanonicalContentBuilder`` creates one resource, maps current pages to
@@ -27,6 +33,12 @@ exact UTF-8 text, and records only source facts that already exist. It then maps
 safe relations, representations, processing lineage, generic artifact
 descriptors, and optional caller-supplied native bindings. The completed frozen
 aggregate is validated before deterministic serialization and immutable storage.
+Storage receives exact serializer bytes, so an idempotent retry
+must match byte-for-byte rather than being accepted after JSON reformatting.
+
+Logical structure is never repaired by guessing. A section with no declared
+parent belongs under the document root, but a missing declared parent is an
+error because silently inventing an edge would falsify source structure.
 
 Direct versus subtree content
 -----------------------------
@@ -42,6 +54,9 @@ A ``NativeBinding`` says that one canonical record is supported by an exact
 object or location inside a T01 parser-native artifact. Validation uses the T01
 ``NativeArtifactDescriptor`` and its retained pointers. This module neither
 copies native bytes nor implements another native reader or JSON-pointer parser.
+Cross-descriptor consistency requires the generic parser-native reference and
+the T01 descriptor to agree on artifact identity, payload URI, media type, and
+SHA-256 before a pointer can be trusted.
 
 Primary consumers
 -----------------
@@ -75,11 +90,15 @@ from typing import Mapping, Sequence
 
 from cognityx_resource import ExecutionContext
 
-from cognityx_ingest.models import Block, CanonicalDocument, SourceAsset
+from cognityx_ingest.models import Block, CanonicalDocument, Section, SourceAsset
 from cognityx_ingest.native_artifacts import NativeArtifactDescriptor
 
 
 CANONICAL_CONTENT_SCHEMA_VERSION = "cognityx.ingest.canonical-content/v3.2"
+_PRESENTATION_LABEL_ORDER = {
+    "pdf-page-label": 0,
+    "printed-page-label": 1,
+}
 
 
 class CanonicalContentError(Exception):
@@ -207,6 +226,31 @@ class CanonicalResource:
 
 
 @dataclass(frozen=True, slots=True)
+class PresentationLabel:
+    """Preserve one typed page-label fact without treating it as source content.
+
+    Responsibility:
+        Keep the provenance of a PDF page-tree label distinct from a label printed
+        visibly on the page, even when both have the same displayed value.
+    Constructed by:
+        ``CanonicalContentBuilder`` from v2 ``PageRecord`` facts or strict readers.
+    Used by:
+        Presentation-aware audit, citation, and future provenance-address consumers.
+    Invariants:
+        ``label_type`` is one supported type, ``value`` is non-empty, and a
+        PresentationUnit contains at most one record of each label type.
+    Lifecycle/persistence:
+        The frozen record is embedded as metadata in ``canonical-content.json``;
+        it does not replace or modify the corresponding v2 page fields.
+    Thread-safety assumptions:
+        Immutable strings make labels safe for concurrent readers.
+    """
+
+    label_type: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
 class PresentationUnit:
     """Describe where content appeared without storing extracted text.
 
@@ -218,7 +262,8 @@ class PresentationUnit:
         Source selectors, layout-aware consumers, and future Source Graph work.
     Invariants:
         The resource exists, sequence numbers are non-negative, and physical
-        dimensions or indexes are recorded only when observed.
+        dimensions or indexes are recorded only when observed. Typed labels are
+        unique by provenance type and follow deterministic type order.
     Lifecycle/persistence:
         Frozen records are additive v3.2 metadata and never replace v2 pages.
     Thread-safety assumptions:
@@ -230,7 +275,7 @@ class PresentationUnit:
     unit_type: str
     sequence_number: int
     physical_index: int | None = None
-    labels: tuple[str, ...] = ()
+    labels: tuple[PresentationLabel, ...] = ()
     width: float | None = None
     height: float | None = None
 
@@ -294,8 +339,8 @@ class SourceSelector:
     """Identify a real source location without quoting the selected text.
 
     Responsibility:
-        Retain page, source path, actual character range, geometry, or current v2
-        anchor references that locate one canonical occurrence.
+        Retain page, source path, actual character range, geometry, current v2
+        anchors, or parser-native anchors that locate one canonical occurrence.
     Constructed by:
         The builder only from observed facts, or strict deserialization.
     Used by:
@@ -304,7 +349,8 @@ class SourceSelector:
         Resource and presentation references resolve; ranges and bounding boxes
         are ordered; at least one concrete locator is present.
     Lifecycle/persistence:
-        Selectors live inside ContentNodes and never embed quoted source text.
+        Selectors live inside ContentNodes or Representations and never embed
+        quoted source, caption, table, figure, or object text.
     Thread-safety assumptions:
         Frozen tuples and scalars are safe for concurrent reads.
     """
@@ -318,6 +364,7 @@ class SourceSelector:
     char_end: int | None = None
     bbox: tuple[float, float, float, float] | None = None
     source_anchor_ids: tuple[str, ...] = ()
+    parser_source_anchor_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,13 +402,15 @@ class Representation:
 
     Responsibility:
         Describe image, table, audio, layout, or another representation of an
-        existing canonical subject through IDs and media metadata.
+        existing canonical subject through IDs, media metadata, and observed
+        source selectors owned by the representation itself.
     Constructed by:
         The builder from current canonical objects or future adapters.
     Used by:
         Audit, T08 Source Graph work, and downstream representation consumers.
     Invariants:
-        Subject, selectors, optional caption node, and optional artifact resolve.
+        Subject, referenced and owned selectors, optional caption node, and
+        optional artifact resolve without embedding represented text.
     Lifecycle/persistence:
         Frozen records persist references; payloads remain separate artifacts.
     Thread-safety assumptions:
@@ -375,6 +424,7 @@ class Representation:
     artifact_id: str | None = None
     selector_ids: tuple[str, ...] = ()
     caption_node_id: str | None = None
+    source_selectors: tuple[SourceSelector, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,7 +439,9 @@ class NativeBinding:
     Used by:
         Audit tooling, T08 provenance work, and future native-aware readers.
     Invariants:
-        Canonical ID, T01 descriptor, and retained native pointer all resolve.
+        Canonical ID and retained native pointer resolve, while the generic
+        artifact reference and T01 descriptor agree on artifact identity, role,
+        payload URI, media type, and SHA-256.
     Lifecycle/persistence:
         The frozen binding may outlive a parser run; T07 governs native retention.
     Thread-safety assumptions:
@@ -471,8 +523,9 @@ class CanonicalArtifactDescriptor:
     Used by:
         Processing activities, provenance, and future artifact readers.
     Invariants:
-        IDs and provider-neutral URIs are stable; T01 descriptor semantics are not
-        reimplemented in this generic reference.
+        IDs and provider-neutral URIs are stable. A parser-native entry describes
+        the payload, so its schema is absent unless that payload has a known
+        schema; it never claims the T01 descriptor schema as the payload schema.
     Lifecycle/persistence:
         The frozen descriptor lives in canonical content while payloads stay in
         their independently governed Storage objects.
@@ -566,8 +619,9 @@ class CanonicalContentArtifact:
 
         Ingest persistence and integrity tests call this method. It validates the
         aggregate, sorts mapping keys, uses compact separators, preserves Unicode,
-        and appends one newline. Repeated calls return identical bytes and have no
-        side effects. Typed validation failures are raised before serialization.
+        and appends one newline. ``IngestService`` persists these exact bytes and
+        compares retries byte-for-byte. Repeated calls return identical bytes and
+        have no side effects. Typed validation failures are raised first.
         """
         self.validate(native_descriptors=native_descriptors)
         return (
@@ -785,7 +839,8 @@ class CanonicalContentBuilder:
     Invariants:
         The builder never imports parser-private classes, invents character
         offsets or native pointers, merges equal text occurrences, or copies text
-        into non-content records.
+        into non-content records. Typed labels retain their provenance, and
+        non-text representations retain only source-location facts.
     Lifecycle/persistence:
         The stateless frozen service returns a validated aggregate; persistence is
         owned by the caller.
@@ -910,15 +965,23 @@ def _resource_to_dict(item: CanonicalResource) -> dict[str, object]:
     }
 
 
+def _presentation_label_to_dict(item: PresentationLabel) -> dict[str, object]:
+    """Serialize label provenance and value as two explicit metadata fields."""
+    return {
+        "label_type": item.label_type,
+        "value": item.value,
+    }
+
+
 def _presentation_unit_to_dict(item: PresentationUnit) -> dict[str, object]:
-    """Serialize presentation facts while guaranteeing no page text field exists."""
+    """Serialize typed presentation facts without adding a page-text field."""
     return {
         "presentation_unit_id": item.presentation_unit_id,
         "resource_id": item.resource_id,
         "unit_type": item.unit_type,
         "sequence_number": item.sequence_number,
         "physical_index": item.physical_index,
-        "labels": list(item.labels),
+        "labels": [_presentation_label_to_dict(label) for label in item.labels],
         "width": item.width,
         "height": item.height,
     }
@@ -952,6 +1015,7 @@ def _selector_to_dict(item: SourceSelector) -> dict[str, object]:
         "char_end": item.char_end,
         "bbox": list(item.bbox) if item.bbox is not None else None,
         "source_anchor_ids": list(item.source_anchor_ids),
+        "parser_source_anchor_ids": list(item.parser_source_anchor_ids),
     }
 
 
@@ -983,6 +1047,9 @@ def _representation_to_dict(item: Representation) -> dict[str, object]:
         "artifact_id": item.artifact_id,
         "selector_ids": list(item.selector_ids),
         "caption_node_id": item.caption_node_id,
+        "source_selectors": [
+            _selector_to_dict(selector) for selector in item.source_selectors
+        ],
     }
 
 
@@ -1066,6 +1133,20 @@ def _parse_resource(value: Mapping[str, object]) -> CanonicalResource:
     )
 
 
+def _parse_presentation_label(value: Mapping[str, object]) -> PresentationLabel:
+    """Parse one untrusted typed label and reject unsupported provenance types."""
+    _require_exact_fields(value, {"label_type", "value"}, "presentation label")
+    label_type = _required_text(value["label_type"], "label_type")
+    if label_type not in _PRESENTATION_LABEL_ORDER:
+        raise CanonicalContentValidationError(
+            f"Unsupported presentation label type: {label_type}"
+        )
+    return PresentationLabel(
+        label_type=label_type,
+        value=_required_text(value["value"], "label value"),
+    )
+
+
 def _parse_presentation_unit(value: Mapping[str, object]) -> PresentationUnit:
     """Parse one untrusted presentation surface without accepting text fields."""
     _require_exact_fields(
@@ -1094,7 +1175,10 @@ def _parse_presentation_unit(value: Mapping[str, object]) -> PresentationUnit:
         physical_index=_optional_nonnegative_int(
             value["physical_index"], "physical_index"
         ),
-        labels=_text_tuple(value["labels"], "labels"),
+        labels=tuple(
+            _parse_presentation_label(item)
+            for item in _mapping_items(value["labels"], "labels")
+        ),
         width=_optional_nonnegative_float(value["width"], "width"),
         height=_optional_nonnegative_float(value["height"], "height"),
     )
@@ -1161,6 +1245,7 @@ def _parse_selector(value: Mapping[str, object]) -> SourceSelector:
             "char_end",
             "bbox",
             "source_anchor_ids",
+            "parser_source_anchor_ids",
         },
         "source selector",
     )
@@ -1186,6 +1271,9 @@ def _parse_selector(value: Mapping[str, object]) -> SourceSelector:
         bbox=bbox,
         source_anchor_ids=_text_tuple(
             value["source_anchor_ids"], "source_anchor_ids"
+        ),
+        parser_source_anchor_ids=_text_tuple(
+            value["parser_source_anchor_ids"], "parser_source_anchor_ids"
         ),
     )
 
@@ -1238,6 +1326,7 @@ def _parse_representation(value: Mapping[str, object]) -> Representation:
             "artifact_id",
             "selector_ids",
             "caption_node_id",
+            "source_selectors",
         },
         "representation",
     )
@@ -1254,6 +1343,12 @@ def _parse_representation(value: Mapping[str, object]) -> Representation:
         selector_ids=_text_tuple(value["selector_ids"], "selector_ids"),
         caption_node_id=_optional_text(
             value["caption_node_id"], "caption_node_id"
+        ),
+        source_selectors=tuple(
+            _parse_selector(item)
+            for item in _mapping_items(
+                value["source_selectors"], "source_selectors"
+            )
         ),
     )
 
@@ -1444,8 +1539,12 @@ def _build_indexes(artifact: CanonicalContentArtifact) -> _CanonicalIndexes:
     )
     _unique_index(artifact.native_bindings, "binding_id", "native binding")
     selectors: dict[str, SourceSelector] = {}
-    for node in artifact.content_nodes:
-        for selector in node.source_selectors:
+    selector_groups = (
+        *(node.source_selectors for node in artifact.content_nodes),
+        *(item.source_selectors for item in artifact.representations),
+    )
+    for selector_group in selector_groups:
+        for selector in selector_group:
             if selector.selector_id in selectors:
                 raise CanonicalContentValidationError(
                     f"Duplicate source selector ID: {selector.selector_id}"
@@ -1577,6 +1676,24 @@ def _validate_resources_and_presentation(
         _optional_nonnegative_int(unit.physical_index, "physical_index")
         _optional_nonnegative_float(unit.width, "width")
         _optional_nonnegative_float(unit.height, "height")
+        label_types = tuple(label.label_type for label in unit.labels)
+        if len(label_types) != len(set(label_types)):
+            raise CanonicalContentValidationError(
+                f"Presentation unit has duplicate label types: {unit.presentation_unit_id}"
+            )
+        expected_labels = tuple(
+            sorted(
+                unit.labels,
+                key=lambda label: (
+                    _PRESENTATION_LABEL_ORDER[label.label_type],
+                    label.value,
+                ),
+            )
+        )
+        if unit.labels != expected_labels:
+            raise CanonicalContentValidationError(
+                f"Presentation labels are not deterministically ordered: {unit.presentation_unit_id}"
+            )
 
 
 def _validate_divisions_and_ownership(
@@ -1739,22 +1856,23 @@ def _validate_content_nodes(
                 f"Source selectors are not deterministically ordered: {node.node_id}"
             )
         for selector in node.source_selectors:
-            _validate_selector(selector, node, indexes)
+            _validate_selector(selector, node.resource_id, indexes)
 
 
 def _validate_selector(
     selector: SourceSelector,
-    node: ContentNode,
+    expected_resource_id: str,
     indexes: _CanonicalIndexes,
 ) -> None:
     """Validate one selector using only observed location combinations.
 
-    Node validation calls this helper. Character endpoints must appear together,
-    geometry must be ordered, references must stay in the same resource, and at
-    least one page, path, or anchor locator must exist. No missing offset is
-    inferred from text length or neighboring records.
+    ContentNode and Representation validation call this helper with the owning
+    subject's resource. Character endpoints must appear together, geometry must
+    be ordered, references must stay in that resource, and at least one page,
+    path, geometry, canonical anchor, or parser anchor must exist. No missing
+    offset is inferred from text length or neighboring records.
     """
-    if selector.resource_id != node.resource_id:
+    if selector.resource_id != expected_resource_id:
         raise CanonicalReferenceError(
             f"Source selector uses another resource: {selector.selector_id}"
         )
@@ -1796,7 +1914,9 @@ def _validate_selector(
     if (
         selector.presentation_unit_id is None
         and selector.source_path is None
+        and selector.bbox is None
         and not selector.source_anchor_ids
+        and not selector.parser_source_anchor_ids
     ):
         raise CanonicalContentValidationError(
             f"Source selector has no source locator: {selector.selector_id}"
@@ -1818,6 +1938,23 @@ def _validate_representations(
             raise CanonicalReferenceError(
                 f"Representation subject is missing: {representation.representation_id}"
             )
+        subject_resource_id = _representation_subject_resource_id(
+            representation.subject_id,
+            indexes,
+        )
+        expected_owned_selectors = tuple(
+            sorted(
+                representation.source_selectors,
+                key=lambda selector: selector.selector_id,
+            )
+        )
+        if representation.source_selectors != expected_owned_selectors:
+            raise CanonicalContentValidationError(
+                "Representation source selectors are not deterministically ordered: "
+                f"{representation.representation_id}"
+            )
+        for selector in representation.source_selectors:
+            _validate_selector(selector, subject_resource_id, indexes)
         for selector_id in representation.selector_ids:
             if selector_id not in indexes.selectors:
                 raise CanonicalReferenceError(
@@ -1837,6 +1974,33 @@ def _validate_representations(
             raise CanonicalReferenceError(
                 f"Representation artifact is missing: {representation.representation_id}"
             )
+
+
+def _representation_subject_resource_id(
+    subject_id: str,
+    indexes: _CanonicalIndexes,
+) -> str:
+    """Resolve a Representation subject to the resource its selectors must use.
+
+    Representation validation calls this after proving the subject exists. The
+    helper checks each permitted canonical subject class in the same order used
+    by validation and returns its resource identity without reading payloads.
+    A missing subject raises ``CanonicalReferenceError`` rather than inventing a
+    cross-resource association.
+    """
+    resource = indexes.resources.get(subject_id)
+    if resource is not None:
+        return resource.resource_id
+    presentation = indexes.presentation_units.get(subject_id)
+    if presentation is not None:
+        return presentation.resource_id
+    division = indexes.divisions.get(subject_id)
+    if division is not None:
+        return division.resource_id
+    node = indexes.content_nodes.get(subject_id)
+    if node is not None:
+        return node.resource_id
+    raise CanonicalReferenceError(f"Representation subject is missing: {subject_id}")
 
 
 def _validate_relations(
@@ -1890,9 +2054,10 @@ def _validate_native_bindings(
 
     Aggregate validation calls this only for supplied bindings. The descriptor
     mapping is an explicit trust input from T01; generic artifact references are
-    insufficient because they do not carry retained native pointers. A pointer
-    must already be retained by T01. This helper never loads or copies payloads
-    and never duplicates T01 JSON-pointer resolution.
+    insufficient because they do not carry retained native pointers. Descriptor
+    identity, payload URI, media type, and SHA-256 must agree across both views
+    before a retained pointer is trusted. This rejects mapping-key spoofing. The
+    helper never loads or copies payloads and never duplicates T01 pointer logic.
     """
     if not artifact.native_bindings:
         return
@@ -1907,10 +2072,26 @@ def _validate_native_bindings(
             raise NativeBindingValidationError(
                 f"Native binding T01 descriptor is missing: {binding.binding_id}"
             )
+        if descriptor.artifact_id != binding.artifact_id:
+            raise NativeBindingValidationError(
+                f"Native binding descriptor identity disagrees: {binding.binding_id}"
+            )
         generic = indexes.artifacts.get(binding.artifact_id)
         if generic is None or generic.role != "parser_native":
             raise NativeBindingValidationError(
                 f"Native binding artifact reference is missing: {binding.binding_id}"
+            )
+        if generic.uri != descriptor.uri:
+            raise NativeBindingValidationError(
+                f"Native binding payload URI disagrees: {binding.binding_id}"
+            )
+        if generic.media_type != descriptor.media_type:
+            raise NativeBindingValidationError(
+                f"Native binding payload media type disagrees: {binding.binding_id}"
+            )
+        if generic.sha256 != descriptor.sha256:
+            raise NativeBindingValidationError(
+                f"Native binding payload SHA-256 disagrees: {binding.binding_id}"
             )
         if binding.native_pointer not in descriptor.native_pointers:
             raise NativeBindingValidationError(
@@ -1939,7 +2120,12 @@ def _build_resource(
 def _build_presentation_units(
     document: CanonicalDocument, resource_id: str
 ) -> tuple[PresentationUnit, ...]:
-    """Map current pages to presentation units while retaining stable page IDs."""
+    """Map pages and typed label provenance while retaining stable page IDs.
+
+    The builder emits PDF page-tree and visibly printed labels as separate facts
+    in fixed type order. Equal displayed values therefore remain two records
+    instead of being deduplicated or losing which observation produced them.
+    """
     return tuple(
         sorted(
             (
@@ -1949,13 +2135,19 @@ def _build_presentation_units(
                     unit_type="page",
                     sequence_number=page.sequence_number,
                     physical_index=page.physical_page_index,
-                    labels=tuple(
-                        value
-                        for value in (
-                            page.pdf_page_label,
-                            page.printed_page_label,
-                        )
-                        if value is not None
+                    labels=(
+                        *((
+                            PresentationLabel(
+                                label_type="pdf-page-label",
+                                value=page.pdf_page_label,
+                            ),
+                        ) if page.pdf_page_label is not None else ()),
+                        *((
+                            PresentationLabel(
+                                label_type="printed-page-label",
+                                value=page.printed_page_label,
+                            ),
+                        ) if page.printed_page_label is not None else ()),
                     ),
                     width=page.width,
                     height=page.height,
@@ -2006,6 +2198,10 @@ def _build_divisions(
     text_blocks = tuple(item for item in _ordered_blocks(document) if item.text)
     block_position = {item.block_id: index for index, item in enumerate(text_blocks)}
     sections = {item.section_id: item for item in document.sections}
+    parent_by_section = {
+        section.section_id: _resolve_section_parent(section, sections, root_id)
+        for section in document.sections
+    }
     section_depths = {
         identifier: _section_depth(identifier, sections) for identifier in sections
     }
@@ -2051,11 +2247,7 @@ def _build_divisions(
     for section_id in sections:
         child_by_division[section_id] = []
     for section in document.sections:
-        parent_id = (
-            section.parent_section_id
-            if section.parent_section_id in sections
-            else root_id
-        )
+        parent_id = parent_by_section[section.section_id]
         child_by_division[parent_id].append(section.section_id)
     for child_ids in child_by_division.values():
         child_ids.sort(key=lambda item: (section_sequence.get(item, -1), item))
@@ -2089,11 +2281,7 @@ def _build_divisions(
         key=lambda item: (section_sequence[item.section_id], item.section_id),
     )
     for sequence_number, section in enumerate(ordered_sections, start=1):
-        parent_id = (
-            section.parent_section_id
-            if section.parent_section_id in sections
-            else root_id
-        )
+        parent_id = parent_by_section[section.section_id]
         heading = block_by_id.get(section.heading_block_id or "")
         role = (
             "appendix"
@@ -2126,21 +2314,46 @@ def _build_divisions(
     )
 
 
-def _section_depth(identifier: str, sections: Mapping[str, object]) -> int:
-    """Measure explicit section ancestry and reject cycles before owner selection."""
+def _resolve_section_parent(
+    section: Section,
+    sections: Mapping[str, Section],
+    root_id: str,
+) -> str:
+    """Resolve one declared parent without inventing missing logical structure.
+
+    ``_build_divisions`` calls this before ownership ranking. A missing declaration
+    means the document root, while a non-null declaration must identify an actual
+    section. Failing early preserves parser/source truth and prevents a broken
+    hierarchy from being silently rewritten as a valid root section.
+    """
+    if section.parent_section_id is None:
+        return root_id
+    if section.parent_section_id not in sections:
+        raise CanonicalReferenceError(
+            f"Section declares a missing parent: {section.section_id}"
+        )
+    return section.parent_section_id
+
+
+def _section_depth(identifier: str, sections: Mapping[str, Section]) -> int:
+    """Measure explicit ancestry and reject cycles or missing declared parents."""
     depth = 0
     current = identifier
     visited: set[str] = set()
-    while current in sections:
+    while True:
         if current in visited:
             raise CanonicalOwnershipError(
                 f"Current v2 section hierarchy contains a cycle: {identifier}"
             )
         visited.add(current)
         depth += 1
-        parent = getattr(sections[current], "parent_section_id", None)
-        if not isinstance(parent, str):
+        parent = sections[current].parent_section_id
+        if parent is None:
             break
+        if parent not in sections:
+            raise CanonicalReferenceError(
+                f"Section declares a missing parent: {current}"
+            )
         current = parent
     return depth
 
@@ -2198,9 +2411,16 @@ def _build_representations(
     divisions: Sequence[Division],
     nodes: Sequence[ContentNode],
 ) -> tuple[Representation, ...]:
-    """Map v2 non-text objects to references without copying captions or object text."""
+    """Map non-text objects to references and their own observed source selectors.
+
+    The builder preserves a valid page, geometry, canonical source/image/caption/
+    note/marker anchors, and parser-native anchors without requiring any anchor to
+    match a ContentNode. It also retains useful references to existing node-owned
+    selectors. No object, caption, table, figure, row, or cell text is copied.
+    """
     division_ids = {item.division_id for item in divisions}
     nodes_by_id = {item.node_id: item for item in nodes}
+    presentation_unit_ids = {item.page_id for item in document.pages}
     selector_by_anchor = {
         anchor_id: selector.selector_id
         for node in nodes
@@ -2216,20 +2436,58 @@ def _build_representations(
             if any(page.page_id == item.page_id for page in document.pages)
             else resource_id
         )
-        candidate_anchors = (
-            *item.source_anchor_ids,
-            *((item.caption_anchor_id,) if item.caption_anchor_id else ()),
-            *((item.image_anchor_id,) if item.image_anchor_id else ()),
-            *((item.note_anchor_id,) if item.note_anchor_id else ()),
+        source_anchor_ids = tuple(
+            sorted(
+                {
+                    *item.source_anchor_ids,
+                    *(value for value in (
+                        item.caption_anchor_id,
+                        item.image_anchor_id,
+                        item.note_anchor_id,
+                        item.marker_anchor_id,
+                    ) if value is not None),
+                }
+            )
         )
+        parser_source_anchor_ids = tuple(sorted(set(item.parser_source_anchor_ids)))
         selector_ids = tuple(
             sorted(
                 {
                     selector_by_anchor[anchor]
-                    for anchor in candidate_anchors
+                    for anchor in source_anchor_ids
                     if anchor in selector_by_anchor
                 }
             )
+        )
+        presentation_unit_id = (
+            item.page_id if item.page_id in presentation_unit_ids else None
+        )
+        has_source_locator = bool(
+            presentation_unit_id is not None
+            or item.bbox is not None
+            or source_anchor_ids
+            or parser_source_anchor_ids
+        )
+        source_selectors = (
+            (
+                SourceSelector(
+                    selector_id=f"{item.object_id}:selector",
+                    selector_type=(
+                        "source-region"
+                        if item.bbox is not None
+                        else "source-anchor"
+                        if source_anchor_ids or parser_source_anchor_ids
+                        else "presentation-unit"
+                    ),
+                    resource_id=resource_id,
+                    presentation_unit_id=presentation_unit_id,
+                    bbox=item.bbox,
+                    source_anchor_ids=source_anchor_ids,
+                    parser_source_anchor_ids=parser_source_anchor_ids,
+                ),
+            )
+            if has_source_locator
+            else ()
         )
         caption_node_id = (
             item.caption_anchor_id
@@ -2245,6 +2503,7 @@ def _build_representations(
                 artifact_id=None,
                 selector_ids=selector_ids,
                 caption_node_id=caption_node_id,
+                source_selectors=source_selectors,
             )
         )
     return tuple(sorted(result, key=lambda item: item.representation_id))
@@ -2421,7 +2680,7 @@ def _build_artifact_descriptors(
             uri=item.uri,
             media_type=item.media_type,
             sha256=item.sha256,
-            schema_version="cognityx.ingest.native-artifact-descriptor/v1",
+            schema_version=None,
         )
         for item in native_descriptors
     )
@@ -2606,6 +2865,7 @@ __all__ = [
     "Division",
     "NativeBinding",
     "NativeBindingValidationError",
+    "PresentationLabel",
     "PresentationUnit",
     "ProcessingActivity",
     "Representation",

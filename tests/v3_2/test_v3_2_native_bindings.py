@@ -77,7 +77,7 @@ def _stored_frozen_bindings(
                 uri=descriptor.uri,
                 media_type=descriptor.media_type,
                 sha256=descriptor.sha256,
-                schema_version="cognityx.ingest.native-artifact-descriptor/v1",
+                schema_version=None,
             )
         )
     bindings = tuple(
@@ -117,6 +117,66 @@ def test_frozen_native_bindings_validate_against_real_t01_descriptors(
         "bind-pol-p2-docling",
         "bind-pol-p3-pymupdf-link",
     }
+    assert all(item.schema_version is None for item in generic)
+
+
+def test_mapping_key_cannot_spoof_native_descriptor_identity(
+    tmp_path: Path,
+    v3_2_fixture_root: Path,
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Reject a descriptor stored under a mapping key for another artifact ID."""
+    bindings, descriptors, generic = _stored_frozen_bindings(
+        tmp_path, v3_2_fixture_root
+    )
+    artifact_id = bindings[0].artifact_id
+    descriptors[artifact_id] = replace(
+        descriptors[artifact_id],
+        artifact_id="artifact-spoofed",
+    )
+    artifact = replace(
+        frozen_canonical_artifact,
+        native_bindings=bindings,
+        artifact_descriptors=generic,
+    )
+    with pytest.raises(NativeBindingValidationError, match="identity disagrees"):
+        artifact.validate(native_descriptors=descriptors)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement", "message"),
+    (
+        ("uri", "storage://shared/another-payload", "URI disagrees"),
+        ("media_type", "application/octet-stream", "media type disagrees"),
+        ("sha256", "0" * 64, "SHA-256 disagrees"),
+    ),
+)
+def test_generic_parser_payload_metadata_must_match_t01_descriptor(
+    tmp_path: Path,
+    v3_2_fixture_root: Path,
+    frozen_canonical_artifact: CanonicalContentArtifact,
+    field_name: str,
+    replacement: str,
+    message: str,
+) -> None:
+    """Cross-check generic URI, media type, and digest against T01 payload facts."""
+    bindings, descriptors, generic = _stored_frozen_bindings(
+        tmp_path, v3_2_fixture_root
+    )
+    artifact_id = bindings[0].artifact_id
+    changed = tuple(
+        replace(item, **{field_name: replacement})
+        if item.artifact_id == artifact_id
+        else item
+        for item in generic
+    )
+    artifact = replace(
+        frozen_canonical_artifact,
+        native_bindings=bindings,
+        artifact_descriptors=changed,
+    )
+    with pytest.raises(NativeBindingValidationError, match=message):
+        artifact.validate(native_descriptors=descriptors)
 
 
 def test_invalid_native_pointer_raises_typed_binding_error(

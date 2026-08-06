@@ -24,7 +24,12 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from cognityx_jobs import JobRepository
-from cognityx_storage import StorageClient, StorageConfig, StorageRuntime
+from cognityx_storage import (
+    ObjectAlreadyExistsError,
+    StorageClient,
+    StorageConfig,
+    StorageRuntime,
+)
 
 from cognityx_ingest.canonical_content import (
     CANONICAL_CONTENT_SCHEMA_VERSION,
@@ -749,11 +754,14 @@ class IngestService:
         ``canonical-content.json`` and adds references to provenance and manifest
         without replacing or reinterpreting ``document.json``.
 
-        Repeating an equivalent run-bound write is idempotent. Changed canonical
-        data, parser bytes, native descriptors, or v3.2 content fails rather than
-        overwriting retained evidence. Storage writes are the only side effect.
-        T06 segmentation and T08 Source Graph work consume the new artifact later;
-        no segmentation, graph, retention, SDK, or CLI behavior is implemented here.
+        Canonical content is serialized once through its public deterministic
+        byte serializer and those exact bytes are written as ``application/json``.
+        Repeating an equivalent run-bound write is idempotent only when existing
+        bytes and media type match exactly. Changed canonical data, parser bytes,
+        native descriptors, or v3.2 content fails rather than overwriting retained
+        evidence. Storage writes are the only side effect. T06 segmentation and
+        T08 Source Graph work consume the artifact later; no segmentation, graph,
+        retention, SDK, or CLI behavior is implemented here.
         """
         prefix = f"ingest/documents/{document.document_id}"
         document_key = f"{prefix}/document.json"
@@ -841,9 +849,16 @@ class IngestService:
                 ),
             ),
         )
-        self._put_immutable_json(
+        native_descriptor_map = {
+            descriptor.artifact_id: descriptor
+            for descriptor in raw_descriptors.values()
+        }
+        self._put_immutable_bytes(
             canonical_content_key,
-            canonical_content.to_dict(),
+            canonical_content.to_json_bytes(
+                native_descriptors=native_descriptor_map,
+            ),
+            media_type="application/json",
         )
         relation_records = [
             {**item.to_dict(), "gold": _relation_is_gold(item)}
@@ -1066,6 +1081,50 @@ class IngestService:
                     raise RuntimeError(f"Immutable ingest artifact already exists: {key}")
             return
         self._storage.put_json(key, value)
+
+    def _put_immutable_bytes(
+        self,
+        key: str,
+        payload: bytes,
+        *,
+        media_type: str,
+    ) -> None:
+        """Publish canonical serializer bytes without normalizing retry content.
+
+        ``_persist`` calls this for ``canonical-content.json`` after the aggregate
+        validates against real T01 descriptors. The method compares an existing
+        object byte-for-byte and verifies its media type; equivalent retries are
+        idempotent, while any changed bytes or metadata fail. A concurrent writer
+        that wins create-only Storage publication is checked by the same path.
+        Source text is never included in conflict diagnostics.
+        """
+        if self._storage.exists(key):
+            self._verify_immutable_bytes(key, payload, media_type=media_type)
+            return
+        try:
+            self._storage.put_bytes(key, payload, media_type=media_type)
+        except ObjectAlreadyExistsError:
+            self._verify_immutable_bytes(key, payload, media_type=media_type)
+
+    def _verify_immutable_bytes(
+        self,
+        key: str,
+        expected: bytes,
+        *,
+        media_type: str,
+    ) -> None:
+        """Require an existing immutable object to match exact bytes and media type.
+
+        Idempotent retries and publication-race losers call this read-only helper.
+        It performs no decoding or JSON comparison, so stored canonical formatting
+        remains part of artifact identity. A mismatch raises without rewriting the
+        object or exposing source content.
+        """
+        with self._storage.open(key) as current:
+            actual = current.read()
+        stored = self._storage.stat(key)
+        if actual != expected or stored.media_type != media_type:
+            raise RuntimeError(f"Immutable ingest artifact already exists: {key}")
 
     def _local_registry(self) -> SourceAssetRegistry:
         try:

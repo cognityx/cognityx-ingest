@@ -20,7 +20,9 @@ from cognityx_ingest import (
     CanonicalReferenceError,
     CanonicalRepresentation,
     CanonicalText,
+    PresentationLabel,
     ProcessingActivity,
+    SourceSelector,
 )
 
 
@@ -69,6 +71,81 @@ def test_missing_resource_reference_raises_typed_reference_error(
         ),
     )
     with pytest.raises(CanonicalReferenceError, match="missing resource"):
+        invalid.validate()
+
+
+def test_unsupported_presentation_label_type_fails_validation(
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Reject malformed label provenance rather than treating it as free metadata."""
+    unit = frozen_canonical_artifact.presentation_units[0]
+    invalid = replace(
+        frozen_canonical_artifact,
+        presentation_units=(
+            replace(
+                unit,
+                labels=(PresentationLabel(label_type="page", value="1"),),
+            ),
+            *frozen_canonical_artifact.presentation_units[1:],
+        ),
+    )
+    with pytest.raises(CanonicalContentValidationError, match="label type"):
+        invalid.validate()
+
+
+def test_malformed_presentation_label_fails_strict_deserialization(
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Reject a typed label that omits its required value at the JSON boundary."""
+    payload = frozen_canonical_artifact.to_dict()
+    payload["presentation_units"][0]["labels"] = [
+        {"label_type": "pdf-page-label"}
+    ]
+    with pytest.raises(CanonicalContentValidationError, match="fields"):
+        CanonicalContentArtifact.from_dict(payload)
+
+
+def test_duplicate_same_type_presentation_labels_fail_validation(
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Reject two PDF-label facts while still allowing one PDF and one printed fact."""
+    unit = frozen_canonical_artifact.presentation_units[0]
+    invalid = replace(
+        frozen_canonical_artifact,
+        presentation_units=(
+            replace(
+                unit,
+                labels=(
+                    PresentationLabel(label_type="pdf-page-label", value="1"),
+                    PresentationLabel(label_type="pdf-page-label", value="2"),
+                ),
+            ),
+            *frozen_canonical_artifact.presentation_units[1:],
+        ),
+    )
+    with pytest.raises(CanonicalContentValidationError, match="duplicate label types"):
+        invalid.validate()
+
+
+def test_presentation_labels_require_deterministic_type_order(
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Reject printed-before-PDF ordering so equivalent facts serialize identically."""
+    unit = frozen_canonical_artifact.presentation_units[0]
+    invalid = replace(
+        frozen_canonical_artifact,
+        presentation_units=(
+            replace(
+                unit,
+                labels=(
+                    PresentationLabel(label_type="printed-page-label", value="1"),
+                    PresentationLabel(label_type="pdf-page-label", value="1"),
+                ),
+            ),
+            *frozen_canonical_artifact.presentation_units[1:],
+        ),
+    )
+    with pytest.raises(CanonicalContentValidationError, match="deterministically"):
         invalid.validate()
 
 
@@ -189,6 +266,62 @@ def test_representation_missing_subject_raises_typed_reference_error(
         representations=(representation,),
     )
     with pytest.raises(CanonicalReferenceError, match="subject"):
+        invalid.validate()
+
+
+def test_duplicate_content_and_representation_selector_ids_fail_validation(
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Enforce one global selector namespace across text and non-text records."""
+    node = frozen_canonical_artifact.content_nodes[0]
+    resource = frozen_canonical_artifact.resources[0]
+    representation = CanonicalRepresentation(
+        representation_id="rep-duplicate-selector",
+        subject_id=resource.resource_id,
+        representation_type="figure",
+        media_type="image/png",
+        source_selectors=(
+            SourceSelector(
+                selector_id=node.source_selectors[0].selector_id,
+                selector_type="source-anchor",
+                resource_id=resource.resource_id,
+                source_anchor_ids=("figure-anchor",),
+            ),
+        ),
+    )
+    invalid = replace(
+        frozen_canonical_artifact,
+        representations=(representation,),
+    )
+    with pytest.raises(CanonicalContentValidationError, match="Duplicate source selector"):
+        invalid.validate()
+
+
+def test_representation_owned_selector_rejects_foreign_resource(
+    frozen_canonical_artifact: CanonicalContentArtifact,
+) -> None:
+    """Keep a non-text selector on the same resource as its canonical subject."""
+    subject_resource = frozen_canonical_artifact.resources[0]
+    foreign_resource = frozen_canonical_artifact.resources[1]
+    representation = CanonicalRepresentation(
+        representation_id="rep-foreign-selector",
+        subject_id=subject_resource.resource_id,
+        representation_type="figure",
+        media_type="image/png",
+        source_selectors=(
+            SourceSelector(
+                selector_id="rep-foreign-selector:selector",
+                selector_type="source-anchor",
+                resource_id=foreign_resource.resource_id,
+                source_anchor_ids=("figure-anchor",),
+            ),
+        ),
+    )
+    invalid = replace(
+        frozen_canonical_artifact,
+        representations=(representation,),
+    )
+    with pytest.raises(CanonicalReferenceError, match="another resource"):
         invalid.validate()
 
 

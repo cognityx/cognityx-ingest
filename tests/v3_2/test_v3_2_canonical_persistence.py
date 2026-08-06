@@ -11,15 +11,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from cognityx_ingest import (
     CANONICAL_CONTENT_SCHEMA_VERSION,
     CanonicalContentArtifact,
+    CanonicalContentBuilder,
     CanonicalDocument,
     Evidence,
     IngestManager,
     IngestResult,
     IngestService,
     NativeArtifactStore,
+    SourceAsset,
     SourceAssetRegistry,
 )
 from cognityx_ingest.parser import ExtractedPage, ExtractionResult
@@ -61,7 +65,12 @@ class _ParserNeutralFixtureParser:
         """
         return ExtractionResult(
             pages=(
-                ExtractedPage(page_number=1, text="Policy heading\nFirst paragraph."),
+                ExtractedPage(
+                    page_number=1,
+                    text="Policy heading\nFirst paragraph.",
+                    page_label="1",
+                    printed_page_label="1",
+                ),
                 ExtractedPage(page_number=2, text="Second paragraph."),
             ),
             backend=self.name,
@@ -72,8 +81,9 @@ class _ParserNeutralFixtureParser:
 
 def _ingest_with_canonical_content(
     tmp_path: Path,
-) -> tuple[IngestResult, StorageClient, ExecutionContext]:
-    """Run the real persistence composition and return result, storage, and context."""
+) -> tuple[IngestResult, StorageClient, ExecutionContext, SourceAsset]:
+    """Run persistence and return its result, storage, context, and SourceAsset."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     runtime = StorageRuntime.from_config(
         StorageConfig.built_in(root=tmp_path / "runtime")
     )
@@ -93,14 +103,15 @@ def _ingest_with_canonical_content(
         extractor=_ParserNeutralFixtureParser(),
         registry=registry,
     ).ingest(source, context=context, registry=registry)
-    return result, storage, context
+    asset = registry.show_asset(context, result.document.source.source_id)
+    return result, storage, context, asset
 
 
 def test_ingest_service_persists_valid_additive_canonical_content(
     tmp_path: Path,
 ) -> None:
     """Write, parse, and validate the new artifact at its exact document-local key."""
-    result, storage, _context = _ingest_with_canonical_content(tmp_path)
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
     expected_key = (
         f"ingest/documents/{result.document.document_id}/canonical-content.json"
     )
@@ -112,13 +123,74 @@ def test_ingest_service_persists_valid_additive_canonical_content(
     assert artifact.resources[0].source_asset_id == result.document.source.source_id
     assert artifact.content_nodes
     assert all(node.source_selectors for node in artifact.content_nodes)
+    assert artifact.presentation_units[0].labels[0].label_type == "pdf-page-label"
+    assert artifact.presentation_units[0].labels[1].label_type == "printed-page-label"
+    parser_native = next(
+        item for item in artifact.artifact_descriptors if item.role == "parser_native"
+    )
+    assert parser_native.schema_version is None
+
+
+def test_stored_canonical_content_uses_exact_deterministic_serializer_bytes(
+    tmp_path: Path,
+) -> None:
+    """Match persisted bytes to the public serializer without JSON reformatting."""
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
+    with storage.open(result.canonical_content_key) as stream:
+        stored = stream.read()
+    artifact = CanonicalContentArtifact.from_dict(json.loads(stored))
+    assert stored == artifact.to_json_bytes()
+    assert storage.stat(result.canonical_content_key).media_type == "application/json"
+
+
+def test_two_equivalent_builds_produce_identical_canonical_bytes(
+    tmp_path: Path,
+) -> None:
+    """Prove separate equivalent builds serialize to the same UTF-8 byte sequence."""
+    result, storage, context, asset = _ingest_with_canonical_content(tmp_path)
+    artifact_id = f"art-{result.document.document_id}-parser_raw"
+    descriptor = NativeArtifactStore(storage, context).read(artifact_id)
+    descriptor_map = {descriptor.artifact_id: descriptor}
+    first = CanonicalContentBuilder().build(
+        result.document,
+        asset,
+        context,
+        native_descriptors=(descriptor,),
+    )
+    second = CanonicalContentBuilder().build(
+        result.document,
+        asset,
+        context,
+        native_descriptors=(descriptor,),
+    )
+    assert first.to_json_bytes(native_descriptors=descriptor_map) == (
+        second.to_json_bytes(native_descriptors=descriptor_map)
+    )
+
+
+def test_changed_bytes_under_existing_canonical_key_fail_without_rewrite(
+    tmp_path: Path,
+) -> None:
+    """Reject changed retry bytes and retain the originally serialized artifact."""
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
+    with storage.open(result.canonical_content_key) as stream:
+        original = stream.read()
+    service = IngestService(storage)
+    with pytest.raises(RuntimeError, match="Immutable ingest artifact"):
+        service._put_immutable_bytes(
+            result.canonical_content_key,
+            original + b" ",
+            media_type="application/json",
+        )
+    with storage.open(result.canonical_content_key) as stream:
+        assert stream.read() == original
 
 
 def test_manifest_provenance_artifacts_and_usage_include_canonical_content(
     tmp_path: Path,
 ) -> None:
     """Add the v3.2 reference and bytes without changing existing artifact identities."""
-    result, storage, _context = _ingest_with_canonical_content(tmp_path)
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
     manifest = json.load(storage.open(result.manifest_key))
     provenance = json.load(storage.open(result.provenance_key))
     canonical_ref = manifest["artifacts"]["canonical_content"]
@@ -153,7 +225,7 @@ def test_existing_v2_and_t01_artifacts_remain_readable_and_unchanged(
     tmp_path: Path,
 ) -> None:
     """Keep compatibility documents, evidence, provenance, manifest, and raw keys."""
-    result, storage, context = _ingest_with_canonical_content(tmp_path)
+    result, storage, context, _asset = _ingest_with_canonical_content(tmp_path)
     document = CanonicalDocument.from_dict(json.load(storage.open(result.document_key)))
     evidence = tuple(
         Evidence.from_dict(json.loads(line))
@@ -182,7 +254,7 @@ def test_persisted_artifact_keeps_text_out_of_non_content_records(
     tmp_path: Path,
 ) -> None:
     """Recursively enforce the text-once rule on real production serialization."""
-    result, storage, _context = _ingest_with_canonical_content(tmp_path)
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
     payload = json.load(storage.open(result.canonical_content_key))
     source_texts = {item["content"]["text"] for item in payload["content_nodes"]}
     matches: list[tuple[object, ...]] = []
@@ -212,7 +284,7 @@ def test_document_deletion_removes_document_local_canonical_content(
     tmp_path: Path,
 ) -> None:
     """Delete the new local artifact with its document but leave T07 policy untouched."""
-    result, storage, context = _ingest_with_canonical_content(tmp_path)
+    result, storage, context, _asset = _ingest_with_canonical_content(tmp_path)
     descriptor_key = (
         "ingest/native-artifacts/"
         f"art-{result.document.document_id}-parser_raw.json"

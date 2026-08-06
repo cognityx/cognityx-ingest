@@ -12,18 +12,24 @@ import json
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from cognityx_ingest import (
     CANONICAL_CONTENT_SCHEMA_VERSION,
     Block,
     CanonicalContentArtifact,
     CanonicalContentBuilder,
     CanonicalDocument,
+    CanonicalOwnershipError,
+    CanonicalReferenceError,
     CanonicalResource,
     CanonicalText,
     ContentNode,
+    DocumentObject,
     Division,
     IngestService,
     PageRecord,
+    PresentationLabel,
     PresentationUnit,
     PyPdfExtractor,
     SourceAssetRegistry,
@@ -50,6 +56,61 @@ def _ingest(tmp_path: Path, source: Path):
         source, context=context, registry=registry
     )
     return result, storage
+
+
+def _build_test_artifact(
+    *,
+    pages: tuple[PageRecord, ...],
+    blocks: tuple[Block, ...] = (),
+    sections: tuple[Section, ...] = (),
+    objects: tuple[DocumentObject, ...] = (),
+) -> tuple[CanonicalContentArtifact, CanonicalDocument]:
+    """Build one parser-neutral artifact for focused source-model assertions.
+
+    Tests call this helper with explicit v2 observations. It creates stable source
+    and execution identities, invokes the production builder, and returns both the
+    additive artifact and unchanged v2 document. It performs no Storage writes and
+    never substitutes fixture truth for production behavior.
+    """
+    document_id = "doc-focused-source-model"
+    source_asset = SourceAsset(
+        source_id="src-focused-source-model",
+        context_id="ctx-test",
+        bundle_id="bundle-test",
+        original_filename="focused.pdf",
+        media_type="application/pdf",
+        size_bytes=10,
+        sha256="2" * 64,
+        blob_id="blob-focused-source-model",
+        created_by="fixture-test",
+        created_at="2026-08-06T00:00:00Z",
+    )
+    document = CanonicalDocument(
+        document_id=document_id,
+        schema_version="cognityx.ingest.document/v2",
+        source=SourceRecord(
+            source_id=source_asset.asset_id,
+            filename=source_asset.original_filename,
+            sha256=source_asset.sha256,
+            size_bytes=source_asset.size_bytes,
+            storage_key=f"sourceasset://{source_asset.asset_id}",
+        ),
+        title="Focused source model",
+        pages=pages,
+        blocks=blocks,
+        sections=sections,
+        objects=objects,
+    )
+    artifact = CanonicalContentBuilder().build(
+        document,
+        source_asset,
+        ExecutionContext(
+            run_id="run-focused-source-model",
+            correlation_id="cor-focused-source-model",
+            principal_id="fixture-test",
+        ),
+    )
+    return artifact, document
 
 
 def test_canonical_document_still_preserves_current_python_ingest_shape(
@@ -183,6 +244,155 @@ def test_presentation_units_and_divisions_remain_distinct_concepts(
     assert all(isinstance(item, Division) for item in frozen_canonical_artifact.divisions)
     assert all(not hasattr(item, "text") for item in frozen_canonical_artifact.presentation_units)
     assert all(not hasattr(item, "text") for item in frozen_canonical_artifact.divisions)
+
+
+def test_builder_preserves_typed_equal_presentation_labels_and_v2_fields() -> None:
+    """Keep equal PDF and printed labels as two typed facts without changing v2."""
+    page = PageRecord(
+        page_id="page-labeled",
+        physical_page_index=0,
+        sequence_number=0,
+        pdf_page_label="1",
+        printed_page_label="1",
+    )
+    original_v2 = page.to_dict()
+    artifact, document = _build_test_artifact(pages=(page,))
+    assert artifact.presentation_units[0].labels == (
+        PresentationLabel(label_type="pdf-page-label", value="1"),
+        PresentationLabel(label_type="printed-page-label", value="1"),
+    )
+    assert artifact.to_dict()["presentation_units"][0]["labels"] == [
+        {"label_type": "pdf-page-label", "value": "1"},
+        {"label_type": "printed-page-label", "value": "1"},
+    ]
+    assert document.pages[0].to_dict() == original_v2
+
+
+def test_builder_preserves_figure_page_and_bbox_without_caption_text() -> None:
+    """Give a captionless figure its own observed page and geometry selector."""
+    page = PageRecord(
+        page_id="page-figure",
+        physical_page_index=0,
+        sequence_number=0,
+    )
+    figure = DocumentObject(
+        object_id="figure-one",
+        object_type="figure",
+        page_id=page.page_id,
+        caption="Private figure caption",
+        text="Private figure OCR text",
+        bbox=(10.0, 20.0, 110.0, 220.0),
+    )
+    artifact, _document = _build_test_artifact(
+        pages=(page,),
+        objects=(figure,),
+    )
+    representation = artifact.representations[0]
+    selector = representation.source_selectors[0]
+    assert selector.presentation_unit_id == page.page_id
+    assert selector.bbox == figure.bbox
+    serialized = artifact.to_dict()["representations"][0]
+    assert serialized["source_selectors"][0]["bbox"] == [10.0, 20.0, 110.0, 220.0]
+    assert figure.caption not in json.dumps(serialized)
+    assert figure.text not in json.dumps(serialized)
+
+
+def test_builder_preserves_object_and_parser_native_anchor_facts() -> None:
+    """Retain canonical and parser anchors without requiring a ContentNode match."""
+    page = PageRecord(
+        page_id="page-object",
+        physical_page_index=0,
+        sequence_number=0,
+    )
+    observed = DocumentObject(
+        object_id="object-with-anchors",
+        object_type="image",
+        page_id=page.page_id,
+        source_anchor_ids=("object-source-anchor",),
+        caption_anchor_id="caption-anchor",
+        image_anchor_id="image-anchor",
+        note_anchor_id="note-anchor",
+        parser_source_anchor_ids=("#/pictures/0", "#/texts/4"),
+    )
+    artifact, _document = _build_test_artifact(
+        pages=(page,),
+        objects=(observed,),
+    )
+    selector = artifact.representations[0].source_selectors[0]
+    assert selector.source_anchor_ids == (
+        "caption-anchor",
+        "image-anchor",
+        "note-anchor",
+        "object-source-anchor",
+    )
+    assert selector.parser_source_anchor_ids == ("#/pictures/0", "#/texts/4")
+
+
+def test_builder_allows_representation_without_unobserved_source_locator() -> None:
+    """Leave selectors empty rather than inventing location facts for an object."""
+    observed = DocumentObject(
+        object_id="object-without-location",
+        object_type="image",
+        page_id=None,
+        text="Unstored object text",
+    )
+    artifact, _document = _build_test_artifact(
+        pages=(),
+        objects=(observed,),
+    )
+    representation = artifact.representations[0]
+    assert representation.source_selectors == ()
+    assert representation.selector_ids == ()
+    assert observed.text not in json.dumps(artifact.to_dict())
+
+
+def test_builder_accepts_valid_root_and_child_section_parents() -> None:
+    """Attach an undeclared root section and a declared child without reparenting."""
+    root = Section(
+        section_id="section-root",
+        title="Root",
+        evidence_ids=(),
+        parent_section_id=None,
+    )
+    child = Section(
+        section_id="section-child",
+        title="Child",
+        evidence_ids=(),
+        parent_section_id=root.section_id,
+    )
+    artifact, _document = _build_test_artifact(
+        pages=(),
+        sections=(root, child),
+    )
+    divisions = {item.division_id: item for item in artifact.divisions}
+    assert divisions[root.section_id].parent_division_id.endswith(
+        ":division:document"
+    )
+    assert divisions[child.section_id].parent_division_id == root.section_id
+
+
+def test_builder_rejects_missing_declared_section_parent() -> None:
+    """Fail rather than inventing a document-root edge for an absent parent."""
+    section = Section(
+        section_id="section-orphan",
+        title="Orphan",
+        evidence_ids=(),
+        parent_section_id="section-missing",
+    )
+    with pytest.raises(CanonicalReferenceError, match="missing parent"):
+        _build_test_artifact(pages=(), sections=(section,))
+
+
+def test_builder_rejects_self_parent_as_hierarchy_cycle() -> None:
+    """Reject a self-parent declaration through the existing typed cycle boundary."""
+    section = Section(
+        section_id="section-cycle",
+        title="Cycle",
+        evidence_ids=(),
+        parent_section_id="section-cycle",
+    )
+    with pytest.raises(CanonicalOwnershipError, match="cycle"):
+        _build_test_artifact(pages=(), sections=(section,))
 
 
 def test_every_node_has_one_deepest_direct_owner(

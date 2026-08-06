@@ -77,7 +77,21 @@ bytes.
 
 Says where content appeared. Examples include a page, slide, sheet, frame, time
 range, or document-level surface. It may retain an observed physical index,
-labels, width, and height. It has no page text field.
+typed labels, width, and height. It has no page text field.
+
+A typed presentation label records both the displayed value and why that value
+exists. The first two supported types are `pdf-page-label`, read from the PDF
+page tree, and `printed-page-label`, observed on the page. These records are not
+deduplicated by value: if both sources say `"1"`, both facts remain in fixed type
+order. This distinction lets citation and audit tools explain which label they
+used without changing the existing v2 `PageRecord` fields.
+
+```json
+"labels": [
+  {"label_type": "pdf-page-label", "value": "1"},
+  {"label_type": "printed-page-label", "value": "1"}
+]
+```
 
 ### Division
 
@@ -107,7 +121,8 @@ Identifies a real source location without storing a quote. It can reference:
 - a safe source-relative path;
 - real character start and end offsets;
 - real bounding-box geometry;
-- current v2 anchor IDs.
+- current v2 anchor IDs;
+- parser-native anchor IDs retained as opaque location facts.
 
 Character offsets are included only when the source adapter actually knows them.
 The current PDF block model has page and anchor facts but no reliable source-text
@@ -136,6 +151,15 @@ stream, or layout object. It points to a canonical subject, selectors, optional
 artifact, and optional caption ContentNode. It never copies caption or object
 text.
 
+A Representation may own a `source_selectors` tuple. This representation-owned
+selector keeps a real page, bounding box, source anchor, or parser-native anchor
+even when no caption block can provide a ContentNode selector. Audit readers and
+future source-address consumers can therefore locate a figure or table without
+copying its caption, table cells, OCR text, or object text. `selector_ids` still
+references existing selectors when an observed anchor genuinely matches one.
+When the parser supplied no location fact at all, the Representation may have no
+selector; T02 does not invent geometry, offsets, pages, or anchors.
+
 The root package exports this v3.2 record as `CanonicalRepresentation` because
 the established root-level `Representation` name remains the legacy enrichment
 record for backward compatibility. The canonical module itself uses the required
@@ -151,9 +175,14 @@ canonical_id -> T01 artifact_id -> retained native_pointer
 ```
 
 Validation requires the real T01 `NativeArtifactDescriptor`. The pointer must be
-retained by that descriptor. T02 does not create another native reader, duplicate
-JSON-pointer resolution, or copy native payload bytes. An empty binding list is
-valid because current parser adapters may not yet submit explicit pointers.
+retained by that descriptor. Cross-descriptor consistency also requires its
+artifact ID, payload URI, payload media type, and payload SHA-256 to match the
+generic parser-native artifact reference. The generic reference has no
+`schema_version` unless the parser payload itself has a known schema; the T01
+descriptor schema describes the descriptor, not the payload. T02 does not create
+another native reader, duplicate JSON-pointer resolution, or copy native payload
+bytes. An empty binding list is valid because current parser adapters may not yet
+submit explicit pointers.
 
 ### CanonicalRelation
 
@@ -235,19 +264,22 @@ source order. Neither method creates or stores a concatenated parent text value.
 
 1. Create one resource from the registered SourceAsset.
 2. Convert current pages to PresentationUnits while preserving page IDs.
-3. Create one document-root Division.
-4. Convert current logical sections to child Divisions.
-5. Rank explicit section membership by hierarchy depth and assign each block to
+3. Preserve PDF and printed page labels as separate typed facts.
+4. Create one document-root Division.
+5. Convert current logical sections to child Divisions. A missing parent value
+   means document root, but a declared parent ID must exist.
+6. Rank explicit section membership by hierarchy depth and assign each block to
    one deepest owner.
-6. Create one ContentNode for every authoritative text-bearing block.
-7. Hash exact UTF-8 text.
-8. Create selectors only from observed page, anchor, geometry, path, or offset
+7. Create one ContentNode for every authoritative text-bearing block.
+8. Hash exact UTF-8 text.
+9. Create selectors only from observed page, anchor, geometry, path, or offset
    facts.
-9. Reference non-text objects through Representation records.
-10. Map only safely resolvable relations and omit free target text.
-11. Add one processing activity and generic artifact references.
-12. Add explicit caller-supplied NativeBindings when present.
-13. Validate the complete aggregate before immutable persistence.
+10. Reference non-text objects through Representation records and preserve their
+    observed non-text selectors.
+11. Map only safely resolvable relations and omit free target text.
+12. Add one processing activity and generic artifact references.
+13. Add explicit caller-supplied NativeBindings when present.
+14. Validate the complete aggregate before immutable persistence.
 
 The algorithm is parser-neutral. Normal CI uses fake parser observations and
 frozen fixtures; Docling is not required.
@@ -258,7 +290,7 @@ Validation builds temporary in-memory ID indexes and checks:
 
 - duplicate IDs and deterministic ordering;
 - missing resources and presentation units;
-- missing or inconsistent Division parents and children;
+- missing declared Division parents and inconsistent parent/child links;
 - hierarchy cycles;
 - exactly one direct owner per ContentNode;
 - same-resource ownership;
@@ -266,10 +298,12 @@ Validation builds temporary in-memory ID indexes and checks:
 - exact UTF-8 SHA-256 values;
 - complete, ordered character ranges and bounding boxes;
 - valid selector combinations;
-- Representation subjects, selectors, captions, and artifacts;
+- globally unique ContentNode and Representation selector IDs;
+- Representation subjects, same-resource selectors, captions, and artifacts;
 - relation endpoints and evidence nodes;
 - processing input and output artifacts;
-- NativeBinding canonical IDs, T01 descriptors, and retained pointers.
+- NativeBinding canonical IDs, cross-descriptor payload facts, and retained T01
+  pointers.
 
 Public validation raises typed errors rather than raw `KeyError` or
 `AssertionError`:
@@ -286,7 +320,10 @@ local paths.
 ## Persistence And Compatibility
 
 `IngestService` writes `canonical-content.json` immutably after v2 document and
-evidence output and T01 native descriptors have stable identities. It then adds:
+evidence output and T01 native descriptors have stable identities. It writes the
+public serializer's exact UTF-8 bytes as `application/json`. An idempotent retry
+must match both those bytes and that media type; semantically similar JSON with
+different spacing is not silently normalized or rewritten. It then adds:
 
 - `canonical_content` to `manifest.json` artifacts;
 - `canonical_content` to provenance `artifact_uris`;
