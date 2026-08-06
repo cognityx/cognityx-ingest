@@ -61,6 +61,16 @@ from cognityx_ingest.models import (
     UnresolvedItem,
     UsageReport,
 )
+from cognityx_ingest.native_artifacts import (
+    NativeArtifactConflictError,
+    NativeArtifactDescriptor,
+    NativeArtifactError,
+    NativeArtifactIntegrityError,
+    NativeArtifactNotFoundError,
+    NativeArtifactStore,
+    NativePointerError,
+    ReloadedNativeArtifact,
+)
 from cognityx_ingest.parser import (
     BasicPdfParser,
     DoclingParser,
@@ -123,6 +133,13 @@ __all__ = [
     "InferenceTarget",
     "KnowledgeUnit",
     "LocalControlClient",
+    "NativeArtifactConflictError",
+    "NativeArtifactDescriptor",
+    "NativeArtifactError",
+    "NativeArtifactIntegrityError",
+    "NativeArtifactNotFoundError",
+    "NativeArtifactStore",
+    "NativePointerError",
     "PageRecord",
     "ParserRouter",
     "ParserUnavailableError",
@@ -131,6 +148,7 @@ __all__ = [
     "Relation",
     "RepeatedRegion",
     "RepeatedRegionOccurrence",
+    "ReloadedNativeArtifact",
     "RegisteredSource",
     "Representation",
     "ResolutionTask",
