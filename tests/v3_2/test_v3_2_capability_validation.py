@@ -305,6 +305,11 @@ def test_frozen_registry_requires_its_complete_legacy_order_fingerprint(
             "parser_id",
         ),
         (
+            '"parser-discovered":{',
+            '"parser-discovered":{},"parser-discovered":{',
+            "parser-discovered",
+        ),
+        (
             '"tables":"declared"',
             '"tables":"declared","tables":"unsupported"',
             "tables",
