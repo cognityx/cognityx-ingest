@@ -48,6 +48,14 @@ approved human guidance, and measured outcomes in three distinct source
 classes. It does not choose a parser or change extraction output. See [Parser
 Capability Registry](parser-capability-registry.md).
 
+The separate routing-plan schema is
+`cognityx.ingest.routing-plan/v3.2`. It records deterministic, hybrid, or
+LLM-directed parser invocations plus the hard validation result. A routing plan
+does not execute a parser and does not combine parser outputs. T03 registry facts
+remain unchanged, existing `ExtractionPolicy` values remain the execution
+compatibility boundary, and later T05 work owns alignment and fusion. See
+[Adaptive Parser Routing](adaptive-parser-routing.md).
+
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff
 is technically called `provenance.json`. Version 2 records the run and job,

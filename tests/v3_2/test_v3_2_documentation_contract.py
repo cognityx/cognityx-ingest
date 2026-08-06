@@ -13,6 +13,7 @@ from pathlib import Path
 import cognityx_ingest.canonical_content as canonical_content
 import cognityx_ingest.native_artifacts as native_artifacts
 import cognityx_ingest.parser_capabilities as parser_capabilities
+import cognityx_ingest.parser_routing as parser_routing
 
 
 def _module_tree(module: object = native_artifacts) -> ast.Module:
@@ -224,6 +225,89 @@ def test_named_parser_capability_algorithms_have_invariant_documentation() -> No
     functions = {
         node.name: node
         for node in ast.walk(_module_tree(parser_capabilities))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert required <= set(functions)
+    assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_parser_routing_module_has_substantial_architectural_docstring() -> None:
+    """Require T04 purpose, mode meanings, boundaries, consumers, and non-goals."""
+    module_docstring = ast.get_docstring(_module_tree(parser_routing)) or ""
+    normalized = module_docstring.lower()
+    assert len(module_docstring) >= 3_000
+    for concept in (
+        "purpose",
+        "design principles",
+        "processing flow",
+        "primary consumers",
+        "ownership boundary",
+        "non-goals",
+        "deterministic",
+        "hybrid",
+        "llm-directed",
+        "capability registry",
+        "proposal",
+        "deterministic validation",
+        "t05",
+        "legacy",
+    ):
+        assert concept in normalized
+
+
+def test_every_public_parser_routing_class_documents_its_contract() -> None:
+    """Require every T04 record, protocol, service, and error to explain its role."""
+    public_classes = [
+        node
+        for node in _module_tree(parser_routing).body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    ]
+    assert public_classes
+    for node in public_classes:
+        docstring = (ast.get_docstring(node) or "").lower()
+        for concept in (
+            "responsibility",
+            "constructed by",
+            "used by",
+            "invariants",
+            "lifecycle",
+            "thread-safety assumptions",
+        ):
+            assert concept in docstring, (node.name, concept)
+
+
+def test_every_parser_routing_callable_has_a_docstring() -> None:
+    """Require public seams and private routing algorithms to explain why they exist."""
+    callables = [
+        node
+        for node in ast.walk(_module_tree(parser_routing))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert callables
+    assert all(ast.get_docstring(node) for node in callables)
+
+
+def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
+    """Pin docs to policy, validation, fixture, compatibility, and serialization."""
+    required = {
+        "adaptive_mode_for_legacy_policy",
+        "_build_deterministic_plan",
+        "_deterministic_invocation_is_eligible",
+        "_validated_boundary",
+        "_validate_proposal",
+        "_validate_budget",
+        "_parser_is_capability_eligible",
+        "_validate_scope",
+        "_validate_stop_condition",
+        "_parse_deterministic_plan",
+        "_parse_hybrid_plan",
+        "_parse_llm_directed_plan",
+        "_strict_json_object",
+        "_validation_result_to_dict",
+    }
+    functions = {
+        node.name: node
+        for node in ast.walk(_module_tree(parser_routing))
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     assert required <= set(functions)
