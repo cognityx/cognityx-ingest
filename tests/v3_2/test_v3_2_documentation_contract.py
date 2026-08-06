@@ -12,6 +12,7 @@ from pathlib import Path
 
 import cognityx_ingest.canonical_content as canonical_content
 import cognityx_ingest.native_artifacts as native_artifacts
+import cognityx_ingest.parser_capabilities as parser_capabilities
 
 
 def _module_tree(module: object = native_artifacts) -> ast.Module:
@@ -143,6 +144,86 @@ def test_named_canonical_algorithms_have_invariant_documentation() -> None:
     functions = {
         node.name: node
         for node in ast.walk(_module_tree(canonical_content))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert required <= set(functions)
+    assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_parser_capability_module_has_substantial_architectural_docstring() -> None:
+    """Require registry authority, source boundaries, consumers, and non-goals."""
+    module_docstring = ast.get_docstring(_module_tree(parser_capabilities)) or ""
+    normalized = module_docstring.lower()
+    assert len(module_docstring) >= 2_500
+    for concept in (
+        "purpose",
+        "design principles",
+        "processing flow",
+        "primary consumers",
+        "ownership boundary",
+        "non-goals",
+        "registry authority",
+        "parser-discovered",
+        "human-guided",
+        "auto-learned",
+        "runtime",
+        "official documentation",
+        "preserve supplied",
+        "frozen v3.2 fixture",
+        "t04",
+    ):
+        assert concept in normalized
+
+
+def test_every_public_parser_capability_class_documents_its_contract() -> None:
+    """Require every T03 record, error, and registry class to explain its role."""
+    public_classes = [
+        node
+        for node in _module_tree(parser_capabilities).body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    ]
+    assert public_classes
+    for node in public_classes:
+        docstring = (ast.get_docstring(node) or "").lower()
+        for concept in (
+            "responsibility",
+            "constructed by",
+            "used by",
+            "invariants",
+            "lifecycle",
+            "thread-safety assumptions",
+        ):
+            assert concept in docstring, (node.name, concept)
+
+
+def test_every_parser_capability_callable_has_a_docstring() -> None:
+    """Require public seams and private validation/overlay algorithms to explain why."""
+    callables = [
+        node
+        for node in ast.walk(_module_tree(parser_capabilities))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert callables
+    assert all(ast.get_docstring(node) for node in callables)
+
+
+def test_named_parser_capability_algorithms_have_invariant_documentation() -> None:
+    """Pin docs to runtime discovery, overlay, conflicts, source classes, and JSON."""
+    required = {
+        "from_json_bytes",
+        "_strict_json_object",
+        "_registered_plugin_index",
+        "_registry_order_fingerprint",
+        "_validate_parser_record_order",
+        "_overlay_parser_record",
+        "_probe_plugin",
+        "_preserve_availability_conflicts",
+        "_parse_runtime_probe",
+        "_parser_record_to_dict",
+    }
+    functions = {
+        node.name: node
+        for node in ast.walk(_module_tree(parser_capabilities))
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
     assert required <= set(functions)
