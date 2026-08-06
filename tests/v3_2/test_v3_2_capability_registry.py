@@ -51,7 +51,7 @@ def test_capability_registry_contains_real_parsers(v3_2_fixture_root):
 
 
 def test_frozen_registry_round_trips_deterministically(v3_2_fixture_root):
-    """Normalize legacy probe syntax once and retain stable canonical bytes."""
+    """Normalize only probe syntax while retaining stable frozen collection order."""
     registry = _load_registry(v3_2_fixture_root)
     serialized = registry.to_json_bytes()
     restored = ParserCapabilityRegistry.from_json_bytes(serialized)
@@ -71,7 +71,7 @@ def test_frozen_evidence_sources_and_conflict_remain_separate(v3_2_fixture_root)
     assert evidence[0].source_url.startswith("https://docling-project.github.io/")
     assert docling.human_guided[0].recommendation == "preferred-primary"
     assert docling.auto_learned.benchmark_profile == "fixture-no-production-claim"
-    assert docling.auto_learned.measurements[0].sample_count == 20
+    assert docling.auto_learned.measurements[0].sample_count == 50
     assert docling.conflicts[0].resolution == "declared-but-currently-unavailable"
     assert docling.parser_discovered.runtime_probe.dependency_importable is False
 

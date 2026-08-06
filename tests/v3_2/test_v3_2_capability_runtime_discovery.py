@@ -17,6 +17,7 @@ from cognityx_ingest import (
     ExtractionPolicy,
     ExtractionResult,
     ParserCapabilityRegistry,
+    ParserCapabilityValidationError,
     ParserRouter,
 )
 import cognityx_ingest.parser_capabilities as parser_capabilities
@@ -35,6 +36,20 @@ class _FutureParser:
         """Return a stable empty result only when a test deliberately executes it."""
         self.calls += 1
         return ExtractionResult(pages=(), backend=self.name)
+
+
+class _MalformedParser:
+    """Expose an untrusted registration name and fail if extraction is invoked."""
+
+    def __init__(self, name: object) -> None:
+        """Store the supplied identity and initialize a no-execution counter."""
+        self.name = name
+        self.calls = 0
+
+    def extract_document(self, path: Path) -> ExtractionResult:
+        """Prove capability discovery never tests malformed adapters by execution."""
+        self.calls += 1
+        raise AssertionError("malformed parser extraction must not be called")
 
 
 def test_default_router_registry_includes_all_registered_builtins() -> None:
@@ -91,6 +106,40 @@ def test_registry_discovery_never_invokes_parser_extraction() -> None:
     second = ParserCapabilityRegistry.from_router(router)
     assert first == second
     assert plugin.calls == 0
+
+
+@pytest.mark.parametrize("name", (None, 7, "", " parser-with-spaces "))
+def test_malformed_plugin_names_raise_typed_validation_without_execution(
+    name: object,
+) -> None:
+    """Reject non-string, empty, and untrimmed identities before indexing."""
+    plugin = _MalformedParser(name)
+    router = ParserRouter((plugin,))
+    with pytest.raises(ParserCapabilityValidationError, match="parser plugin name"):
+        ParserCapabilityRegistry.from_router(router)
+    assert plugin.calls == 0
+
+
+def test_mixed_valid_and_malformed_plugins_raise_typed_validation() -> None:
+    """Validate the complete snapshot before sorting a mixed registration set."""
+    valid = _FutureParser()
+    malformed = _MalformedParser(None)
+    router = ParserRouter((valid, malformed))
+    with pytest.raises(ParserCapabilityValidationError, match="parser plugin name"):
+        ParserCapabilityRegistry.from_router(router)
+    assert valid.calls == 0
+    assert malformed.calls == 0
+
+
+def test_duplicate_plugin_names_fail_before_router_index_overwrite() -> None:
+    """Retain duplicate registrations long enough for discovery to reject them."""
+    first = _MalformedParser("duplicate")
+    second = _MalformedParser("duplicate")
+    router = ParserRouter((first, second))
+    with pytest.raises(ParserCapabilityValidationError, match="Duplicate parser plugin"):
+        ParserCapabilityRegistry.from_router(router)
+    assert first.calls == 0
+    assert second.calls == 0
 
 
 def test_registry_creation_uses_no_network(monkeypatch) -> None:

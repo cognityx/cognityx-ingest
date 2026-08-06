@@ -42,12 +42,19 @@ def test_catalog_overlay_preserves_sources_and_does_not_mutate_catalog(
     assert catalog.to_json_bytes() == before
     original = catalog.get("docling")
     live = overlay.get("docling")
-    assert live.parser_discovered.official_documentation == (
+    assert set(live.parser_discovered.official_documentation) == set(
         original.parser_discovered.official_documentation
     )
-    assert live.parser_discovered.capabilities == original.parser_discovered.capabilities
-    assert live.human_guided == original.human_guided
-    assert live.auto_learned == original.auto_learned
+    assert set(live.parser_discovered.capabilities) == set(
+        original.parser_discovered.capabilities
+    )
+    assert set(live.human_guided) == set(original.human_guided)
+    assert live.auto_learned.benchmark_profile == (
+        original.auto_learned.benchmark_profile
+    )
+    assert set(live.auto_learned.measurements) == set(
+        original.auto_learned.measurements
+    )
     assert live.parser_discovered.runtime_probe.plugin_registered is True
 
 

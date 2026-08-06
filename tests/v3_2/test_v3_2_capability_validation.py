@@ -8,6 +8,7 @@ import json
 import pytest
 
 from cognityx_ingest import (
+    ParserCapabilityConflictError,
     ParserCapabilityNotFoundError,
     ParserCapabilityRegistry,
     ParserCapabilityValidationError,
@@ -23,6 +24,72 @@ def _payload(v3_2_fixture_root) -> dict[str, object]:
             / "parser_capabilities.json"
         ).read_text(encoding="utf-8")
     )
+
+
+def _canonical_payload(v3_2_fixture_root) -> dict[str, object]:
+    """Return valid lexical input independent of the frozen ordering exception."""
+    payload = _payload(v3_2_fixture_root)
+    payload["registry_version"] = "canonical-order-test"
+    docling = next(
+        item for item in payload["parsers"] if item["parser_id"] == "docling"
+    )
+    docling["conflicts"].append(
+        {
+            "capability": "tables",
+            "advertised": True,
+            "runtime_available": False,
+            "resolution": "declared-but-currently-unavailable",
+        }
+    )
+    payload["parsers"].sort(key=lambda item: item["parser_id"])
+    for parser in payload["parsers"]:
+        sources = parser["capability_sources"]
+        discovered = sources["parser-discovered"]
+        discovered["official_documentation"].sort(
+            key=lambda item: item["evidence_id"]
+        )
+        discovered["capabilities"] = dict(
+            sorted(discovered["capabilities"].items())
+        )
+        sources["human-guided"]["guidance"].sort(
+            key=lambda item: (item["condition"], item["recommendation"])
+        )
+        sources["auto-learned"]["measurements"].sort(
+            key=lambda item: (item["document_class"], item["metric"])
+        )
+        parser["conflicts"].sort(
+            key=lambda item: (item["capability"], item["resolution"])
+        )
+    return payload
+
+
+def _reverse_collection(payload: dict[str, object], collection: str) -> None:
+    """Reverse one ordered identity collection without changing its values."""
+    if collection == "parsers":
+        payload["parsers"].reverse()
+        return
+    docling = next(
+        item for item in payload["parsers"] if item["parser_id"] == "docling"
+    )
+    sources = docling["capability_sources"]
+    if collection == "official_documentation":
+        sources["parser-discovered"][collection].reverse()
+    elif collection == "capabilities":
+        capabilities = sources["parser-discovered"][collection]
+        sources["parser-discovered"][collection] = dict(
+            reversed(tuple(capabilities.items()))
+        )
+    elif collection == "guidance":
+        sources["human-guided"][collection].reverse()
+    elif collection == "measurements":
+        sources["auto-learned"][collection].reverse()
+    else:
+        docling[collection].reverse()
+
+
+def _json_bytes(payload: dict[str, object]) -> bytes:
+    """Encode a test registry without sorting away intentionally supplied order."""
+    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
 def test_duplicate_parser_ids_fail(v3_2_fixture_root) -> None:
@@ -179,3 +246,159 @@ def test_malformed_json_raises_typed_error() -> None:
     """Hide JSON and Unicode implementation errors behind the public error type."""
     with pytest.raises(ParserCapabilityValidationError):
         ParserCapabilityRegistry.from_json_bytes(b"{not-json")
+
+
+@pytest.mark.parametrize(
+    "collection",
+    (
+        "parsers",
+        "official_documentation",
+        "capabilities",
+        "guidance",
+        "measurements",
+        "conflicts",
+    ),
+)
+@pytest.mark.parametrize("reader", ("dict", "json"))
+def test_reversed_ordered_collections_fail_without_normalization(
+    v3_2_fixture_root, collection: str, reader: str
+) -> None:
+    """Reject every reversed sequence through both public deserialization seams."""
+    payload = _canonical_payload(v3_2_fixture_root)
+    ParserCapabilityRegistry.from_dict(payload)
+    _reverse_collection(payload, collection)
+
+    with pytest.raises(ParserCapabilityValidationError, match="ordered"):
+        if reader == "dict":
+            ParserCapabilityRegistry.from_dict(payload)
+        else:
+            ParserCapabilityRegistry.from_json_bytes(_json_bytes(payload))
+
+
+def test_frozen_registry_requires_its_complete_legacy_order_fingerprint(
+    v3_2_fixture_root,
+) -> None:
+    """Admit the untouched fixture but reject a partial imitation of its ordering."""
+    payload = _payload(v3_2_fixture_root)
+    assert ParserCapabilityRegistry.from_dict(payload).registry_version == (
+        "2026-08-06.1"
+    )
+    payload["parsers"][0]["capability_sources"]["parser-discovered"][
+        "official_documentation"
+    ].reverse()
+    with pytest.raises(ParserCapabilityValidationError, match="ordered"):
+        ParserCapabilityRegistry.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("needle", "replacement", "duplicate_key"),
+    (
+        (
+            '"schema":"cognityx.ingest.parser-capability-registry/v3.2"',
+            '"schema":"cognityx.ingest.parser-capability-registry/v3.2",'
+            '"schema":"other"',
+            "schema",
+        ),
+        (
+            '"parser_id":"docling"',
+            '"parser_id":"docling","parser_id":"other"',
+            "parser_id",
+        ),
+        (
+            '"tables":"declared"',
+            '"tables":"declared","tables":"unsupported"',
+            "tables",
+        ),
+        (
+            '"installed":false',
+            '"installed":false,"installed":true',
+            "installed",
+        ),
+        (
+            '"metric":"structure_recall"',
+            '"metric":"structure_recall","metric":"other"',
+            "metric",
+        ),
+    ),
+)
+def test_duplicate_json_keys_fail_at_every_nested_boundary(
+    v3_2_fixture_root, needle: str, replacement: str, duplicate_key: str
+) -> None:
+    """Reject duplicate JSON names before last-key-wins decoding can hide facts."""
+    source = _json_bytes(_canonical_payload(v3_2_fixture_root)).decode("utf-8")
+    assert source.count(needle) >= 1
+    malformed = source.replace(needle, replacement, 1).encode("utf-8")
+    with pytest.raises(
+        ParserCapabilityValidationError,
+        match=rf"Duplicate JSON object key: {duplicate_key}",
+    ):
+        ParserCapabilityRegistry.from_json_bytes(malformed)
+
+
+def test_same_json_field_names_in_separate_objects_remain_valid(
+    v3_2_fixture_root,
+) -> None:
+    """Scope duplicate detection to one object rather than the whole document."""
+    payload = _json_bytes(_canonical_payload(v3_2_fixture_root))
+    registry = ParserCapabilityRegistry.from_json_bytes(payload)
+    assert len(registry.parsers) == 3
+
+
+def test_frozen_runtime_available_fact_matches_derived_probe(
+    v3_2_fixture_root,
+) -> None:
+    """Keep the authoritative false runtime fact when its legacy probe derives false."""
+    registry = ParserCapabilityRegistry.from_dict(_payload(v3_2_fixture_root))
+    assert registry.get("docling").parser_discovered.runtime_probe.runtime_available is False
+
+
+@pytest.mark.parametrize(
+    ("runtime_probe", "runtime_available"),
+    (
+        ({"installed": False}, True),
+        (
+            {
+                "plugin_registered": True,
+                "dependency_importable": True,
+                "installed_version": "1.0",
+                "adapter_module": "example.parser",
+                "adapter_class": "ExampleParser",
+                "reason": None,
+            },
+            False,
+        ),
+        (
+            {
+                "plugin_registered": None,
+                "dependency_importable": True,
+                "installed_version": None,
+                "adapter_module": None,
+                "adapter_class": None,
+                "reason": "Registration was not observed.",
+            },
+            True,
+        ),
+    ),
+)
+def test_runtime_available_conflicts_or_unknown_derivations_fail(
+    v3_2_fixture_root,
+    runtime_probe: dict[str, object],
+    runtime_available: bool,
+) -> None:
+    """Reject legacy runtime facts that contradict or outrun the runtime probe."""
+    payload = _payload(v3_2_fixture_root)
+    discovered = payload["parsers"][0]["capability_sources"]["parser-discovered"]
+    discovered["runtime_probe"] = runtime_probe
+    discovered["capabilities"]["runtime_available"] = runtime_available
+    with pytest.raises(ParserCapabilityConflictError, match="runtime_available"):
+        ParserCapabilityRegistry.from_dict(payload)
+
+
+def test_runtime_available_legacy_field_may_be_absent(v3_2_fixture_root) -> None:
+    """Allow the runtime probe to remain the sole availability source."""
+    payload = _payload(v3_2_fixture_root)
+    capabilities = payload["parsers"][0]["capability_sources"][
+        "parser-discovered"
+    ]["capabilities"]
+    capabilities.pop("runtime_available")
+    assert ParserCapabilityRegistry.from_dict(payload).get("docling")

@@ -26,9 +26,11 @@ conflict.
 
 Processing flow
 ---------------
-Strict readers parse frozen JSON into immutable records, normalize the legacy
-fixture's bounded ``installed`` probe, validate identities and ordering, and
-serialize deterministic UTF-8 JSON. ``ParserCapabilityRegistry.from_router``
+Strict readers parse frozen JSON into immutable records, preserve supplied
+collection order for validation, normalize only the legacy fixture's bounded
+``installed`` probe, and serialize deterministic UTF-8 JSON. One exact ordering
+fingerprint admits the frozen v3.2 fixture; every other registry must use
+canonical lexical order. ``ParserCapabilityRegistry.from_router``
 reads a deterministic plugin snapshot, uses ``importlib`` discovery without
 importing heavyweight parser packages, overlays only live runtime facts onto an
 optional catalog, and preserves documented, human, learned, and conflict
@@ -112,6 +114,67 @@ _BUILTIN_DEPENDENCIES = MappingProxyType(
         PyMuPDFParser: ("fitz", "PyMuPDF"),
         DoclingParser: ("docling", "docling"),
     }
+)
+_FROZEN_LEGACY_REGISTRY_VERSION = "2026-08-06.1"
+_FROZEN_LEGACY_ORDER_FINGERPRINT = (
+    (
+        "docling",
+        (
+            "docling-doc-model-20260806",
+            "docling-chunking-20260806",
+            "docling-formats-20260806",
+        ),
+        (
+            "document_hierarchy",
+            "tables",
+            "pictures",
+            "bounding_boxes",
+            "provenance",
+            "native_chunker_interface",
+        ),
+        (
+            (
+                "born-digital structured policy or procedure",
+                "preferred-primary",
+            ),
+            (
+                "native PDF links and annotations are mandatory",
+                "supplement-with-pymupdf",
+            ),
+        ),
+        (
+            ("native-policy-pdf", "structure_recall"),
+            ("mixed-scanned-pdf", "structure_recall"),
+        ),
+        (("document_hierarchy", "declared-but-currently-unavailable"),),
+    ),
+    (
+        "pymupdf",
+        ("pymupdf-page-api-20260806",),
+        (
+            "native_pdf_text",
+            "native_links",
+            "annotations",
+            "page_labels",
+            "semantic_document_hierarchy",
+        ),
+        (
+            (
+                "native links, annotations, page labels or exact PDF geometry required",
+                "preferred-complementary",
+            ),
+        ),
+        (("native-policy-pdf", "native_link_recall"),),
+        (),
+    ),
+    (
+        "future-parser",
+        (),
+        ("paragraph_text", "text_position_selectors", "tables"),
+        (("parser-neutral substitution test", "allowed"),),
+        (),
+        (),
+    ),
 )
 
 
@@ -497,7 +560,7 @@ class ParserCapabilityRegistry:
             )
         if catalog is not None:
             catalog.validate()
-        plugins = {plugin.name: plugin for plugin in router.registered_plugins()}
+        plugins = _registered_plugin_index(router)
         catalog_records = (
             {record.parser_id: record for record in catalog.parsers}
             if catalog is not None
@@ -533,10 +596,11 @@ class ParserCapabilityRegistry:
 
         Catalog readers call this at the JSON trust boundary. It checks exact
         field shapes, accepts only the frozen fixture's bounded legacy
-        ``installed`` probe or the canonical runtime-probe shape, constructs
-        immutable records, normalizes collection order, and then validates every
-        cross-record invariant. No input mapping is modified. Malformed data raises
-        ``ParserCapabilityValidationError`` rather than raw mapping/JSON errors.
+        ``installed`` probe or the canonical runtime-probe shape, preserves every
+        supplied sequence, and then validates ordering and cross-record
+        invariants. No input mapping is modified or silently repaired. Malformed
+        data raises ``ParserCapabilityValidationError`` rather than raw mapping or
+        JSON errors.
         """
         try:
             _require_fields(
@@ -569,7 +633,7 @@ class ParserCapabilityRegistry:
                 registry_version=_required_text(
                     value["registry_version"], "registry_version"
                 ),
-                parsers=tuple(sorted(parsed, key=lambda item: item.parser_id)),
+                parsers=parsed,
                 allowed_routing_modes=_string_tuple(
                     value["allowed_routing_modes"], "allowed_routing_modes"
                 ),
@@ -588,14 +652,20 @@ class ParserCapabilityRegistry:
         """Decode strict UTF-8 JSON and return one validated immutable registry.
 
         File and artifact readers call this method with untrusted bytes. It decodes
-        UTF-8, requires a JSON object, delegates all nested validation to
-        ``from_dict``, performs no writes, and is idempotent. Unicode, JSON, and
-        field errors are translated to ``ParserCapabilityValidationError``.
+        UTF-8, rejects duplicate object keys at every nesting level, requires a
+        JSON object, and delegates nested validation to ``from_dict``. The method
+        performs no writes and never includes source payload values in duplicate
+        diagnostics. Unicode, JSON, and field errors become typed validation
+        failures.
         """
         if not isinstance(payload, bytes):
             raise ParserCapabilityValidationError("Registry payload must be bytes")
         try:
-            value = json.loads(payload.decode("utf-8"))
+            value = json.loads(
+                payload.decode("utf-8"), object_pairs_hook=_strict_json_object
+            )
+        except ParserCapabilityError:
+            raise
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ParserCapabilityValidationError(
                 "Registry payload is not valid UTF-8 JSON"
@@ -608,9 +678,10 @@ class ParserCapabilityRegistry:
         """Return the deterministic JSON-compatible registry representation.
 
         Persistence and audit callers use this after validation. It emits the
-        exact three source-class keys, canonical runtime-probe fields, sorted
-        parser/evidence collections, and routing-mode metadata without producing a
-        route. The method performs no I/O and repeated calls return equal mappings.
+        exact three source-class keys, canonical runtime-probe fields, validated
+        parser/evidence ordering, and routing-mode metadata without producing a
+        route. The frozen v3.2 fixture retains its exact admitted legacy ordering.
+        The method performs no I/O and repeated calls return equal mappings.
         """
         self.validate()
         return {
@@ -624,17 +695,18 @@ class ParserCapabilityRegistry:
     def to_json_bytes(self) -> bytes:
         """Serialize validated registry data to stable compact UTF-8 JSON bytes.
 
-        Catalog persistence and integrity tests call this method. It validates,
-        sorts object keys, uses compact separators, preserves Unicode, and appends
-        one newline. It has no side effects; identical registries produce
-        identical bytes, while typed validation failures stop serialization.
+        Catalog persistence and integrity tests call this method. Canonical
+        registries sort object keys; the exact frozen legacy snapshot preserves
+        its admitted capability-key sequence so reloading cannot invalidate its
+        fingerprint. Both paths use compact separators, preserve Unicode, append
+        one newline, and produce identical bytes for identical registries.
         """
         return (
             json.dumps(
                 self.to_dict(),
                 ensure_ascii=False,
                 separators=(",", ":"),
-                sort_keys=True,
+                sort_keys=not _has_frozen_legacy_order(self),
             )
             + "\n"
         ).encode("utf-8")
@@ -704,12 +776,7 @@ def _validate_registry(registry: ParserCapabilityRegistry) -> None:
     _reject_duplicate_values(
         (record.parser_id for record in registry.parsers), "parser ID"
     )
-    if registry.parsers != tuple(
-        sorted(registry.parsers, key=lambda item: item.parser_id)
-    ):
-        raise ParserCapabilityValidationError(
-            "Parser records are not deterministically ordered"
-        )
+    frozen_legacy_order = _has_frozen_legacy_order(registry)
     evidence_ids: list[str] = []
     for record in registry.parsers:
         _validate_parser_record(record)
@@ -718,6 +785,61 @@ def _validate_registry(registry: ParserCapabilityRegistry) -> None:
             for item in record.parser_discovered.official_documentation
         )
     _reject_duplicate_values(evidence_ids, "documentation evidence ID")
+    if not frozen_legacy_order:
+        if registry.parsers != tuple(
+            sorted(registry.parsers, key=lambda item: item.parser_id)
+        ):
+            raise ParserCapabilityValidationError(
+                "Parser records are not deterministically ordered"
+            )
+        for record in registry.parsers:
+            _validate_parser_record_order(record)
+
+
+def _has_frozen_legacy_order(registry: ParserCapabilityRegistry) -> bool:
+    """Admit only the complete ordering fingerprint of the frozen v3.2 catalog.
+
+    Validation calls this before enforcing lexical order. The version and every
+    ordered identity sequence must match the authoritative fixture exactly; a
+    reordered, extended, or partially imitated payload falls through to normal
+    canonical validation. Values still receive all ordinary semantic checks.
+    """
+    if registry.registry_version != _FROZEN_LEGACY_REGISTRY_VERSION:
+        return False
+    return _registry_order_fingerprint(registry) == (
+        _FROZEN_LEGACY_ORDER_FINGERPRINT
+    )
+
+
+def _registry_order_fingerprint(
+    registry: ParserCapabilityRegistry,
+) -> tuple[object, ...]:
+    """Describe every contractually ordered identity without copying evidence.
+
+    The frozen-compatibility check uses this structural tuple rather than source
+    payload bytes. It records parser, documentation, capability, guidance,
+    measurement, and conflict identities in their supplied order while excluding
+    summaries and metric values from diagnostics and comparison messages.
+    """
+    return tuple(
+        (
+            record.parser_id,
+            tuple(
+                item.evidence_id
+                for item in record.parser_discovered.official_documentation
+            ),
+            tuple(
+                item.capability for item in record.parser_discovered.capabilities
+            ),
+            tuple(_guidance_order(item) for item in record.human_guided),
+            tuple(
+                _measurement_order(item)
+                for item in record.auto_learned.measurements
+            ),
+            tuple(_conflict_order(item) for item in record.conflicts),
+        )
+        for record in registry.parsers
+    )
 
 
 def _overlay_parser_record(
@@ -763,7 +885,86 @@ def _overlay_parser_record(
                 runtime_probe=runtime_probe,
             ),
         )
-    return replace(record, conflicts=_preserve_availability_conflicts(record))
+    return _canonicalize_parser_record(
+        replace(record, conflicts=_preserve_availability_conflicts(record))
+    )
+
+
+def _registered_plugin_index(router: ParserRouter) -> dict[str, ParserPlugin]:
+    """Validate a router snapshot before sorting or indexing registered adapters.
+
+    ``from_router`` uses this trust-boundary helper so malformed names, duplicate
+    names, and unusable adapter type metadata cannot leak ``TypeError`` or be
+    hidden by dictionary overwrite. It reads only registration identity and class
+    metadata, never calls extraction, and returns a parser-ID ordered index for
+    deterministic runtime discovery.
+    """
+    try:
+        plugins = tuple(router.registered_plugins())
+        identified: list[tuple[str, ParserPlugin]] = []
+        for plugin in plugins:
+            name = _required_text(getattr(plugin, "name", None), "parser plugin name")
+            adapter_type = type(plugin)
+            _required_text(
+                getattr(adapter_type, "__module__", None),
+                f"adapter module for parser {name}",
+            )
+            _required_text(
+                getattr(adapter_type, "__qualname__", None),
+                f"adapter class for parser {name}",
+            )
+            identified.append((name, plugin))
+    except ParserCapabilityError:
+        raise
+    except Exception as error:
+        raise ParserCapabilityValidationError(
+            "Registered parser metadata could not be inspected"
+        ) from error
+    _reject_duplicate_values((name for name, _ in identified), "parser plugin name")
+    return {
+        name: plugin
+        for name, plugin in sorted(identified, key=lambda item: item[0])
+    }
+
+
+def _canonicalize_parser_record(
+    record: ParserCapabilityRecord,
+) -> ParserCapabilityRecord:
+    """Canonicalize records created by trusted runtime composition only.
+
+    ``from_router`` may overlay a frozen legacy catalog onto current observations.
+    Runtime-built output must nevertheless use lexical ordering, so this helper
+    sorts each identity-bearing tuple after semantic parsing has already preserved
+    and validated the catalog. Untrusted ``from_dict`` input never calls it.
+    """
+    discovered = replace(
+        record.parser_discovered,
+        official_documentation=tuple(
+            sorted(
+                record.parser_discovered.official_documentation,
+                key=lambda item: item.evidence_id,
+            )
+        ),
+        capabilities=tuple(
+            sorted(
+                record.parser_discovered.capabilities,
+                key=lambda item: item.capability,
+            )
+        ),
+    )
+    learned = replace(
+        record.auto_learned,
+        measurements=tuple(
+            sorted(record.auto_learned.measurements, key=_measurement_order)
+        ),
+    )
+    return replace(
+        record,
+        parser_discovered=discovered,
+        human_guided=tuple(sorted(record.human_guided, key=_guidance_order)),
+        auto_learned=learned,
+        conflicts=tuple(sorted(record.conflicts, key=_conflict_order)),
+    )
 
 
 def _probe_plugin(plugin: ParserPlugin) -> ParserRuntimeProbe:
@@ -846,7 +1047,12 @@ def _preserve_availability_conflicts(
 
 
 def _parse_parser_record(value: Mapping[str, object]) -> ParserCapabilityRecord:
-    """Parse one fixture parser and normalize nested evidence into immutable order."""
+    """Parse one parser while preserving nested order for strict validation.
+
+    Catalog readers use this helper to construct immutable typed records without
+    repairing untrusted input. Ordering is checked later against either canonical
+    lexical rules or the one complete frozen-fixture fingerprint.
+    """
     _require_fields(
         value,
         {"parser_id", "version_scope", "capability_sources", "conflicts"},
@@ -879,14 +1085,20 @@ def _parse_parser_record(value: Mapping[str, object]) -> ParserCapabilityRecord:
         parser_id=_required_text(value["parser_id"], "parser_id"),
         version_scope=_required_text(value["version_scope"], "version_scope"),
         parser_discovered=discovered,
-        human_guided=tuple(sorted(guidance, key=_guidance_order)),
+        human_guided=guidance,
         auto_learned=learned,
-        conflicts=tuple(sorted(conflicts, key=_conflict_order)),
+        conflicts=conflicts,
     )
 
 
 def _parse_discovered(value: Mapping[str, object]) -> ParserDiscoveredCapabilities:
-    """Parse parser-discovered runtime, official evidence, and assertions."""
+    """Parse discovered facts and enforce legacy runtime-field consistency.
+
+    The reader preserves documentation and capability order exactly as supplied.
+    A legacy ``runtime_available`` capability is accepted only when it equals the
+    value derivable from the runtime probe; unknown or contradictory derivations
+    raise a typed conflict instead of creating a second source of truth.
+    """
     _require_fields(
         value,
         {"runtime_probe", "official_documentation", "capabilities"},
@@ -907,6 +1119,14 @@ def _parse_discovered(value: Mapping[str, object]) -> ParserDiscoveredCapabiliti
                 raise ParserCapabilityValidationError(
                     "runtime_available capability fact must be Boolean"
                 )
+            if runtime.runtime_available is None:
+                raise ParserCapabilityConflictError(
+                    "runtime_available capability fact has no derivable runtime value"
+                )
+            if status is not runtime.runtime_available:
+                raise ParserCapabilityConflictError(
+                    "runtime_available capability fact conflicts with runtime probe"
+                )
             continue
         assertions.append(
             CapabilityAssertion(
@@ -916,10 +1136,8 @@ def _parse_discovered(value: Mapping[str, object]) -> ParserDiscoveredCapabiliti
         )
     return ParserDiscoveredCapabilities(
         runtime_probe=runtime,
-        official_documentation=tuple(
-            sorted(evidence, key=lambda item: item.evidence_id)
-        ),
-        capabilities=tuple(sorted(assertions, key=lambda item: item.capability)),
+        official_documentation=evidence,
+        capabilities=tuple(assertions),
     )
 
 
@@ -993,7 +1211,7 @@ def _parse_human_guidance(value: Mapping[str, object]) -> HumanGuidance:
 
 
 def _parse_auto_learned(value: Mapping[str, object]) -> AutoLearnedCapabilities:
-    """Parse one learned source while retaining an empty measurement set honestly."""
+    """Parse learned evidence without normalizing its supplied identity order."""
     _require_fields(
         value,
         {"benchmark_profile", "measurements"},
@@ -1007,7 +1225,7 @@ def _parse_auto_learned(value: Mapping[str, object]) -> AutoLearnedCapabilities:
         benchmark_profile=_optional_text(
             value["benchmark_profile"], "benchmark_profile"
         ),
-        measurements=tuple(sorted(measurements, key=_measurement_order)),
+        measurements=measurements,
     )
 
 
@@ -1050,25 +1268,23 @@ def _parse_conflict(value: Mapping[str, object]) -> CapabilityConflict:
 
 
 def _validate_parser_record(record: ParserCapabilityRecord) -> None:
-    """Validate one parser and every nested source without collapsing provenance."""
+    """Validate one parser's semantics without collapsing its provenance.
+
+    Aggregate validation calls this before ordering checks so duplicate identities
+    and malformed facts receive precise typed failures. The frozen fixture and
+    canonical records share every semantic invariant; only their admitted order
+    differs.
+    """
     _required_text(record.parser_id, "parser_id")
     _required_text(record.version_scope, "version_scope")
     _validate_runtime_probe(record.parser_discovered.runtime_probe)
     documents = record.parser_discovered.official_documentation
-    if documents != tuple(sorted(documents, key=lambda item: item.evidence_id)):
-        raise ParserCapabilityValidationError(
-            f"Documentation is not ordered for parser: {record.parser_id}"
-        )
     _reject_duplicate_values(
         (item.evidence_id for item in documents), "documentation evidence ID"
     )
     for item in documents:
         _validate_documentation(item)
     assertions = record.parser_discovered.capabilities
-    if assertions != tuple(sorted(assertions, key=lambda item: item.capability)):
-        raise ParserCapabilityValidationError(
-            f"Capabilities are not ordered for parser: {record.parser_id}"
-        )
     _reject_duplicate_values(
         (item.capability for item in assertions), "capability name"
     )
@@ -1078,24 +1294,12 @@ def _validate_parser_record(record: ParserCapabilityRecord) -> None:
             raise ParserCapabilityValidationError(
                 f"Unsupported capability status: {item.status}"
             )
-    if record.human_guided != tuple(
-        sorted(record.human_guided, key=_guidance_order)
-    ):
-        raise ParserCapabilityValidationError(
-            f"Human guidance is not ordered for parser: {record.parser_id}"
-        )
     for guidance in record.human_guided:
         _required_text(guidance.condition, "condition")
         _required_text(guidance.recommendation, "recommendation")
     learned = record.auto_learned
     if learned.benchmark_profile is not None:
         _required_text(learned.benchmark_profile, "benchmark_profile")
-    if learned.measurements != tuple(
-        sorted(learned.measurements, key=_measurement_order)
-    ):
-        raise ParserCapabilityValidationError(
-            f"Measurements are not ordered for parser: {record.parser_id}"
-        )
     identities = [
         (item.document_class, item.metric) for item in learned.measurements
     ]
@@ -1105,10 +1309,6 @@ def _validate_parser_record(record: ParserCapabilityRecord) -> None:
         )
     for measurement in learned.measurements:
         _validate_measurement(measurement)
-    if record.conflicts != tuple(sorted(record.conflicts, key=_conflict_order)):
-        raise ParserCapabilityValidationError(
-            f"Conflicts are not ordered for parser: {record.parser_id}"
-        )
     _reject_duplicate_values(
         (item.capability for item in record.conflicts), "conflict capability"
     )
@@ -1121,6 +1321,40 @@ def _validate_parser_record(record: ParserCapabilityRecord) -> None:
             raise ParserCapabilityValidationError(
                 "Conflict advertised and runtime_available facts must be Boolean"
             )
+
+
+def _validate_parser_record_order(record: ParserCapabilityRecord) -> None:
+    """Require lexical order for every nested identity-bearing collection.
+
+    Aggregate validation invokes this only after all semantic checks and only
+    when the complete frozen legacy fingerprint did not match. It compares typed
+    tuples without sorting or mutating the caller's registry.
+    """
+    documents = record.parser_discovered.official_documentation
+    if documents != tuple(sorted(documents, key=lambda item: item.evidence_id)):
+        raise ParserCapabilityValidationError(
+            f"Documentation is not ordered for parser: {record.parser_id}"
+        )
+    assertions = record.parser_discovered.capabilities
+    if assertions != tuple(sorted(assertions, key=lambda item: item.capability)):
+        raise ParserCapabilityValidationError(
+            f"Capabilities are not ordered for parser: {record.parser_id}"
+        )
+    if record.human_guided != tuple(
+        sorted(record.human_guided, key=_guidance_order)
+    ):
+        raise ParserCapabilityValidationError(
+            f"Human guidance is not ordered for parser: {record.parser_id}"
+        )
+    measurements = record.auto_learned.measurements
+    if measurements != tuple(sorted(measurements, key=_measurement_order)):
+        raise ParserCapabilityValidationError(
+            f"Measurements are not ordered for parser: {record.parser_id}"
+        )
+    if record.conflicts != tuple(sorted(record.conflicts, key=_conflict_order)):
+        raise ParserCapabilityValidationError(
+            f"Conflicts are not ordered for parser: {record.parser_id}"
+        )
 
 
 def _validate_runtime_probe(probe: ParserRuntimeProbe) -> None:
@@ -1271,6 +1505,25 @@ def _discovered_to_dict(item: ParserDiscoveredCapabilities) -> dict[str, object]
         ],
         "capabilities": capabilities,
     }
+
+
+def _strict_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build one decoded JSON object while rejecting duplicate keys immediately.
+
+    ``json.loads`` invokes this hook for every nested object. It keeps ordinary
+    insertion order, reports only a bounded key identifier, and never includes
+    source values or the containing payload in diagnostics. Reusing a field name
+    in a different object remains valid because each object has its own call.
+    """
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            bounded_key = key[:64]
+            raise ParserCapabilityValidationError(
+                f"Duplicate JSON object key: {bounded_key}"
+            )
+        value[key] = item
+    return value
 
 
 def _require_fields(

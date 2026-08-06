@@ -414,7 +414,18 @@ class ParserRouter:
         policy: ExtractionPolicy | None = None,
         selector: ParserSelector | None = None,
     ) -> None:
-        available = plugins or (PyPdfExtractor(), PyMuPDFParser(), DoclingParser())
+        """Snapshot adapters for introspection while preserving routing behavior.
+
+        The composition root supplies lightweight parser adapters and an optional
+        execution policy. The immutable snapshot retains every supplied adapter so
+        capability discovery can validate identities before dictionary indexing
+        hides duplicates; the existing mapping remains the execution seam used by
+        normal ingest callers. Construction does not execute a parser.
+        """
+        available = tuple(
+            plugins or (PyPdfExtractor(), PyMuPDFParser(), DoclingParser())
+        )
+        self._registered_plugin_snapshot = available
         self._plugins = {item.name: item for item in available}
         self.policy = policy or ExtractionPolicy()
         self.selector = selector
@@ -428,7 +439,16 @@ class ParserRouter:
         exposing neither the mutable dictionary nor a mutation API. Repeated
         calls are side-effect free and deterministically ordered.
         """
-        return tuple(self._plugins[name] for name in sorted(self._plugins))
+        snapshot = self._registered_plugin_snapshot
+        names = tuple(getattr(plugin, "name", None) for plugin in snapshot)
+        if all(isinstance(name, str) for name in names):
+            return tuple(
+                plugin
+                for _, plugin in sorted(
+                    zip(names, snapshot, strict=True), key=lambda item: item[0]
+                )
+            )
+        return snapshot
 
     def extract_document(self, path: Path) -> ExtractionResult:
         candidates = tuple(self.policy.backends)

@@ -111,6 +111,13 @@ It is not a routing recommendation.
 immutable tuple of registered plugins in parser-ID order. It never reads the
 router's mutable private dictionary.
 
+The router keeps a separate registration snapshot so discovery sees every
+adapter before a name-based dictionary could hide duplicates. Discovery checks
+that each plugin name is non-empty, already trimmed text and that its adapter
+class has usable module and class names. A malformed plugin produces a typed
+parser-capability validation error. Discovery still does not call that plugin's
+`extract_document()` method.
+
 For the built-in adapters, discovery uses static metadata:
 
 | Parser ID | Import module | Distribution |
@@ -168,14 +175,39 @@ cognityx.ingest.parser-capability-registry/v3.2
 ```
 
 Records, official evidence, assertions, guidance, measurements, and conflicts
-use stable ordering. JSON keys are sorted, compact separators are used, Unicode
-is preserved, and one newline terminates the artifact. Equivalent registries
-therefore produce identical UTF-8 bytes.
+use stable ordering. Canonical registry JSON keys are sorted; the exact frozen
+legacy snapshot retains its admitted key sequence so a serialized copy reloads
+with the same fingerprint. Compact separators are used, Unicode is preserved,
+and one newline terminates the artifact. Equivalent registries therefore produce
+identical UTF-8 bytes.
+
+Readers preserve the supplied order and validate it; they do not sort malformed
+input into an acceptable shape. Normal registries require lexical order for the
+parser list and every nested identity-bearing collection. The frozen fixture at
+registry version `2026-08-06.1` predates that lexical convention. It is accepted
+only when its parser, documentation, capability, guidance, measurement, and
+conflict identities all match the exact authoritative ordering fingerprint. Any
+partial imitation, extension, or reordering uses the normal lexical rule and
+fails validation. Runtime-built overlays always emit canonical lexical order.
+
+JSON object names must also be unique within each object. For example, one
+parser object cannot contain two `parser_id` fields and one capability object
+cannot contain two `tables` fields. Duplicate keys are rejected before JSON's
+usual last-value-wins behavior could erase the first fact. The diagnostic names
+only the bounded duplicate key, not source values or the surrounding payload.
+Using `parser_id` once in each of several separate parser objects remains valid.
 
 Strict readers reject unsupported field shapes, duplicate identities, invalid
 statuses, malformed runtime versions, non-finite values, negative sample counts,
 and invalid ordering. Public APIs raise parser-capability errors rather than raw
 JSON, mapping, import, or package-metadata exceptions.
+
+The frozen catalog may carry the older `runtime_available` capability field.
+That field is not an independent assertion: it must equal the availability
+derived from the runtime probe. A known false probe paired with `true`, a known
+true probe paired with `false`, or an incomplete probe paired with either value
+is rejected as a conflict. Omitting the older field is valid, and canonical
+serialization emits the derived value only when the probe can determine it.
 
 The initial assertion statuses are `available`, `declared`,
 `declared-when-available`, `unsupported`, `not-declared`, `unavailable`, and

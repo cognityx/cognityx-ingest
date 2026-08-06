@@ -168,6 +168,8 @@ def test_parser_capability_module_has_substantial_architectural_docstring() -> N
         "auto-learned",
         "runtime",
         "official documentation",
+        "preserve supplied",
+        "frozen v3.2 fixture",
         "t04",
     ):
         assert concept in normalized
@@ -209,6 +211,10 @@ def test_named_parser_capability_algorithms_have_invariant_documentation() -> No
     """Pin docs to runtime discovery, overlay, conflicts, source classes, and JSON."""
     required = {
         "from_json_bytes",
+        "_strict_json_object",
+        "_registered_plugin_index",
+        "_registry_order_fingerprint",
+        "_validate_parser_record_order",
         "_overlay_parser_record",
         "_probe_plugin",
         "_preserve_availability_conflicts",
