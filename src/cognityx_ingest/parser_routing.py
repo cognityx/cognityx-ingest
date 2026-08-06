@@ -29,11 +29,28 @@ does not call a parser.
 
 An accepted plan contains only invocations that passed every hard check. A
 rejected plan contains no executable selections and records bounded reason IDs
-for audit. Malformed provider fields are quarantined rather than copied into a
-valid-looking artifact. Deterministic rules remain ordered policy records, hybrid
-selection order remains controlled by the trusted boundary, and LLM-directed
-order remains a visible provider decision. In every mode, registry runtime facts
-and capability statuses are evaluated by the same code path.
+for audit. Deterministic planning keeps rule-matched, live-eligible work under the
+separate name ``candidate_invocations``; candidates become selected only after
+the whole plan passes. Proposal-backed modes retain rejected candidates inside
+their untrusted proposal. This naming prevents a later consumer from treating a
+rejected run as authorized work.
+
+Every invocation purpose is attributed to that invocation's own parser. A
+Docling purpose cannot be justified by a PyMuPDF capability elsewhere in the
+plan. Each required input capability must appear as an invocation purpose backed
+by that same parser's live T03 assertion. Malformed provider fields are
+quarantined rather than copied into a valid-looking artifact. Deterministic rules
+remain ordered policy records, hybrid selection order remains controlled by the
+trusted boundary, and LLM-directed order remains a visible provider decision.
+
+Frozen fixtures are read through exact compact compatibility shapes. New
+service-built plans use complete canonical shapes that persist input facts, the
+hard boundary, registry version, full validation, and proposal or rule evidence.
+They also retain ``registry_sha256``, a SHA-256 digest over the exact canonical
+registry bytes. The version helps people identify a release; the digest lets
+audit and execution consumers identify the exact evidence snapshot. Persisting
+facts and boundary prevents a reloaded decision from losing why it was accepted
+or rejected. The plan does not embed or mutate the registry itself.
 
 The optional legacy adapter is a final representation check, not execution. It
 can describe a purpose-free document plan with existing fixed or compare policy
@@ -71,6 +88,7 @@ not new ``ExtractionPolicy`` values.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 import json
 import math
 import re
@@ -376,8 +394,10 @@ class RoutingValidationResult:
     Used by:
         ``RoutingPlan``, compatibility adapters, and future execution guards.
     Invariants:
-        Every flag is Boolean, acceptance equals the conjunction of checks, and
-        rejection reasons are deterministic identifiers rather than payload text.
+        Every flag is Boolean, acceptance equals the conjunction of checks,
+        capability validity includes parser-specific purpose attribution and
+        required-purpose coverage, and rejection reasons are deterministic
+        identifiers rather than payload text.
     Lifecycle/persistence:
         Frozen results persist with accepted and rejected plans.
     Thread-safety assumptions:
@@ -493,17 +513,20 @@ class RoutingPlan:
     """Represent one validated mode-specific parser invocation plan.
 
     Responsibility:
-        Aggregate selected invocations, validation, registry binding, proposal
-        audit facts, deterministic rules, and frozen wire-shape compatibility.
+        Aggregate candidates, selected invocations, validation, exact registry
+        binding, input facts, hard boundary, proposal audit facts, deterministic
+        rules, and frozen wire-shape compatibility.
     Constructed by:
         ``ParserRoutingService``, ``from_dict``, or ``from_json_bytes``.
     Used by:
         Audit readers, future execution orchestration, and compatibility adapters.
     Invariants:
         Schema and mode are exact, mode-specific fields are consistent, ordering
-        is deterministic, and rejected plans cannot become legacy policies.
+        is deterministic, rejected plans select nothing, and canonical plans
+        retain complete context plus the exact registry SHA-256.
     Lifecycle/persistence:
-        Frozen plans serialize deterministically and perform no storage writes.
+        Compact fixtures reload unchanged; canonical plans serialize complete
+        decision context deterministically and perform no storage writes.
     Thread-safety assumptions:
         All nested records are immutable; read and serialization methods use local
         values only.
@@ -519,6 +542,8 @@ class RoutingPlan:
     boundary: RoutingBoundary | None = None
     proposal: RoutingProposal | None = None
     rules_evaluated: tuple[str, ...] = ()
+    registry_sha256: str | None = None
+    candidate_invocations: tuple[ParserInvocation, ...] = ()
     _compact_fixture: bool = field(default=False, repr=False, compare=False)
 
     @classmethod
@@ -744,6 +769,7 @@ class ParserRoutingService:
             ),
             validation_result=validation,
             registry_version=request.registry.registry_version,
+            registry_sha256=_registry_sha256(request.registry),
             llm_used=True,
             input_facts=request.input_facts,
             boundary=request.boundary,
@@ -819,16 +845,17 @@ def _build_deterministic_plan(request: ParserRoutingRequest) -> RoutingPlan:
 
     Deterministic service calls use request rules or the reviewed defaults. A rule
     matches explicit media, ratio, and required-capability fields; no human prose
-    or model is interpreted. Matched rule IDs and invocations retain evaluation
-    order, then the common validator records unavailable or unresolved
-    requirements instead of falling back to a provider.
+    or model is interpreted. Matched eligible invocations remain candidates in
+    evaluation order. The common validator promotes all candidates to selected
+    only when the complete plan passes; rejection selects none while retaining
+    candidate audit evidence and never falling back to a provider.
     """
     rules = (
         _DEFAULT_DETERMINISTIC_RULES
         if request.deterministic_rules is None
         else request.deterministic_rules
     )
-    selected: list[ParserInvocation] = []
+    candidates: list[ParserInvocation] = []
     evaluated: list[str] = []
     for rule in rules:
         if not _rule_matches(rule, request.input_facts):
@@ -840,21 +867,24 @@ def _build_deterministic_plan(request: ParserRoutingRequest) -> RoutingPlan:
             purpose=rule.purpose,
         )
         if _deterministic_invocation_is_eligible(request, rule, invocation) and (
-            invocation not in selected
+            invocation not in candidates
         ):
-            selected.append(invocation)
-    proposal = RoutingProposal(invocations=tuple(selected))
+            candidates.append(invocation)
+    candidate_invocations = tuple(candidates)
+    proposal = RoutingProposal(invocations=candidate_invocations)
     validation = _validate_proposal(request, proposal)
     plan = RoutingPlan(
         schema=ROUTING_PLAN_SCHEMA,
         mode="deterministic",
-        selected_invocations=tuple(selected),
+        selected_invocations=(candidate_invocations if validation.accepted else ()),
         validation_result=validation,
         registry_version=request.registry.registry_version,
+        registry_sha256=_registry_sha256(request.registry),
         llm_used=False,
         input_facts=request.input_facts,
         boundary=request.boundary,
         rules_evaluated=tuple(evaluated),
+        candidate_invocations=candidate_invocations,
     )
     plan.validate()
     return plan
@@ -883,16 +913,11 @@ def _deterministic_invocation_is_eligible(
         return False
     if record.parser_discovered.runtime_probe.runtime_available is not True:
         return False
-    relevant = tuple(
-        requirement
-        for requirement in rule.trigger_capabilities
-        if requirement in request.input_facts.required_capabilities
-    )
     return all(
         _parser_is_capability_eligible(
             record, _REQUIREMENT_TO_CAPABILITY[requirement]
         )
-        for requirement in relevant
+        for requirement in invocation.purpose
     )
 
 
@@ -1171,9 +1196,11 @@ def _validate_proposal(
     """Apply schema, boundary, registry, runtime, and capability checks in order.
 
     All three modes use this deterministic algorithm after invocation selection.
-    It treats proposals as untrusted, accumulates bounded reasons in fixed stage
-    order, and never mutates registry evidence or resolves conflicts. No provider,
-    parser, stop-condition execution, or output fusion occurs here.
+    It treats proposals as untrusted, attributes every purpose to the same
+    invocation's parser, requires explicit purpose coverage for every input need,
+    and accumulates bounded reasons in fixed stage order. It never mutates
+    registry evidence or resolves conflicts. No provider, parser, stop-condition
+    execution, or output fusion occurs here.
     """
     reasons: list[str] = []
     schema_valid = _validate_proposal_schema(request.mode, proposal, reasons)
@@ -1242,13 +1269,23 @@ def _validate_proposal(
     if not runtime_valid:
         reasons.append("parser-not-runtime-available")
 
-    capability_valid = _requirements_satisfied(
-        request.input_facts.required_capabilities,
-        proposal.invocations,
+    valid_invocations = tuple(
+        item for item in proposal.invocations if isinstance(item, ParserInvocation)
+    )
+    invocation_purposes_valid = _invocation_purposes_supported(
+        valid_invocations,
         records,
     )
-    if not capability_valid:
-        reasons.append("required-capability-unresolved")
+    if not invocation_purposes_valid:
+        reasons.append("invocation-purpose-unsupported")
+    required_purposes_valid = _required_purposes_satisfied(
+        request.input_facts.required_capabilities,
+        valid_invocations,
+        records,
+    )
+    if not required_purposes_valid:
+        reasons.append("required-purpose-unresolved")
+    capability_valid = invocation_purposes_valid and required_purposes_valid
 
     accepted = all(
         (
@@ -1329,27 +1366,57 @@ def _validate_budget(
     return len(invocations) <= max_parser_runs
 
 
-def _requirements_satisfied(
+def _invocation_purposes_supported(
+    invocations: tuple[ParserInvocation, ...],
+    records: Mapping[str, ParserCapabilityRecord],
+) -> bool:
+    """Verify every declared purpose against that invocation's own parser.
+
+    Common live-plan validation uses this per-invocation attribution check after
+    registry lookup. Each purpose maps through reviewed routing policy and must
+    be supported by the same runtime-available parser record; capability support
+    from a different selected parser cannot rescue a swapped or fabricated
+    purpose. Empty purposes are allowed only when request coverage does not need
+    them, which the separate required-purpose check decides.
+    """
+    for invocation in invocations:
+        record = records.get(invocation.parser_id)
+        if record is None:
+            if invocation.purpose:
+                return False
+            continue
+        for purpose in invocation.purpose:
+            capability = _REQUIREMENT_TO_CAPABILITY.get(purpose)
+            if capability is None or not _parser_is_capability_eligible(
+                record, capability
+            ):
+                return False
+    return True
+
+
+def _required_purposes_satisfied(
     requirements: tuple[str, ...],
     invocations: tuple[ParserInvocation, ...],
     records: Mapping[str, ParserCapabilityRecord],
 ) -> bool:
-    """Check explicit requirement mappings against original T03 assertions.
+    """Require each input need to be attributed to an eligible invocation.
 
-    Deterministic validation calls this after registry/runtime lookup. Every
-    requested routing term maps through the reviewed vocabulary and must have at
-    least one selected runtime-available parser assertion with an eligible status.
-    Unsupported, not-declared, unavailable, and unknown remain unsatisfied;
-    registry records and conflicts are never rewritten.
+    Common live-plan validation calls this after parser-specific purpose checks.
+    Every requested routing term must appear in at least one invocation purpose,
+    and that same invocation's runtime-available parser must carry an eligible
+    T03 assertion. Empty-purpose proposals therefore cannot satisfy a nonempty
+    request, and set-wide capability support cannot hide incorrect attribution.
+    Registry records and conflicts remain unchanged.
     """
-    selected_ids = {item.parser_id for item in invocations}
     for requirement in requirements:
         capability = _REQUIREMENT_TO_CAPABILITY.get(requirement)
         if capability is None:
             return False
         satisfied = False
-        for parser_id in selected_ids:
-            record = records.get(parser_id)
+        for invocation in invocations:
+            if requirement not in invocation.purpose:
+                continue
+            record = records.get(invocation.parser_id)
             if record is None or not _parser_is_capability_eligible(
                 record, capability
             ):
@@ -1380,6 +1447,18 @@ def _parser_is_capability_eligible(
     )
 
 
+def _registry_sha256(registry: ParserCapabilityRegistry) -> str:
+    """Bind a live routing decision to the exact deterministic T03 snapshot.
+
+    Service builders call this after registry validation. SHA-256 is computed
+    over the registry's canonical ``to_json_bytes`` output, so consumers can
+    distinguish two evidence snapshots that happen to share a human-readable
+    version. The helper performs no persistence, network access, or registry
+    mutation and returns a lowercase hexadecimal digest.
+    """
+    return hashlib.sha256(registry.to_json_bytes()).hexdigest()
+
+
 def _validate_plan(plan: RoutingPlan) -> None:
     """Validate one typed aggregate and its exact mode-specific combination.
 
@@ -1399,6 +1478,8 @@ def _validate_plan(plan: RoutingPlan) -> None:
         raise ParserRoutingValidationError("llm_used must be Boolean")
     if plan.registry_version is not None:
         _bounded_identifier(plan.registry_version, "registry_version")
+    if plan.registry_sha256 is not None:
+        _validate_sha256(plan.registry_sha256, "registry_sha256")
     _validate_validation_result(plan.validation_result)
     for invocation in plan.selected_invocations:
         _validate_invocation(invocation)
@@ -1409,9 +1490,29 @@ def _validate_plan(plan: RoutingPlan) -> None:
         ),
         "parser invocation",
     )
+    for invocation in plan.candidate_invocations:
+        _validate_invocation(invocation)
+    _reject_duplicates(
+        (
+            (invocation.parser_id, invocation.scope)
+            for invocation in plan.candidate_invocations
+        ),
+        "candidate parser invocation",
+    )
+    if not plan.validation_result.accepted and plan.selected_invocations:
+        raise ParserRoutingValidationError(
+            "Rejected routing plan cannot contain selected invocations"
+        )
     if plan.mode in {"deterministic", "hybrid"}:
         parser_ids = tuple(item.parser_id for item in plan.selected_invocations)
         _require_lexical_order(parser_ids, f"{plan.mode} invocation parser IDs")
+    if plan.mode == "deterministic":
+        candidate_ids = tuple(
+            item.parser_id for item in plan.candidate_invocations
+        )
+        _require_lexical_order(
+            candidate_ids, "deterministic candidate invocation parser IDs"
+        )
     if plan.input_facts is not None:
         _validate_input_facts(plan.input_facts)
     if plan.boundary is not None:
@@ -1436,10 +1537,37 @@ def _validate_plan(plan: RoutingPlan) -> None:
             raise ParserRoutingValidationError(
                 "Deterministic plan has invalid mode-specific fields"
             )
+        if not plan._compact_fixture:
+            if (
+                plan.boundary is None
+                or plan.registry_version is None
+                or plan.registry_sha256 is None
+            ):
+                raise ParserRoutingValidationError(
+                    "Canonical deterministic plan lacks validation context"
+                )
+            if plan.validation_result.accepted and (
+                plan.selected_invocations != plan.candidate_invocations
+            ):
+                raise ParserRoutingValidationError(
+                    "Accepted deterministic selections differ from candidates"
+                )
     elif plan.mode == "hybrid":
         if plan.boundary is None or plan.proposal is None or not plan.llm_used:
             raise ParserRoutingValidationError(
                 "Hybrid plan has invalid mode-specific fields"
+            )
+        if plan.candidate_invocations:
+            raise ParserRoutingValidationError(
+                "Hybrid plan must retain candidates in its proposal"
+            )
+        if not plan._compact_fixture and (
+            plan.input_facts is None
+            or plan.registry_version is None
+            or plan.registry_sha256 is None
+        ):
+            raise ParserRoutingValidationError(
+                "Canonical hybrid plan lacks validation context"
             )
         expected_ids = tuple(
             parser_id
@@ -1460,6 +1588,18 @@ def _validate_plan(plan: RoutingPlan) -> None:
         ):
             raise ParserRoutingValidationError(
                 "LLM-directed plan has invalid mode-specific fields"
+            )
+        if plan.candidate_invocations:
+            raise ParserRoutingValidationError(
+                "LLM-directed plan must retain candidates in its proposal"
+            )
+        if not plan._compact_fixture and (
+            plan.input_facts is None
+            or plan.boundary is None
+            or plan.registry_sha256 is None
+        ):
+            raise ParserRoutingValidationError(
+                "Canonical LLM-directed plan lacks validation context"
             )
 
 
@@ -1595,10 +1735,12 @@ def _parse_deterministic_plan(value: Mapping[str, object]) -> RoutingPlan:
     """Parse the frozen deterministic shape or its canonical runtime extension.
 
     ``RoutingPlan.from_dict`` delegates here after reading mode. Required fixture
-    fields remain unchanged; optional registry and rich validation fields support
-    service-built persistence. Every array retains supplied order.
+    fields remain unchanged. A service-built record must instead contain every
+    canonical context field, including boundary, candidates, validation, version,
+    and exact registry digest. Partial extensions fail and every array retains
+    supplied order.
     """
-    required = {
+    compact_fields = {
         "schema",
         "mode",
         "input_facts",
@@ -1606,8 +1748,22 @@ def _parse_deterministic_plan(value: Mapping[str, object]) -> RoutingPlan:
         "selected_invocations",
         "llm_used",
     }
-    optional = {"registry_version", "validation_result"}
-    _require_fields(value, required, optional, "deterministic routing plan")
+    canonical_fields = compact_fields | {
+        "candidate_invocations",
+        "deterministic_boundary",
+        "registry_sha256",
+        "registry_version",
+        "validation_result",
+    }
+    keys = set(value)
+    if keys == compact_fields:
+        compact = True
+    elif keys == canonical_fields:
+        compact = False
+    else:
+        raise ParserRoutingValidationError(
+            "Deterministic routing plan fields must use an exact compact or canonical shape"
+        )
     facts = _parse_input_facts(_mapping(value["input_facts"], "input_facts"))
     invocations = tuple(
         _parse_invocation(item, purpose_required=True)
@@ -1615,12 +1771,21 @@ def _parse_deterministic_plan(value: Mapping[str, object]) -> RoutingPlan:
             value["selected_invocations"], "selected_invocations"
         )
     )
-    compact = "validation_result" not in value
     validation = (
         _accepted_validation_result()
         if compact
         else _parse_validation_result(
             _mapping(value["validation_result"], "validation_result")
+        )
+    )
+    candidates = (
+        ()
+        if compact
+        else tuple(
+            _parse_invocation(item, purpose_required=True)
+            for item in _mapping_sequence(
+                value["candidate_invocations"], "candidate_invocations"
+            )
         )
     )
     return RoutingPlan(
@@ -1631,11 +1796,27 @@ def _parse_deterministic_plan(value: Mapping[str, object]) -> RoutingPlan:
         registry_version=_optional_text(
             value.get("registry_version"), "registry_version"
         ),
+        registry_sha256=(
+            None
+            if compact
+            else _validate_sha256(value["registry_sha256"], "registry_sha256")
+        ),
         llm_used=_required_bool(value["llm_used"], "llm_used"),
         input_facts=facts,
+        boundary=(
+            None
+            if compact
+            else _parse_boundary(
+                _mapping(
+                    value["deterministic_boundary"],
+                    "deterministic_boundary",
+                )
+            )
+        ),
         rules_evaluated=_string_tuple(
             value["rules_evaluated"], "rules_evaluated"
         ),
+        candidate_invocations=candidates,
         _compact_fixture=compact,
     )
 
@@ -1644,22 +1825,37 @@ def _parse_hybrid_plan(value: Mapping[str, object]) -> RoutingPlan:
     """Parse the frozen hybrid boundary/proposal/result shape without repair.
 
     The compact fixture stores selected parser IDs and a result string. Canonical
-    service output may store full proposal and validation metadata under the same
-    field names. Both forms become shared immutable records and retain list order.
+    service output must additionally store input facts, registry version, exact
+    registry digest, and full validation metadata. Partial forms are rejected;
+    both exact forms become shared immutable records and retain list order.
     """
-    required = {
+    compact_fields = {
         "schema",
         "mode",
         "deterministic_boundary",
         "frozen_llm_proposal",
         "validation_result",
     }
-    _require_fields(value, required, {"registry_version"}, "hybrid routing plan")
+    canonical_fields = compact_fields | {
+        "input_facts",
+        "registry_sha256",
+        "registry_version",
+    }
+    keys = set(value)
+    compact = keys == compact_fields and isinstance(
+        value.get("validation_result"), str
+    )
+    canonical = keys == canonical_fields and isinstance(
+        value.get("validation_result"), Mapping
+    )
+    if not compact and not canonical:
+        raise ParserRoutingValidationError(
+            "Hybrid routing plan fields must use an exact compact or canonical shape"
+        )
     boundary = _parse_boundary(
         _mapping(value["deterministic_boundary"], "deterministic_boundary")
     )
     proposal_value = _mapping(value["frozen_llm_proposal"], "frozen_llm_proposal")
-    compact = isinstance(value["validation_result"], str)
     proposal = _parse_hybrid_proposal(proposal_value, compact=compact)
     if compact:
         validation = _parse_compact_result(value["validation_result"])
@@ -1675,7 +1871,19 @@ def _parse_hybrid_plan(value: Mapping[str, object]) -> RoutingPlan:
         registry_version=_optional_text(
             value.get("registry_version"), "registry_version"
         ),
+        registry_sha256=(
+            None
+            if compact
+            else _validate_sha256(value["registry_sha256"], "registry_sha256")
+        ),
         llm_used=True,
+        input_facts=(
+            None
+            if compact
+            else _parse_input_facts(
+                _mapping(value["input_facts"], "input_facts")
+            )
+        ),
         boundary=boundary,
         proposal=proposal,
         _compact_fixture=compact,
@@ -1686,10 +1894,11 @@ def _parse_llm_directed_plan(value: Mapping[str, object]) -> RoutingPlan:
     """Parse the frozen registry-bound LLM proposal and deterministic decision.
 
     The fixture's four validation flags are expanded into the shared result while
-    canonical plans may persist every result field. Proposal invocation order is
-    preserved because LLM-directed order is an auditable provider decision.
+    canonical plans must persist every result field plus input facts, hard
+    boundary, and exact registry digest. Proposal invocation order is preserved
+    because LLM-directed order is an auditable provider decision.
     """
-    required = {
+    compact_fields = {
         "schema",
         "mode",
         "registry_version",
@@ -1697,22 +1906,39 @@ def _parse_llm_directed_plan(value: Mapping[str, object]) -> RoutingPlan:
         "deterministic_validation",
         "result",
     }
-    _require_fields(value, required, set(), "LLM-directed routing plan")
+    canonical_fields = compact_fields | {
+        "deterministic_boundary",
+        "input_facts",
+        "registry_sha256",
+    }
+    keys = set(value)
+    if keys == compact_fields:
+        compact_shape = True
+    elif keys == canonical_fields:
+        compact_shape = False
+    else:
+        raise ParserRoutingValidationError(
+            "LLM-directed routing plan fields must use an exact compact or canonical shape"
+        )
     proposal = _parse_llm_proposal(
         _mapping(value["frozen_llm_proposal"], "frozen_llm_proposal")
     )
     validation_mapping = _mapping(
         value["deterministic_validation"], "deterministic_validation"
     )
-    compact = set(validation_mapping) == {
+    compact_validation = set(validation_mapping) == {
         "allowlist_valid",
         "budget_valid",
         "security_valid",
         "schema_valid",
     }
+    if compact_shape is not compact_validation:
+        raise ParserRoutingValidationError(
+            "LLM-directed validation does not match its persisted plan shape"
+        )
     validation = (
         _parse_compact_validation(validation_mapping, value["result"])
-        if compact
+        if compact_shape
         else _parse_validation_result(validation_mapping)
     )
     accepted_text = _required_text(value["result"], "result")
@@ -1730,9 +1956,31 @@ def _parse_llm_directed_plan(value: Mapping[str, object]) -> RoutingPlan:
         registry_version=_required_text(
             value["registry_version"], "registry_version"
         ),
+        registry_sha256=(
+            None
+            if compact_shape
+            else _validate_sha256(value["registry_sha256"], "registry_sha256")
+        ),
         llm_used=True,
+        input_facts=(
+            None
+            if compact_shape
+            else _parse_input_facts(
+                _mapping(value["input_facts"], "input_facts")
+            )
+        ),
+        boundary=(
+            None
+            if compact_shape
+            else _parse_boundary(
+                _mapping(
+                    value["deterministic_boundary"],
+                    "deterministic_boundary",
+                )
+            )
+        ),
         proposal=proposal,
-        _compact_fixture=compact,
+        _compact_fixture=compact_shape,
     )
 
 
@@ -2035,8 +2283,23 @@ def _deterministic_plan_to_dict(plan: RoutingPlan) -> dict[str, object]:
         "llm_used": plan.llm_used,
     }
     if not plan._compact_fixture:
-        if plan.registry_version is not None:
-            result["registry_version"] = plan.registry_version
+        if (
+            plan.boundary is None
+            or plan.registry_version is None
+            or plan.registry_sha256 is None
+        ):
+            raise ParserRoutingValidationError(
+                "Canonical deterministic plan lacks validation context"
+            )
+        result["candidate_invocations"] = [
+            _invocation_to_dict(item, include_empty_purpose=True)
+            for item in plan.candidate_invocations
+        ]
+        result["deterministic_boundary"] = _boundary_to_dict(
+            plan.boundary, compact=False
+        )
+        result["registry_sha256"] = plan.registry_sha256
+        result["registry_version"] = plan.registry_version
         result["validation_result"] = _validation_result_to_dict(
             plan.validation_result
         )
@@ -2062,7 +2325,17 @@ def _hybrid_plan_to_dict(plan: RoutingPlan) -> dict[str, object]:
         if plan._compact_fixture
         else _validation_result_to_dict(plan.validation_result),
     }
-    if not plan._compact_fixture and plan.registry_version is not None:
+    if not plan._compact_fixture:
+        if (
+            plan.input_facts is None
+            or plan.registry_version is None
+            or plan.registry_sha256 is None
+        ):
+            raise ParserRoutingValidationError(
+                "Canonical hybrid plan lacks validation context"
+            )
+        result["input_facts"] = _input_facts_to_dict(plan.input_facts)
+        result["registry_sha256"] = plan.registry_sha256
         result["registry_version"] = plan.registry_version
     return result
 
@@ -2083,7 +2356,7 @@ def _llm_directed_plan_to_dict(plan: RoutingPlan) -> dict[str, object]:
         }
     else:
         validation = _validation_result_to_dict(plan.validation_result)
-    return {
+    result = {
         "schema": plan.schema,
         "mode": plan.mode,
         "registry_version": plan.registry_version,
@@ -2091,6 +2364,21 @@ def _llm_directed_plan_to_dict(plan: RoutingPlan) -> dict[str, object]:
         "deterministic_validation": validation,
         "result": "accepted" if plan.validation_result.accepted else "rejected",
     }
+    if not plan._compact_fixture:
+        if (
+            plan.input_facts is None
+            or plan.boundary is None
+            or plan.registry_sha256 is None
+        ):
+            raise ParserRoutingValidationError(
+                "Canonical LLM-directed plan lacks validation context"
+            )
+        result["deterministic_boundary"] = _boundary_to_dict(
+            plan.boundary, compact=False
+        )
+        result["input_facts"] = _input_facts_to_dict(plan.input_facts)
+        result["registry_sha256"] = plan.registry_sha256
+    return result
 
 
 def _input_facts_to_dict(facts: RoutingInputFacts) -> dict[str, object]:
@@ -2322,6 +2610,16 @@ def _bounded_identifier(value: object, context: str) -> str:
     text = _required_text(value, context)
     if len(text) > 128 or any(item in text for item in ("/", "\\", "\n", "\r")):
         raise ParserRoutingValidationError(f"{context} is malformed")
+    return text
+
+
+def _validate_sha256(value: object, context: str) -> str:
+    """Require one lowercase SHA-256 digest without accepting normalization."""
+    text = _required_text(value, context)
+    if re.fullmatch(r"[0-9a-f]{64}", text) is None:
+        raise ParserRoutingValidationError(
+            f"{context} must be a lowercase SHA-256 digest"
+        )
     return text
 
 

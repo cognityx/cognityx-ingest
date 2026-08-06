@@ -61,7 +61,7 @@ def test_one_lossless_document_invocation_maps_to_fixed(
     plan = _plan(
         available_routing_registry,
         boundary,
-        ("native_links",),
+        (),
         (ParserInvocation(parser_id="pymupdf", scope="document"),),
     )
     assert plan.to_extraction_policy() == ExtractionPolicy(
@@ -76,7 +76,7 @@ def test_multiple_lossless_document_invocations_map_to_compare(
     plan = _plan(
         available_routing_registry,
         routing_boundary,
-        ("hierarchy", "native_links"),
+        (),
         (
             ParserInvocation(parser_id="docling", scope="document"),
             ParserInvocation(parser_id="pymupdf", scope="document"),
@@ -112,7 +112,9 @@ def test_page_scope_refuses_lossy_legacy_conversion(
         ("native_links",),
         (
             ParserInvocation(
-                parser_id="pymupdf", scope="pages-with-native-links"
+                parser_id="pymupdf",
+                scope="pages-with-native-links",
+                purpose=("native_links",),
             ),
         ),
         mode="llm-directed",
@@ -131,8 +133,16 @@ def test_stop_condition_refuses_lossy_legacy_conversion(
         routing_boundary,
         ("hierarchy", "native_links"),
         (
-            ParserInvocation(parser_id="docling", scope="document"),
-            ParserInvocation(parser_id="pymupdf", scope="document"),
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy",),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("native_links",),
+            ),
         ),
         mode="llm-directed",
         stop="all-required-capabilities-observed-or-explicitly-unresolved",

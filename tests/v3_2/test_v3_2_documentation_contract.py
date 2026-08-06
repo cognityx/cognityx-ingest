@@ -251,6 +251,12 @@ def test_parser_routing_module_has_substantial_architectural_docstring() -> None
         "deterministic validation",
         "t05",
         "legacy",
+        "candidate_invocations",
+        "selected",
+        "invocation purpose",
+        "compact",
+        "canonical",
+        "registry_sha256",
     ):
         assert concept in normalized
 
@@ -296,7 +302,10 @@ def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
         "_validated_boundary",
         "_validate_proposal",
         "_validate_budget",
+        "_invocation_purposes_supported",
+        "_required_purposes_satisfied",
         "_parser_is_capability_eligible",
+        "_registry_sha256",
         "_validate_scope",
         "_validate_stop_condition",
         "_parse_deterministic_plan",
@@ -304,6 +313,7 @@ def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
         "_parse_llm_directed_plan",
         "_strict_json_object",
         "_validation_result_to_dict",
+        "_validate_sha256",
     }
     functions = {
         node.name: node
@@ -312,3 +322,26 @@ def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
     }
     assert required <= set(functions)
     assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_adaptive_routing_guide_explains_corrected_persistence_semantics() -> None:
+    """Keep candidate, purpose, canonical context, digest, consumer, and T05 prose."""
+    repository_root = Path(parser_routing.__file__).parents[2]
+    guide = (
+        repository_root / "docs" / "adaptive-parser-routing.md"
+    ).read_text(encoding="utf-8").lower()
+    for concept in (
+        "candidate invocation",
+        "selected invocation",
+        "rejected plans",
+        "same parser",
+        "compact compatibility",
+        "complete canonical",
+        "input facts",
+        "deterministic boundary",
+        "registry_sha256",
+        "exact runtime evidence snapshot",
+        "audit tools",
+        "t05",
+    ):
+        assert concept in guide

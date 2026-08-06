@@ -59,9 +59,17 @@ def _request(registry, boundary) -> ParserRoutingRequest:
 
 def _proposal(*parser_ids: str, external: bool = False) -> RoutingProposal:
     """Create a document-scoped proposal in the supplied parser order."""
+    purposes = {
+        "docling": ("hierarchy", "tables"),
+        "pymupdf": ("native_links",),
+    }
     return RoutingProposal(
         invocations=tuple(
-            ParserInvocation(parser_id=parser_id, scope="document")
+            ParserInvocation(
+                parser_id=parser_id,
+                scope="document",
+                purpose=purposes.get(parser_id, ()),
+            )
             for parser_id in parser_ids
         ),
         reason="Use structural parser plus native PDF fact complement.",
@@ -86,7 +94,9 @@ def test_hybrid_calls_provider_once_and_accepts_frozen_bounded_proposal(
     )
     assert plan.llm_used is True
     encoded = plan.to_json_bytes()
-    assert RoutingPlan.from_json_bytes(encoded).to_json_bytes() == encoded
+    reloaded = RoutingPlan.from_json_bytes(encoded)
+    assert reloaded.to_json_bytes() == encoded
+    assert reloaded == plan
 
 
 def test_hybrid_rejects_parser_outside_allowlist(
@@ -224,3 +234,134 @@ def test_hybrid_security_tags_must_satisfy_boundary(
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.security_valid is False
+
+
+@pytest.mark.parametrize(
+    "invocations",
+    (
+        (
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy", "tables", "native_links"),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=(),
+            ),
+        ),
+        (
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("tables",),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("hierarchy", "native_links"),
+            ),
+        ),
+        (
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("native_links",),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("hierarchy", "tables"),
+            ),
+        ),
+    ),
+)
+def test_hybrid_rejects_parser_incapable_or_swapped_purposes(
+    invocations, available_routing_registry, routing_boundary
+) -> None:
+    """Refuse attribution that another selected parser could otherwise conceal."""
+    proposal = RoutingProposal(invocations=invocations)
+    plan = ParserRoutingService().plan(
+        _request(available_routing_registry, routing_boundary),
+        proposal_provider=_FrozenProvider(proposal),
+    )
+    assert plan.selected_invocations == ()
+    assert plan.validation_result.capability_valid is False
+    assert "invocation-purpose-unsupported" in (
+        plan.validation_result.rejection_reasons
+    )
+
+
+def test_hybrid_rejects_empty_purposes_for_nonempty_request(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Require live proposals to attribute every requested capability explicitly."""
+    proposal = RoutingProposal(
+        invocations=(
+            ParserInvocation(parser_id="docling", scope="document"),
+            ParserInvocation(parser_id="pymupdf", scope="document"),
+        )
+    )
+    plan = ParserRoutingService().plan(
+        _request(available_routing_registry, routing_boundary),
+        proposal_provider=_FrozenProvider(proposal),
+    )
+    assert plan.selected_invocations == ()
+    assert "required-purpose-unresolved" in (
+        plan.validation_result.rejection_reasons
+    )
+
+
+def test_hybrid_accepts_parser_specific_required_and_complementary_purposes(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Keep genuine Docling and PyMuPDF purpose ownership in an accepted plan."""
+    proposal = RoutingProposal(
+        invocations=(
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy", "tables"),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("native_links", "page_labels", "geometry"),
+            ),
+        )
+    )
+    plan = ParserRoutingService().plan(
+        _request(available_routing_registry, routing_boundary),
+        proposal_provider=_FrozenProvider(proposal),
+    )
+    assert plan.validation_result.accepted is True
+    assert plan.selected_invocations == proposal.invocations
+
+
+def test_hybrid_rejects_unsupported_extra_complementary_purpose(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Reject an extra purpose unless that invocation's parser actually supports it."""
+    proposal = RoutingProposal(
+        invocations=(
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy", "tables", "native_pdf_text"),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("native_links",),
+            ),
+        )
+    )
+    plan = ParserRoutingService().plan(
+        _request(available_routing_registry, routing_boundary),
+        proposal_provider=_FrozenProvider(proposal),
+    )
+    assert plan.selected_invocations == ()
+    assert "invocation-purpose-unsupported" in (
+        plan.validation_result.rejection_reasons
+    )

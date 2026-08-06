@@ -108,6 +108,13 @@ The second scope can describe a future page-targeted invocation. It does not
 cause an existing document parser to run on selected pages. The legacy adapter
 rejects that scope rather than silently widening it to the whole document.
 
+A purpose says why that exact parser would run. For example, Docling may carry
+`hierarchy` and `tables`, while PyMuPDF may carry `native_links`, `page_labels`,
+and `geometry`. T04 checks each purpose against that parser's own live registry
+record. PyMuPDF support elsewhere in a plan cannot justify a `native_links`
+purpose incorrectly attached to Docling. In short, the purpose and supporting
+capability must belong to the same parser.
+
 ### RoutingProposal
 
 `RoutingProposal` contains untrusted proposed invocations and optional reason,
@@ -132,10 +139,16 @@ included in those reasons.
 
 ### RoutingPlan
 
-`RoutingPlan` is the immutable output. It exposes the routing schema, mode,
-selected invocations, validation result, registry version when present, and
-whether a provider was used. It has strict dictionary and JSON readers plus
-deterministic serializers.
+`RoutingPlan` is the immutable output. A candidate invocation is work that a
+rule or provider proposed. A selected invocation is work that passed the whole
+deterministic decision and may be considered by later execution orchestration.
+Rejected plans always have an empty selected list. Deterministic plans can retain
+their candidates under `candidate_invocations`; hybrid and LLM-directed plans
+retain candidates in the untrusted proposal.
+
+The plan also exposes the routing schema, mode, validation result, registry
+version, exact registry SHA-256 when present, and whether a provider was used. It
+has strict dictionary and JSON readers plus deterministic serializers.
 
 The schema is:
 
@@ -144,6 +157,20 @@ cognityx.ingest.routing-plan/v3.2
 ```
 
 The three frozen fixture shapes remain supported without rewriting their files.
+They form an exact compact compatibility boundary for older minimal records.
+New service-built records use an exact complete canonical shape. The canonical
+shape retains input facts, the deterministic boundary, registry version, full
+validation result, and mode-appropriate rule or proposal evidence. A partially
+extended record is rejected instead of silently losing some decision context.
+
+Canonical plans also store `registry_sha256`, calculated over the exact
+deterministic bytes returned by `ParserCapabilityRegistry.to_json_bytes()`. The
+registry version is a readable release label. The digest is the identity of the
+exact runtime evidence snapshot used for the decision. Audit tools and future
+execution orchestration consume both: facts explain what was needed, the boundary
+explains what was permitted, validation explains the outcome, and the digest
+identifies the evidence. The complete registry is not copied into the plan.
+
 Readers reject duplicate JSON keys, unknown or missing fields, malformed values,
 unsupported combinations, and noncanonical set-like order. They preserve
 supplied order and do not repair malformed persisted plans.
@@ -166,10 +193,12 @@ The reviewed initial flow is:
 2. Evaluate rules in fixed order.
 3. Require each matched parser to be in the allowlist and live registry.
 4. Require runtime availability to be exactly true.
-5. Require eligible registry assertions for requested rule triggers.
-6. Produce rule IDs and invocations in evaluation order.
-7. Run the shared deterministic validator over the complete plan.
-8. Reject unresolved requirements without calling a provider.
+5. Verify every candidate purpose against that candidate parser's own assertions.
+6. Produce rule IDs and candidate invocations in evaluation order.
+7. Run the shared deterministic validator over the complete candidate set.
+8. Promote candidates to selected only when every check passes.
+9. On rejection, expose no selected run and retain bounded candidate evidence.
+10. Reject unresolved requirements without calling a provider.
 
 For a structured native PDF, the initial policy can prefer Docling for hierarchy
 and tables and supplement it with PyMuPDF for native links. A native-link-only
@@ -186,7 +215,7 @@ Hybrid routing follows this sequence:
 3. Treat every returned field as untrusted.
 4. Require parser order to follow the deterministic boundary.
 5. Check allowlist, run budget, service use, security tags, scopes, registry,
-   runtime, and capabilities.
+   runtime, and each parser's own declared purposes.
 6. Select invocations only when every check passes.
 7. Return an accepted or rejected auditable plan.
 
@@ -222,6 +251,12 @@ A parser satisfies a requirement only when:
 1. its runtime availability is exactly true; and
 2. its assertion status is `available`, `declared`, or
    `declared-when-available`.
+
+For a live request, capability support is not enough by itself. At least one
+invocation must name the requirement in its purpose, and that invocation's own
+parser must satisfy the mapped capability. A nonempty request cannot be accepted
+with only empty-purpose invocations. Extra complementary purposes are retained
+only when their parser genuinely supports them.
 
 The statuses `unsupported`, `not-declared`, `unavailable`, and `unknown` do not
 satisfy a requirement. Human guidance and measured evidence remain visible to

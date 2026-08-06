@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from cognityx_ingest import (
@@ -65,9 +67,15 @@ def test_llm_directed_calls_provider_once_and_accepts_frozen_plan(
     """Accept the frozen document plus native-link-page proposal after validation."""
     proposal = _proposal(
         (
-            ParserInvocation(parser_id="docling", scope="document"),
             ParserInvocation(
-                parser_id="pymupdf", scope="pages-with-native-links"
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy",),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="pages-with-native-links",
+                purpose=("native_links",),
             ),
         )
     )
@@ -82,7 +90,12 @@ def test_llm_directed_calls_provider_once_and_accepts_frozen_plan(
     assert plan.proposal == proposal
     assert plan.llm_used is True
     encoded = plan.to_json_bytes()
-    assert RoutingPlan.from_json_bytes(encoded).to_json_bytes() == encoded
+    reloaded = RoutingPlan.from_json_bytes(encoded)
+    assert reloaded.to_json_bytes() == encoded
+    assert reloaded == plan
+    assert plan.registry_sha256 == hashlib.sha256(
+        available_routing_registry.to_json_bytes()
+    ).hexdigest()
 
 
 def test_llm_directed_preserves_provider_invocation_order(
@@ -91,8 +104,16 @@ def test_llm_directed_preserves_provider_invocation_order(
     """Retain an LLM-directed order while still validating every selected parser."""
     proposal = _proposal(
         (
-            ParserInvocation(parser_id="pymupdf", scope="document"),
-            ParserInvocation(parser_id="docling", scope="document"),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("native_links",),
+            ),
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy",),
+            ),
         )
     )
     plan = ParserRoutingService().plan(
@@ -109,7 +130,11 @@ def test_llm_directed_rejects_invented_parser_id(
     """Keep model-invented parser identities outside the registry authority."""
     proposal = _proposal(
         (
-            ParserInvocation(parser_id="docling", scope="document"),
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy",),
+            ),
             ParserInvocation(parser_id="invented-parser", scope="document"),
         )
     )
@@ -146,8 +171,16 @@ def test_llm_directed_rejects_invalid_stop_condition(
     """Record rejection without executing or accepting an invented stop rule."""
     proposal = _proposal(
         (
-            ParserInvocation(parser_id="docling", scope="document"),
-            ParserInvocation(parser_id="pymupdf", scope="document"),
+            ParserInvocation(
+                parser_id="docling",
+                scope="document",
+                purpose=("hierarchy",),
+            ),
+            ParserInvocation(
+                parser_id="pymupdf",
+                scope="document",
+                purpose=("native_links",),
+            ),
         ),
         stop_condition="model-says-enough",
     )
@@ -188,8 +221,16 @@ def test_llm_proposal_receives_no_source_content_or_paths(
             assert request.boundary is boundary
             return _proposal(
                 (
-                    ParserInvocation(parser_id="docling", scope="document"),
-                    ParserInvocation(parser_id="pymupdf", scope="document"),
+                    ParserInvocation(
+                        parser_id="docling",
+                        scope="document",
+                        purpose=("hierarchy",),
+                    ),
+                    ParserInvocation(
+                        parser_id="pymupdf",
+                        scope="document",
+                        purpose=("native_links",),
+                    ),
                 )
             )
 

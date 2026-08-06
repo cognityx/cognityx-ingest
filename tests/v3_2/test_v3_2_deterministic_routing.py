@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
 import socket
 
@@ -10,7 +11,9 @@ import pytest
 
 from cognityx_ingest import (
     ParserRoutingRequest,
+    ParserRoutingRejectedError,
     ParserRoutingService,
+    RoutingBoundary,
     RoutingInputFacts,
     RoutingPlan,
 )
@@ -100,6 +103,95 @@ def test_deterministic_rules_produce_frozen_two_parser_plan(
         item["purpose"] for item in frozen["selected_invocations"]
     ]
     assert plan.validation_result.accepted is True
+    assert plan.candidate_invocations == plan.selected_invocations
+
+
+def test_rejected_budget_plan_retains_candidates_but_selects_nothing(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Keep two valid candidates auditable when a one-run budget rejects them."""
+    boundary = replace(routing_boundary, max_parser_runs=1)
+    plan = ParserRoutingService().plan(
+        _request(
+            available_routing_registry,
+            boundary,
+            ("hierarchy", "tables", "native_links"),
+        )
+    )
+    assert tuple(item.parser_id for item in plan.candidate_invocations) == (
+        "docling",
+        "pymupdf",
+    )
+    assert plan.selected_invocations == ()
+    assert plan.validation_result.accepted is False
+    assert plan.validation_result.budget_valid is False
+    assert RoutingPlan.from_json_bytes(plan.to_json_bytes()) == plan
+    with pytest.raises(ParserRoutingRejectedError):
+        plan.require_accepted()
+
+
+def test_partially_satisfiable_request_has_no_selected_invocations(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Reject the whole plan while retaining only the eligible audit candidate."""
+    unavailable = _replace_parser(
+        available_routing_registry,
+        "docling",
+        lambda record: replace(
+            record,
+            parser_discovered=replace(
+                record.parser_discovered,
+                runtime_probe=replace(
+                    record.parser_discovered.runtime_probe,
+                    dependency_importable=False,
+                ),
+            ),
+        ),
+    )
+    plan = ParserRoutingService().plan(
+        _request(unavailable, routing_boundary, ("hierarchy", "native_links"))
+    )
+    assert tuple(item.parser_id for item in plan.candidate_invocations) == (
+        "pymupdf",
+    )
+    assert plan.selected_invocations == ()
+    assert plan.validation_result.accepted is False
+    assert "required-purpose-unresolved" in plan.validation_result.rejection_reasons
+
+
+def test_deterministic_security_rejection_has_no_selected_invocations(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Keep eligible candidates separate when required security tags are absent."""
+    boundary = RoutingBoundary(
+        allowlist=routing_boundary.allowlist,
+        max_parser_runs=2,
+        external_services_allowed=False,
+        required_security_tags=("internal",),
+    )
+    plan = ParserRoutingService().plan(
+        _request(available_routing_registry, boundary, ("native_links",))
+    )
+    assert tuple(item.parser_id for item in plan.candidate_invocations) == (
+        "pymupdf",
+    )
+    assert plan.selected_invocations == ()
+    assert plan.validation_result.accepted is False
+    assert plan.validation_result.security_valid is False
+
+
+def test_canonical_deterministic_plan_round_trip_preserves_complete_context(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Reload facts, boundary, candidates, validation, version, and exact digest."""
+    plan = ParserRoutingService().plan(
+        _request(available_routing_registry, routing_boundary, ("native_links",))
+    )
+    reloaded = RoutingPlan.from_json_bytes(plan.to_json_bytes())
+    assert reloaded == plan
+    assert plan.registry_sha256 == hashlib.sha256(
+        available_routing_registry.to_json_bytes()
+    ).hexdigest()
 
 
 def test_unavailable_docling_is_not_selected_and_requirement_is_unresolved(
@@ -126,7 +218,7 @@ def test_unavailable_docling_is_not_selected_and_requirement_is_unresolved(
     assert plan.selected_invocations == ()
     assert plan.validation_result.accepted is False
     assert plan.validation_result.capability_valid is False
-    assert "required-capability-unresolved" in (
+    assert "required-purpose-unresolved" in (
         plan.validation_result.rejection_reasons
     )
 

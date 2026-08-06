@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 
 import pytest
@@ -200,3 +201,80 @@ def test_malformed_parser_id_and_scope_fail(v3_2_fixture_root) -> None:
         payload["frozen_llm_proposal"]["invocations"][0][field] = value
         with pytest.raises(ParserRoutingValidationError):
             RoutingPlan.from_dict(payload)
+
+
+def test_rejected_typed_plan_cannot_retain_selected_invocations(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Enforce the empty-selection invariant even for direct record construction."""
+    request = ParserRoutingRequest(
+        mode="deterministic",
+        input_facts=RoutingInputFacts(
+            media_type="application/pdf",
+            required_capabilities=("native_links",),
+        ),
+        boundary=routing_boundary,
+        registry=available_routing_registry,
+    )
+    accepted = ParserRoutingService().plan(request)
+    rejected_result = replace(
+        accepted.validation_result,
+        accepted=False,
+        budget_valid=False,
+        rejection_reasons=("parser-run-budget-exceeded",),
+    )
+    malformed = replace(accepted, validation_result=rejected_result)
+    with pytest.raises(
+        ParserRoutingValidationError,
+        match="Rejected routing plan cannot contain selected invocations",
+    ):
+        malformed.validate()
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "candidate_invocations",
+        "deterministic_boundary",
+        "registry_sha256",
+        "registry_version",
+        "validation_result",
+    ),
+)
+def test_partially_extended_canonical_plan_fails(
+    field: str, available_routing_registry, routing_boundary
+) -> None:
+    """Accept exact compact or complete canonical records, never partial context."""
+    request = ParserRoutingRequest(
+        mode="deterministic",
+        input_facts=RoutingInputFacts(
+            media_type="application/pdf",
+            required_capabilities=("native_links",),
+        ),
+        boundary=routing_boundary,
+        registry=available_routing_registry,
+    )
+    payload = ParserRoutingService().plan(request).to_dict()
+    payload.pop(field)
+    with pytest.raises(ParserRoutingValidationError, match="exact compact or canonical"):
+        RoutingPlan.from_dict(payload)
+
+
+@pytest.mark.parametrize("digest", ("A" * 64, "0" * 63, "not-a-digest"))
+def test_canonical_registry_digest_requires_lowercase_sha256(
+    digest: str, available_routing_registry, routing_boundary
+) -> None:
+    """Reject malformed evidence bindings without normalizing persisted values."""
+    request = ParserRoutingRequest(
+        mode="deterministic",
+        input_facts=RoutingInputFacts(
+            media_type="application/pdf",
+            required_capabilities=("native_links",),
+        ),
+        boundary=routing_boundary,
+        registry=available_routing_registry,
+    )
+    payload = ParserRoutingService().plan(request).to_dict()
+    payload["registry_sha256"] = digest
+    with pytest.raises(ParserRoutingValidationError, match="lowercase SHA-256"):
+        RoutingPlan.from_dict(payload)
