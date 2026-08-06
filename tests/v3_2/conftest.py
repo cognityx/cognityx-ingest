@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 
 from cognityx_ingest import (
+    AutoLearnedCapabilities,
     CANONICAL_CONTENT_SCHEMA_VERSION,
+    CapabilityAssertion,
     CanonicalContentArtifact,
     CanonicalRelation,
     CanonicalResource,
@@ -25,6 +27,12 @@ from cognityx_ingest import (
     ContentNode,
     Division,
     PresentationUnit,
+    ParserCapabilityRecord,
+    ParserCapabilityRegistry,
+    ParserDiscoveredCapabilities,
+    ParserRuntimeProbe,
+    RoutingBoundary,
+    RoutingProviderProfile,
     SourceSelector,
 )
 
@@ -61,6 +69,89 @@ def provenance_fixture_root() -> Path:
 def provenance_pdf(provenance_fixture_root: Path) -> Path:
     """Return the frozen base PDF that T00 must reuse without duplication."""
     return provenance_fixture_root / "main_policy_v2.pdf"
+
+
+@pytest.fixture(scope="session")
+def available_routing_registry() -> ParserCapabilityRegistry:
+    """Return canonical live-like parser facts for deterministic T04 tests.
+
+    The fixture is deliberately constructed from production T03 records rather
+    than rewriting the frozen catalog. All three lightweight adapters are marked
+    registered and importable so routing tests can isolate policy behavior from
+    whichever optional packages happen to be installed on the CI worker.
+    """
+    capability_sets = {
+        "docling": (
+            "bounding_boxes",
+            "document_hierarchy",
+            "pictures",
+            "provenance",
+            "tables",
+        ),
+        "future-parser": ("paragraph_text",),
+        "pymupdf": (
+            "bounding_boxes",
+            "native_links",
+            "native_pdf_text",
+            "page_labels",
+        ),
+    }
+    records = tuple(
+        ParserCapabilityRecord(
+            parser_id=parser_id,
+            version_scope="routing-test",
+            parser_discovered=ParserDiscoveredCapabilities(
+                runtime_probe=ParserRuntimeProbe(
+                    plugin_registered=True,
+                    dependency_importable=True,
+                    installed_version="1.0",
+                    adapter_module=f"tests.{parser_id.replace('-', '_')}",
+                    adapter_class="TestParser",
+                ),
+                capabilities=tuple(
+                    CapabilityAssertion(capability=name, status="available")
+                    for name in capabilities
+                ),
+            ),
+            human_guided=(),
+            auto_learned=AutoLearnedCapabilities(),
+        )
+        for parser_id, capabilities in capability_sets.items()
+    )
+    registry = ParserCapabilityRegistry(
+        schema="cognityx.ingest.parser-capability-registry/v3.2",
+        registry_version="routing-test-v1",
+        parsers=records,
+    )
+    registry.validate()
+    return registry
+
+
+@pytest.fixture(scope="session")
+def routing_boundary() -> RoutingBoundary:
+    """Return the common two-parser hard boundary used by T04 service tests."""
+    return RoutingBoundary(
+        allowlist=("docling", "pymupdf"),
+        max_parser_runs=2,
+        external_services_allowed=False,
+    )
+
+
+@pytest.fixture(scope="session")
+def routing_provider_profile() -> RoutingProviderProfile:
+    """Return trusted local provider facts for proposal-backed T04 tests.
+
+    Application composition, not a proposal or fake LLM, owns this immutable
+    profile. It declares that the deterministic test provider is local and needs
+    no governed security tags, allowing focused tests to isolate routing behavior.
+    """
+    return RoutingProviderProfile(
+        provider_id="fixture-provider",
+        uses_external_services=False,
+        security_tags=(),
+        provider_kind="deterministic-test-double",
+        deployment_id="normal-ci",
+    )
 
 
 @pytest.fixture(scope="session")

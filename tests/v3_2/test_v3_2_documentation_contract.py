@@ -13,6 +13,7 @@ from pathlib import Path
 import cognityx_ingest.canonical_content as canonical_content
 import cognityx_ingest.native_artifacts as native_artifacts
 import cognityx_ingest.parser_capabilities as parser_capabilities
+import cognityx_ingest.parser_routing as parser_routing
 
 
 def _module_tree(module: object = native_artifacts) -> ast.Module:
@@ -24,7 +25,7 @@ def _module_tree(module: object = native_artifacts) -> ast.Module:
 def test_native_artifact_module_has_substantial_architectural_docstring() -> None:
     """Require the purpose, design, flow, consumers, ownership, and non-goals."""
     module_docstring = ast.get_docstring(_module_tree()) or ""
-    normalized = module_docstring.lower()
+    normalized = " ".join(module_docstring.lower().split())
 
     assert len(module_docstring) >= 800
     for concept in (
@@ -228,3 +229,168 @@ def test_named_parser_capability_algorithms_have_invariant_documentation() -> No
     }
     assert required <= set(functions)
     assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_parser_routing_module_has_substantial_architectural_docstring() -> None:
+    """Require T04 purpose, mode meanings, boundaries, consumers, and non-goals."""
+    module_docstring = ast.get_docstring(_module_tree(parser_routing)) or ""
+    normalized = module_docstring.lower()
+    assert len(module_docstring) >= 3_000
+    for concept in (
+        "purpose",
+        "design principles",
+        "processing flow",
+        "primary consumers",
+        "ownership boundary",
+        "non-goals",
+        "deterministic",
+        "hybrid",
+        "llm-directed",
+        "capability registry",
+        "proposal",
+        "deterministic validation",
+        "t05",
+        "legacy",
+        "candidate_invocations",
+        "selected",
+        "invocation purpose",
+        "compact",
+        "canonical",
+        "registry_sha256",
+        "trusted provider profile",
+        "untrusted proposal",
+        "before any provider call",
+        "validate_against_registry",
+        "require_executable",
+        "audit-readable",
+        "execution-authorized",
+    ):
+        assert concept in normalized
+
+
+def test_every_public_parser_routing_class_documents_its_contract() -> None:
+    """Require every T04 record, protocol, service, and error to explain its role."""
+    public_classes = [
+        node
+        for node in _module_tree(parser_routing).body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    ]
+    assert public_classes
+    for node in public_classes:
+        docstring = (ast.get_docstring(node) or "").lower()
+        for concept in (
+            "responsibility",
+            "constructed by",
+            "used by",
+            "invariants",
+            "lifecycle",
+            "thread-safety assumptions",
+        ):
+            assert concept in docstring, (node.name, concept)
+
+
+def test_every_parser_routing_callable_has_a_docstring() -> None:
+    """Require public seams and private routing algorithms to explain why they exist."""
+    callables = [
+        node
+        for node in ast.walk(_module_tree(parser_routing))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert callables
+    assert all(ast.get_docstring(node) for node in callables)
+
+
+def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
+    """Pin docs to policy, validation, fixture, compatibility, and serialization."""
+    required = {
+        "adaptive_mode_for_legacy_policy",
+        "_build_deterministic_plan",
+        "_deterministic_invocation_is_eligible",
+        "_validated_boundary",
+        "_preflight_provider_profile",
+        "_validate_provider_profile",
+        "_validate_proposal",
+        "_validate_budget",
+        "_invocation_purposes_supported",
+        "_required_purposes_satisfied",
+        "_parser_is_capability_eligible",
+        "_registry_sha256",
+        "_validate_scope",
+        "_validate_stop_condition",
+        "_parse_deterministic_plan",
+        "_parse_hybrid_plan",
+        "_parse_llm_directed_plan",
+        "_parse_provider_profile",
+        "_strict_json_object",
+        "_validation_result_to_dict",
+        "_provider_profile_to_dict",
+        "_validate_sha256",
+    }
+    functions = {
+        node.name: node
+        for node in ast.walk(_module_tree(parser_routing))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert required <= set(functions)
+    assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_adaptive_routing_guide_explains_corrected_persistence_semantics() -> None:
+    """Keep candidate, purpose, canonical context, digest, consumer, and T05 prose."""
+    repository_root = Path(parser_routing.__file__).parents[2]
+    guide = " ".join((
+        repository_root / "docs" / "adaptive-parser-routing.md"
+    ).read_text(encoding="utf-8").lower().split())
+    for concept in (
+        "candidate invocation",
+        "selected invocation",
+        "rejected plans",
+        "same parser",
+        "compact compatibility",
+        "complete canonical",
+        "input facts",
+        "deterministic boundary",
+        "registry_sha256",
+        "exact runtime evidence snapshot",
+        "audit tools",
+        "t05",
+        "trusted provider profile",
+        "before the provider is called",
+        "proposal security tags cannot",
+        "validate_against_registry",
+        "require_executable",
+        "audit-readable",
+        "execution-authorized",
+    ):
+        assert concept in guide
+
+
+def test_registry_bound_public_methods_document_executable_trust_boundary() -> None:
+    """Require callers, algorithm, failures, effects, trust, and parser boundaries."""
+    routing_plan = next(
+        node
+        for node in _module_tree(parser_routing).body
+        if isinstance(node, ast.ClassDef) and node.name == "RoutingPlan"
+    )
+    methods = {
+        node.name: (ast.get_docstring(node) or "").lower()
+        for node in routing_plan.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in (
+        "validate_against_registry",
+        "require_executable",
+        "to_extraction_policy",
+    ):
+        docstring = methods[name]
+        for concept in (
+            "call",
+            "algorithm",
+            "return",
+            "raise",
+            "side effect",
+            "trust",
+            "provider",
+            "parser",
+        ):
+            assert concept in docstring, (name, concept)

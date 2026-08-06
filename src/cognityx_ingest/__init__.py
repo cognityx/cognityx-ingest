@@ -1,12 +1,14 @@
 """Expose Cognityx Ingest's deliberate stable Python composition surface.
 
 This module exists so applications can import supported SourceAsset, ingestion,
-artifact, and canonical-content APIs without depending on internal file layout.
-It performs no processing itself: the core mechanism is explicit re-export of
-approved public records and services. The design principle is compatibility by
-addition, which is why the v3.2 ``CanonicalRepresentation`` alias does not replace
-the established enrichment ``Representation`` name. CLI adapters, DataForge,
-audit tooling, tests, and direct Python integrators use this surface.
+artifact, canonical-content, capability-registry, and parser-routing APIs without
+depending on internal file layout. It performs no processing itself: the core
+mechanism is explicit re-export of approved public records and services. The
+design principle is compatibility by addition, which is why T04 routing records
+do not replace existing ``ExtractionPolicy`` execution names and the v3.2
+``CanonicalRepresentation`` alias does not replace the established enrichment
+``Representation`` name. CLI adapters, DataForge, audit tooling, tests, future
+orchestration, and direct Python integrators use this surface.
 """
 
 from cognityx_ingest.canonical_content import (
@@ -136,6 +138,29 @@ from cognityx_ingest.parser_capabilities import (
     ParserDiscoveredCapabilities,
     ParserRuntimeProbe,
 )
+from cognityx_ingest.parser_routing import (
+    ADAPTIVE_ROUTING_MODES,
+    LEGACY_POLICY_TO_ADAPTIVE_MODE,
+    ROUTING_PLAN_SCHEMA,
+    DeterministicRoutingRule,
+    ParserInvocation,
+    ParserRoutingCapabilityError,
+    ParserRoutingCompatibilityError,
+    ParserRoutingError,
+    ParserRoutingProposalError,
+    ParserRoutingRejectedError,
+    ParserRoutingRequest,
+    ParserRoutingService,
+    ParserRoutingValidationError,
+    RoutingBoundary,
+    RoutingInputFacts,
+    RoutingPlan,
+    RoutingProposal,
+    RoutingProposalProvider,
+    RoutingProviderProfile,
+    RoutingValidationResult,
+    adaptive_mode_for_legacy_policy,
+)
 from cognityx_ingest.service import IngestService
 from cognityx_ingest.source_assets import (
     SourceAssetBatchCancelled,
@@ -147,6 +172,7 @@ from cognityx_ingest.sources import SourceRegistry
 from cognityx_resource import ExecutionContext, ResourceContext, ResourceRef
 
 __all__ = [
+    "ADAPTIVE_ROUTING_MODES",
     "ArtifactRef",
     "AutoLearnedCapabilities",
     "AutoLearnedMeasurement",
@@ -173,6 +199,7 @@ __all__ = [
     "ControlDecision",
     "ContentNode",
     "DecisionRecord",
+    "DeterministicRoutingRule",
     "DocBundle",
     "DocBundleDeletionResult",
     "DoclingParser",
@@ -202,6 +229,7 @@ __all__ = [
     "InferenceTarget",
     "KnowledgeUnit",
     "LocalControlClient",
+    "LEGACY_POLICY_TO_ADAPTIVE_MODE",
     "NativeArtifactConflictError",
     "NativeArtifactDescriptor",
     "NativeArtifactError",
@@ -214,6 +242,15 @@ __all__ = [
     "OfficialDocumentationEvidence",
     "PARSER_CAPABILITY_REGISTRY_SCHEMA",
     "PageRecord",
+    "ParserInvocation",
+    "ParserRoutingCapabilityError",
+    "ParserRoutingCompatibilityError",
+    "ParserRoutingError",
+    "ParserRoutingProposalError",
+    "ParserRoutingRejectedError",
+    "ParserRoutingRequest",
+    "ParserRoutingService",
+    "ParserRoutingValidationError",
     "ParserRouter",
     "ParserCapabilityConflictError",
     "ParserCapabilityError",
@@ -232,10 +269,18 @@ __all__ = [
     "Relation",
     "RepeatedRegion",
     "RepeatedRegionOccurrence",
+    "ROUTING_PLAN_SCHEMA",
     "ReloadedNativeArtifact",
     "RegisteredSource",
     "Representation",
     "ResolutionTask",
+    "RoutingBoundary",
+    "RoutingInputFacts",
+    "RoutingPlan",
+    "RoutingProposal",
+    "RoutingProposalProvider",
+    "RoutingProviderProfile",
+    "RoutingValidationResult",
     "ResourceContext",
     "ResourceRef",
     "RetrievalUnit",
@@ -266,5 +311,6 @@ __all__ = [
     "UnsupportedInputError",
     "UnresolvedItem",
     "UsageReport",
+    "adaptive_mode_for_legacy_policy",
     "resolve_execution_context",
 ]
