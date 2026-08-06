@@ -17,11 +17,14 @@ the parser supplied them.
 
 Processing flow
 ---------------
-``store`` hashes the caller's bytes, publishes or verifies one payload object,
-then publishes an immutable descriptor. ``read`` validates only that descriptor.
+``store`` hashes the caller's bytes and checks descriptor ownership before it
+touches a payload key. It then publishes or verifies one payload object and
+atomically publishes an immutable descriptor. ``read`` validates that descriptor
+and confines its payload key to an Ingest-owned native-artifact namespace.
 ``reload`` reads both objects, verifies payload integrity, and resolves local RFC
 6901 pointers when the media type identifies JSON. Repeated equivalent stores are
-idempotent, while any conflicting payload or descriptor fails explicitly.
+idempotent, while any conflicting payload or descriptor fails explicitly without
+leaving a payload created by an incompatible losing writer.
 
 Primary consumers
 -----------------
@@ -61,6 +64,7 @@ from cognityx_storage import (
 
 _DESCRIPTOR_SCHEMA = "cognityx.ingest.native-artifact-descriptor/v1"
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
 class NativeArtifactError(Exception):
@@ -270,8 +274,10 @@ class NativeArtifactStore:
     Used by:
         Ingest writes, audit reloads, and future SDK/native-binding readers.
     Invariants:
-        Store never overwrites, descriptors point to the exact hashed bytes, and
-        JSON pointers are checked only for media types Cognityx can parse safely.
+        Store never overwrites, a descriptor conflict is detected before normal
+        payload publication, descriptor keys cannot redirect reads outside
+        Ingest-owned native payload namespaces, and JSON pointers are checked only
+        for media types Cognityx can parse safely.
     Lifecycle and persistence:
         Instances are lightweight. Payloads live at explicit or derived logical
         keys; descriptors live under ``base_prefix`` and survive process restarts.
@@ -317,8 +323,11 @@ class NativeArtifactStore:
 
         ``IngestService`` and direct parser integrations call this after parsing.
         The method validates metadata, hashes the original ``payload``, derives
-        stable keys, verifies or publishes the payload once, then verifies or
-        publishes its descriptor.
+        stable keys, and checks any existing descriptor before writing payload
+        bytes. If the identity is free, it publishes or verifies the payload and
+        atomically publishes the descriptor. A losing incompatible descriptor
+        race removes only a payload this call definitely created and which the
+        winning descriptor does not reference.
 
         Args:
             artifact_id: Stable Cognityx artifact identity.
@@ -337,7 +346,8 @@ class NativeArtifactStore:
 
         Side effects:
             Writes at most one payload object and one descriptor object. It never
-            logs payload contents or stores local paths or credentials.
+            logs payload contents or stores local paths or credentials. A known
+            incompatible descriptor leaves no alternate payload from this call.
 
         Idempotency and immutability:
             An equivalent repeated call returns the existing descriptor. Changed
@@ -364,6 +374,10 @@ class NativeArtifactStore:
             if payload_key is not None
             else self._payload_key(artifact_id)
         )
+        if not _payload_key_is_approved(selected_payload_key, self._base_prefix):
+            raise NativeArtifactError(
+                "payload_key must remain in an approved native-artifact namespace"
+            )
         payload_sha256 = _sha256(payload)
         descriptor = NativeArtifactDescriptor(
             artifact_id=artifact_id,
@@ -381,8 +395,18 @@ class NativeArtifactStore:
                 self._context.correlation_id, "correlation_id"
             ),
         )
-        self._store_payload(descriptor, payload)
-        return self._store_descriptor(descriptor)
+        existing = self._read_descriptor_if_exists(artifact_id)
+        if existing is not None:
+            if existing != descriptor:
+                raise _descriptor_conflict(existing, descriptor)
+            self._verify_existing_payload(existing)
+            return existing
+
+        payload_created = self._store_payload(descriptor, payload)
+        return self._publish_descriptor(
+            descriptor,
+            payload_created=payload_created,
+        )
 
     def read(self, artifact_id: str) -> NativeArtifactDescriptor:
         """Read and validate descriptor metadata without loading payload bytes.
@@ -390,7 +414,9 @@ class NativeArtifactStore:
         Provenance readers and list/detail APIs use this bounded operation when
         they need identity or integrity metadata but not the potentially large
         parser output. It performs one descriptor read, validates untrusted JSON
-        and URI/key consistency, and has no write side effects.
+        and URI/key consistency, and rejects payload redirection outside the
+        configured native prefix or established legacy parser path. It has no
+        write side effects.
 
         Args:
             artifact_id: Stable identity whose descriptor should be loaded.
@@ -428,6 +454,13 @@ class NativeArtifactStore:
                 f"Could not read native artifact descriptor: {artifact_id}"
             ) from error
         descriptor = _descriptor_from_json(value, artifact_id=artifact_id)
+        if not _payload_key_is_approved(
+            descriptor.storage_key, self._base_prefix
+        ):
+            raise NativeArtifactIntegrityError(
+                "Native artifact descriptor points outside an approved "
+                f"native-payload namespace: {artifact_id}"
+            )
         expected_uri = self._storage.uri(descriptor.storage_key)
         if descriptor.uri != expected_uri:
             raise NativeArtifactIntegrityError(
@@ -505,12 +538,18 @@ class NativeArtifactStore:
 
     def _store_payload(
         self, descriptor: NativeArtifactDescriptor, payload: bytes
-    ) -> None:
-        """Publish once, accepting a race only when existing bytes hash identically."""
+    ) -> bool:
+        """Publish exact bytes and report whether this call created the object.
+
+        ``store`` uses the boolean to decide whether a later incompatible
+        descriptor race may be rolled back safely. Existing or concurrently won
+        payloads are verified byte-for-byte and return ``False`` so this writer
+        never assumes ownership of another writer's object.
+        """
         try:
             if self._storage.exists(descriptor.storage_key):
                 self._verify_existing_payload(descriptor)
-                return
+                return False
             try:
                 self._storage.put_bytes(
                     descriptor.storage_key,
@@ -519,17 +558,24 @@ class NativeArtifactStore:
                 )
             except ObjectAlreadyExistsError:
                 self._verify_existing_payload(descriptor)
+                return False
         except NativeArtifactError:
             raise
         except StorageError as error:
             raise NativeArtifactError(
                 f"Could not store native artifact payload: {descriptor.artifact_id}"
             ) from error
+        return True
 
     def _verify_existing_payload(
         self, descriptor: NativeArtifactDescriptor
     ) -> None:
-        """Hash retained bytes before treating immutable publication as idempotent."""
+        """Verify retained bytes before callers accept an idempotent publication.
+
+        Store retries and descriptor-race winners call this method. It reads one
+        payload without changing it, then compares independent byte count and
+        SHA-256 facts so equal metadata cannot conceal different native evidence.
+        """
         try:
             with self._storage.open(descriptor.storage_key) as stream:
                 existing = stream.read()
@@ -545,29 +591,49 @@ class NativeArtifactStore:
                 f"Native artifact payload conflicts with immutable key: {descriptor.artifact_id}"
             )
 
-    def _store_descriptor(
-        self, descriptor: NativeArtifactDescriptor
+    def _read_descriptor_if_exists(
+        self, artifact_id: str
+    ) -> NativeArtifactDescriptor | None:
+        """Preflight immutable identity without weakening descriptor validation.
+
+        ``store`` calls the public ``read`` seam so malformed descriptors and
+        namespace redirection still fail closed. Only a typed not-found result is
+        converted to ``None``; every integrity or storage error remains visible.
+        """
+        try:
+            return self.read(artifact_id)
+        except NativeArtifactNotFoundError:
+            return None
+
+    def _publish_descriptor(
+        self,
+        descriptor: NativeArtifactDescriptor,
+        *,
+        payload_created: bool,
     ) -> NativeArtifactDescriptor:
-        """Publish metadata once and convert descriptor races into domain conflicts."""
+        """Publish metadata once and adjudicate only the atomic creation race.
+
+        Normal existing descriptors were handled by ``store`` before payload I/O.
+        If another writer wins after that preflight, this method reads the winner,
+        accepts and verifies an equivalent publication, or removes only this
+        call's unreferenced payload before raising a typed conflict. Cleanup uses
+        the exact validated winner observed here rather than performing a second
+        descriptor read with another race window.
+        """
         key = self._descriptor_key(descriptor.artifact_id)
         try:
-            if self._storage.exists(key):
-                existing = self.read(descriptor.artifact_id)
-                if existing != descriptor:
-                    raise NativeArtifactConflictError(
-                        "Native artifact descriptor conflicts with immutable ID: "
-                        f"{descriptor.artifact_id}"
-                    )
-                return existing
             try:
                 self._storage.put_json(key, descriptor.to_dict())
             except ObjectAlreadyExistsError:
                 existing = self.read(descriptor.artifact_id)
                 if existing != descriptor:
-                    raise NativeArtifactConflictError(
-                        "Native artifact descriptor conflicts with immutable ID: "
-                        f"{descriptor.artifact_id}"
-                    )
+                    if (
+                        payload_created
+                        and existing.storage_key != descriptor.storage_key
+                    ):
+                        self._rollback_created_payload(descriptor)
+                    raise _descriptor_conflict(existing, descriptor)
+                self._verify_existing_payload(existing)
                 return existing
         except NativeArtifactError:
             raise
@@ -576,6 +642,32 @@ class NativeArtifactStore:
                 f"Could not store native artifact descriptor: {descriptor.artifact_id}"
             ) from error
         return descriptor
+
+    def _rollback_created_payload(
+        self, descriptor: NativeArtifactDescriptor
+    ) -> None:
+        """Remove only an unreferenced payload proven to belong to this failed call.
+
+        ``store`` invokes this compensating action only when ``_store_payload``
+        reported successful creation and an incompatible descriptor won at a
+        different key. The method re-verifies hash and size immediately before
+        deletion. Storage objects are immutable, so a matching object is the one
+        this call published; a missing object already satisfies the cleanup goal.
+        """
+        try:
+            with self._storage.open(descriptor.storage_key) as stream:
+                payload = stream.read()
+            _verify_payload(descriptor, payload)
+            self._storage.delete(descriptor.storage_key)
+        except ObjectNotFoundError:
+            return
+        except NativeArtifactError:
+            raise
+        except StorageError as error:
+            raise NativeArtifactError(
+                "Could not remove payload after native artifact descriptor "
+                f"conflict: {descriptor.artifact_id}"
+            ) from error
 
 
 def _descriptor_from_json(
@@ -658,6 +750,33 @@ def _descriptor_from_json(
 def _sha256(payload: bytes) -> str:
     """Hash exact bytes once so descriptor identity never depends on decoding."""
     return hashlib.sha256(payload).hexdigest()
+
+
+def _descriptor_conflict(
+    existing: NativeArtifactDescriptor,
+    requested: NativeArtifactDescriptor,
+) -> NativeArtifactConflictError:
+    """Describe immutable identity disagreement without exposing payload content.
+
+    ``store`` and its descriptor-race handler use this small policy helper. A
+    changed digest or byte count at the same key is reported as a payload
+    conflict for backward-compatible diagnostics; every other disagreement is a
+    descriptor conflict. The helper only constructs an exception and performs no
+    storage I/O.
+    """
+    conflict_kind = (
+        "payload"
+        if existing.storage_key == requested.storage_key
+        and (
+            existing.sha256 != requested.sha256
+            or existing.size_bytes != requested.size_bytes
+        )
+        else "descriptor"
+    )
+    return NativeArtifactConflictError(
+        f"Native artifact {conflict_kind} conflicts with immutable ID: "
+        f"{requested.artifact_id}"
+    )
 
 
 def _verify_payload(descriptor: NativeArtifactDescriptor, payload: bytes) -> None:
@@ -757,11 +876,44 @@ def _is_json_media_type(media_type: str) -> bool:
 
 
 def _validate_identifier(value: object, field_name: str) -> str:
-    """Reject empty, path-like, or whitespace-altered identifiers at the boundary."""
-    text = _validate_text(value, field_name)
-    if any(character in text for character in ("/", "\\")) or text in {".", ".."}:
-        raise NativeArtifactError(f"{field_name} must be one safe identifier")
-    return text
+    """Constrain persisted identities to one bounded portable ASCII token.
+
+    Store calls this for artifact, parser, retention, run, and correlation IDs;
+    descriptor reads apply the same rule to untrusted JSON. Requiring an ASCII
+    alphanumeric first character followed by at most 127 alphanumeric, dot,
+    underscore, or hyphen characters blocks path separators, whitespace,
+    controls, and URI query or fragment syntax before an ID reaches a key or log.
+    """
+    if not isinstance(value, str) or _IDENTIFIER_PATTERN.fullmatch(value) is None:
+        raise NativeArtifactError(
+            f"{field_name} must be 1-128 ASCII letters, digits, dots, "
+            "underscores, or hyphens and start with a letter or digit"
+        )
+    return value
+
+
+def _payload_key_is_approved(storage_key: str, base_prefix: str) -> bool:
+    """Confine native descriptors to current or structural legacy payload keys.
+
+    ``store`` uses this guard before publication and ``read`` uses it before a
+    descriptor can direct ``reload`` to another object. Keys below the configured
+    native-artifact prefix are current storage. The only compatibility exception
+    is the existing five-part
+    ``ingest/documents/<document-id>/parser/<backend-file>`` shape. Storage cannot
+    enforce this distinction because it intentionally treats logical keys as
+    opaque; Ingest owns knowledge of parser-native versus canonical objects.
+    """
+    if storage_key.startswith(f"{base_prefix}/"):
+        return True
+    parts = storage_key.split("/")
+    return (
+        len(parts) == 5
+        and parts[0] == "ingest"
+        and parts[1] == "documents"
+        and _IDENTIFIER_PATTERN.fullmatch(parts[2]) is not None
+        and parts[3] == "parser"
+        and _IDENTIFIER_PATTERN.fullmatch(parts[4]) is not None
+    )
 
 
 def _validate_storage_key(value: object, field_name: str) -> str:

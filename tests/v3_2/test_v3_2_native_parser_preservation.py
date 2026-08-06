@@ -20,6 +20,7 @@ from cognityx_ingest import (
     IngestManager,
     IngestService,
     NativeArtifactConflictError,
+    NativeArtifactError,
     NativeArtifactIntegrityError,
     NativeArtifactNotFoundError,
     NativeArtifactStore,
@@ -32,6 +33,7 @@ from cognityx_jobs import JobRepository
 from cognityx_resource import ExecutionContext
 from cognityx_storage import (
     LocalStorageBackend,
+    ObjectAlreadyExistsError,
     StorageClient,
     StorageConfig,
     StorageRuntime,
@@ -162,6 +164,177 @@ def test_same_artifact_id_with_changed_metadata_fails(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "retry_payload",
+    [b'{"version":2}', b'{"version":1}'],
+    ids=["changed-bytes", "identical-bytes"],
+)
+def test_existing_descriptor_conflict_does_not_create_alternate_payload(
+    tmp_path: Path, retry_payload: bytes
+) -> None:
+    """Preflight descriptor ownership before either kind of alternate-key retry.
+
+    This public-seam regression covers both changed and identical bytes because
+    the descriptor's payload key is itself immutable metadata. Neither rejected
+    retry may leave an unreferenced object at its requested alternate key.
+    """
+    store, storage, _context = _native_artifact_components(tmp_path)
+    original_key = "ingest/documents/doc-conflict/parser/original.json"
+    alternate_key = "ingest/documents/doc-conflict/parser/alternate.json"
+    original = store.store(
+        artifact_id="art-no-orphan",
+        parser_id="fixture",
+        payload=b'{"version":1}',
+        media_type="application/json",
+        payload_key=original_key,
+    )
+
+    with pytest.raises(NativeArtifactConflictError, match="descriptor conflicts"):
+        store.store(
+            artifact_id="art-no-orphan",
+            parser_id="fixture",
+            payload=retry_payload,
+            media_type="application/json",
+            payload_key=alternate_key,
+        )
+
+    assert store.read(original.artifact_id) == original
+    assert storage.open(original_key).read() == b'{"version":1}'
+    assert not storage.exists(alternate_key)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "valid_identifier"),
+    [
+        ("artifact_id", "A"),
+        ("parser_id", "Parser_2.1-alpha"),
+        ("retention_class", "temporary-audit.v2"),
+        ("run_id", "Run_2026.08-01"),
+        ("correlation_id", "Correlation_2026.08-01"),
+        ("artifact_id", "A" * 128),
+    ],
+)
+def test_bounded_ascii_identifiers_are_accepted(
+    tmp_path: Path, field_name: str, valid_identifier: str
+) -> None:
+    """Accept portable identifier characters and the documented upper bound.
+
+    The test drives every persisted identifier through ``store`` so callers can
+    continue using UUID-like and human-readable IDs without relying on private
+    validators.
+    """
+    run_id = valid_identifier if field_name == "run_id" else "run-valid"
+    correlation_id = (
+        valid_identifier
+        if field_name == "correlation_id"
+        else "correlation-valid"
+    )
+    storage = StorageClient(
+        LocalStorageBackend(tmp_path / field_name)
+    ).for_shared_data()
+    context = ExecutionContext(
+        run_id=run_id,
+        correlation_id=correlation_id,
+        principal_id="fixture-test",
+    )
+    arguments: dict[str, object] = {
+        "artifact_id": "art-valid",
+        "parser_id": "parser-valid",
+        "payload": b"valid",
+        "media_type": "application/octet-stream",
+        "retention_class": "temporary-audit",
+    }
+    if field_name in arguments:
+        arguments[field_name] = valid_identifier
+
+    descriptor = NativeArtifactStore(storage, context).store(**arguments)
+
+    descriptor_field = {
+        "artifact_id": "artifact_id",
+        "parser_id": "parser_id",
+        "retention_class": "retention_class",
+        "run_id": "run_id",
+        "correlation_id": "correlation_id",
+    }[field_name]
+    assert getattr(descriptor, descriptor_field) == valid_identifier
+
+
+@pytest.mark.parametrize(
+    "invalid_identifier",
+    [
+        "",
+        " leading",
+        "trailing ",
+        "embedded space",
+        "path/segment",
+        r"path\segment",
+        "line\nbreak",
+        "control\x00byte",
+        "query?value",
+        "fragment#value",
+        "scheme:value",
+        "A" * 129,
+    ],
+    ids=[
+        "empty",
+        "leading-space",
+        "trailing-space",
+        "embedded-space",
+        "forward-slash",
+        "backslash",
+        "newline",
+        "control",
+        "query",
+        "fragment",
+        "colon",
+        "too-long",
+    ],
+)
+@pytest.mark.parametrize(
+    "field_name",
+    ["artifact_id", "parser_id", "retention_class", "run_id", "correlation_id"],
+)
+def test_unsafe_identifiers_are_rejected_at_the_public_store_boundary(
+    tmp_path: Path,
+    field_name: str,
+    invalid_identifier: str,
+) -> None:
+    """Reject path, control, URI-syntax, whitespace, and oversized identifiers.
+
+    Every persisted identity field is exercised through the production store.
+    Rejection happens before payload publication, protecting logical keys, logs,
+    and future API transport from ambiguous identifier syntax.
+    """
+    run_id = invalid_identifier if field_name == "run_id" else "run-valid"
+    correlation_id = (
+        invalid_identifier
+        if field_name == "correlation_id"
+        else "correlation-valid"
+    )
+    storage = StorageClient(
+        LocalStorageBackend(tmp_path / field_name)
+    ).for_shared_data()
+    context = ExecutionContext(
+        run_id=run_id,
+        correlation_id=correlation_id,
+        principal_id="fixture-test",
+    )
+    arguments: dict[str, object] = {
+        "artifact_id": "art-invalid",
+        "parser_id": "parser-valid",
+        "payload": b"must-not-persist",
+        "media_type": "application/octet-stream",
+        "retention_class": "temporary-audit",
+    }
+    if field_name in arguments:
+        arguments[field_name] = invalid_identifier
+
+    with pytest.raises(NativeArtifactError, match="must be 1-128 ASCII"):
+        NativeArtifactStore(storage, context).store(**arguments)
+
+    assert not storage.exists("ingest/native-artifacts")
+
+
 def test_tampered_stored_payload_fails_reload(tmp_path: Path) -> None:
     """Detect a payload changed outside the immutable StorageClient API."""
     store, storage, _context = _native_artifact_components(tmp_path)
@@ -220,6 +393,140 @@ def test_untrusted_descriptor_json_is_validated(tmp_path: Path) -> None:
 
     with pytest.raises(NativeArtifactIntegrityError, match="fields are invalid"):
         store.read(descriptor.artifact_id)
+
+
+def test_descriptor_cannot_redirect_reload_to_unrelated_ingest_object(
+    tmp_path: Path,
+) -> None:
+    """Reject a valid-looking descriptor that targets canonical Ingest content.
+
+    The tampered descriptor carries a matching URI, size, and digest for the
+    unrelated object, proving namespace authorization happens independently of
+    byte integrity and before ``reload`` can open that target.
+    """
+    store, storage, _context = _native_artifact_components(tmp_path)
+    descriptor = store.store(
+        artifact_id="art-redirection",
+        parser_id="fixture",
+        payload=b'{"native":true}',
+        media_type="application/json",
+    )
+    unrelated_key = "ingest/documents/doc-unrelated/provenance.json"
+    unrelated_payload = b'{"provenance":"not-native"}'
+    storage.put_bytes(
+        unrelated_key,
+        unrelated_payload,
+        media_type="application/json",
+    )
+    descriptor_path = storage.resolve_local_path(
+        "ingest/native-artifacts/art-redirection.json"
+    )
+    assert descriptor_path is not None
+    tampered = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    tampered.update(
+        {
+            "sha256": hashlib.sha256(unrelated_payload).hexdigest(),
+            "size_bytes": len(unrelated_payload),
+            "storage_key": unrelated_key,
+            "uri": storage.uri(unrelated_key),
+        }
+    )
+    descriptor_path.write_text(
+        json.dumps(tampered, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        NativeArtifactIntegrityError,
+        match="outside an approved native-payload namespace",
+    ):
+        store.reload(descriptor.artifact_id)
+
+
+def test_equivalent_descriptor_race_retains_shared_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep payload bytes when a concurrent writer publishes the same descriptor.
+
+    The storage hook simulates another writer winning between descriptor
+    preflight and atomic publication. Equivalent metadata is idempotent, the
+    payload remains available, and reload still verifies the exact bytes.
+    """
+    store, storage, _context = _native_artifact_components(tmp_path)
+    original_put_json = storage.put_json
+
+    def publish_equivalent_then_report_race(
+        key: str, value: object
+    ) -> None:
+        """Publish the competing equivalent descriptor before signalling loss."""
+        original_put_json(key, value)
+        raise ObjectAlreadyExistsError("simulated equivalent descriptor race")
+
+    monkeypatch.setattr(storage, "put_json", publish_equivalent_then_report_race)
+    payload = b'{"race":"equivalent"}'
+    descriptor = store.store(
+        artifact_id="art-equivalent-race",
+        parser_id="fixture",
+        payload=payload,
+        media_type="application/json",
+    )
+
+    assert storage.exists(descriptor.storage_key)
+    assert store.reload(descriptor.artifact_id).payload == payload
+
+
+def test_incompatible_descriptor_race_removes_only_losing_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compensate an incompatible publication race without harming its winner.
+
+    The simulated winner uses a different approved parser key. The losing call
+    created its default payload before discovering the winner, so that exact
+    unreferenced object must be removed while the winning payload and descriptor
+    remain readable.
+    """
+    store, storage, _context = _native_artifact_components(tmp_path)
+    original_put_json = storage.put_json
+    winner_key = "ingest/documents/doc-race/parser/winner.json"
+    winner_payload = b'{"race":"winner"}'
+
+    def publish_incompatible_then_report_race(
+        key: str, value: object
+    ) -> None:
+        """Install a valid incompatible winner before reporting atomic loss."""
+        assert isinstance(value, dict)
+        storage.put_bytes(
+            winner_key,
+            winner_payload,
+            media_type="application/json",
+        )
+        winner = dict(value)
+        winner.update(
+            {
+                "parser_id": "winner-parser",
+                "sha256": hashlib.sha256(winner_payload).hexdigest(),
+                "size_bytes": len(winner_payload),
+                "storage_key": winner_key,
+                "uri": storage.uri(winner_key),
+            }
+        )
+        original_put_json(key, winner)
+        raise ObjectAlreadyExistsError("simulated incompatible descriptor race")
+
+    monkeypatch.setattr(storage, "put_json", publish_incompatible_then_report_race)
+    losing_key = "ingest/native-artifacts/art-incompatible-race/payload"
+
+    with pytest.raises(NativeArtifactConflictError, match="descriptor conflicts"):
+        store.store(
+            artifact_id="art-incompatible-race",
+            parser_id="losing-parser",
+            payload=b'{"race":"loser"}',
+            media_type="application/json",
+        )
+
+    assert not storage.exists(losing_key)
+    assert storage.open(winner_key).read() == winner_payload
+    assert store.reload("art-incompatible-race").payload == winner_payload
 
 
 def test_invalid_json_pointer_produces_typed_error(tmp_path: Path) -> None:
