@@ -764,7 +764,8 @@ class IngestResult:
 
     Responsibility:
         Keep the established document, evidence, manifest, provenance, parser, and
-        usage results while exposing T02's canonical-content key additively.
+        usage results while exposing T02 canonical content and T05 parser-fusion
+        decisions additively.
     Constructed by:
         ``IngestService`` after all immutable document artifacts persist.
     Used by:
@@ -794,6 +795,7 @@ class IngestResult:
     raw_parser_key: str | None = None
     raw_parser_keys: tuple[str, ...] = ()
     canonical_content_key: str = ""
+    fusion_artifact_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,6 +13,7 @@ from pathlib import Path
 import cognityx_ingest.canonical_content as canonical_content
 import cognityx_ingest.native_artifacts as native_artifacts
 import cognityx_ingest.parser_capabilities as parser_capabilities
+import cognityx_ingest.parser_fusion as parser_fusion
 import cognityx_ingest.parser_routing as parser_routing
 
 
@@ -394,3 +395,93 @@ def test_registry_bound_public_methods_document_executable_trust_boundary() -> N
             "parser",
         ):
             assert concept in docstring, (name, concept)
+
+
+def test_parser_fusion_module_has_substantial_architectural_docstring() -> None:
+    """Require the complete T04-to-T06 decision boundary and consumer guidance."""
+    module_docstring = ast.get_docstring(_module_tree(parser_fusion)) or ""
+    normalized = module_docstring.lower()
+    assert len(module_docstring) >= 3_000
+    for concept in (
+        "purpose",
+        "design principles",
+        "processing flow",
+        "primary consumers",
+        "ownership boundary",
+        "non-goals",
+        "observation",
+        "alignment",
+        "fusion",
+        "adjudication",
+        "agreement",
+        "complementary",
+        "conflict",
+        "unresolved",
+        "compatibility projection",
+        "confidence",
+        "gold support",
+        "t04",
+        "t06",
+        "source graph",
+        "dataforge",
+    ):
+        assert concept in normalized, concept
+
+
+def test_every_public_parser_fusion_class_documents_its_contract() -> None:
+    """Require every public T05 record, service, and error to explain its design."""
+    public_classes = [
+        node
+        for node in _module_tree(parser_fusion).body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    ]
+    assert public_classes
+    for node in public_classes:
+        docstring = (ast.get_docstring(node) or "").lower()
+        for concept in (
+            "responsibility",
+            "constructed by",
+            "used by",
+            "main algorithm",
+            "invariants",
+            "lifecycle",
+            "side effects",
+            "typed failures",
+            "trust boundary",
+            "thread-safety assumptions",
+        ):
+            assert concept in docstring, (node.name, concept)
+
+
+def test_every_parser_fusion_callable_has_a_docstring() -> None:
+    """Require public seams and private invariant algorithms to explain why."""
+    callables = [
+        node
+        for node in ast.walk(_module_tree(parser_fusion))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert callables
+    assert all(ast.get_docstring(node) for node in callables)
+
+
+def test_named_parser_fusion_algorithms_have_invariant_documentation() -> None:
+    """Pin docs to IDs, values, regions, geometry, policy, projection, and gold."""
+    required = {
+        "_canonical_value_bytes",
+        "_adapt_result",
+        "_block_region",
+        "_bbox_iou",
+        "_mutual_best_bbox",
+        "_build_alignment_groups",
+        "_adjudicate_fact",
+        "_build_region_decisions",
+        "_enrich_compatibility_fact_sources",
+        "_strict_json_loads",
+    }
+    functions = {
+        node.name: node
+        for node in ast.walk(_module_tree(parser_fusion))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert required <= set(functions)
+    assert all(ast.get_docstring(functions[name]) for name in required)

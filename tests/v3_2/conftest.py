@@ -30,6 +30,9 @@ from cognityx_ingest import (
     ParserCapabilityRecord,
     ParserCapabilityRegistry,
     ParserDiscoveredCapabilities,
+    ObservationSourceRegion,
+    ParserObservation,
+    ParserObservationSet,
     ParserRuntimeProbe,
     RoutingBoundary,
     RoutingProviderProfile,
@@ -57,6 +60,47 @@ def v3_2_manifest(v3_2_fixture_root: Path) -> dict[str, object]:
     """Load the fixture manifest once so tests share the same contract input."""
     path = v3_2_fixture_root / "fixture_manifest.json"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="session")
+def fusion_cases(v3_2_fixture_root: Path) -> tuple[dict[str, object], ...]:
+    """Load the seven unchanged T05 cases without deriving expected outcomes."""
+    payload = json.loads(
+        (
+            v3_2_fixture_root
+            / "parser_observations"
+            / "fusion_cases.json"
+        ).read_text(encoding="utf-8")
+    )
+    return tuple(payload["cases"])
+
+
+@pytest.fixture
+def build_fusion_observation_set():
+    """Adapt one frozen case into normal public production observation records.
+
+    Focused tests call the returned adapter with fixture data. It uses only T05
+    constructors and deliberately invents no expected state or parser-native
+    identity, so assertions continue to exercise the production fusion service.
+    """
+
+    def build(case: dict[str, object]) -> ParserObservationSet:
+        """Create one deterministic set from a frozen fixture case."""
+        source_region_id = str(case["source_region_id"])
+        observations = tuple(
+            ParserObservation.create(
+                parser_id=str(item["parser"]),
+                parser_version=None,
+                source_region=ObservationSourceRegion(source_region_id),
+                fact=str(item["fact"]),
+                value=item["value"],
+                confidence=item.get("confidence"),
+            )
+            for item in case["observations"]
+        )
+        return ParserObservationSet.create(observations)
+
+    return build
 
 
 @pytest.fixture(scope="session")

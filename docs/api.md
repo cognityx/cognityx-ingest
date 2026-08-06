@@ -28,6 +28,8 @@ same implementation.
 
 ::: cognityx_ingest.parser_routing
 
+::: cognityx_ingest.parser_fusion
+
 ::: cognityx_ingest.enhancement
 
 ::: cognityx_ingest.enrichment

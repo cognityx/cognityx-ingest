@@ -1,4 +1,12 @@
-"""Backend-neutral PDF extraction plugins and selection policies."""
+"""Execute backend-neutral PDF parsers and preserve compatibility result shapes.
+
+This module owns parser adapters, existing selection policies, and the stable
+``ExtractionResult`` consumed by ingest callers. T05 alignment, fusion, and
+adjudication live in ``parser_fusion`` rather than expanding this execution
+module. Compare mode delegates completed parser results to that service, then
+receives a compatibility projection plus an additive auditable artifact. The
+separation keeps routing and parser execution distinct from evidence decisions.
+"""
 
 from __future__ import annotations
 
@@ -106,7 +114,16 @@ class ExtractedPage:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionResult:
-    """Normalized parser output without backend-specific public classes."""
+    """Carry normalized parser output without backend-private public classes.
+
+    Parser adapters construct this record and ``ParserRouter`` returns it to
+    ``IngestService`` and direct Python callers. Its fields preserve the existing
+    normalized page model, native raw artifacts, selection diagnostics, and
+    considered backends. T05 adds ``fusion_artifact`` as optional exact bytes so
+    every old constructor remains valid. The record is frozen, retains no open
+    parser resources, performs no work itself, and is safe for concurrent reads
+    when nested caller-supplied mappings are treated as immutable.
+    """
 
     pages: tuple[ExtractedPage, ...]
     backend: str
@@ -117,6 +134,7 @@ class ExtractionResult:
     considered_backends: tuple[str, ...] = ()
     selected_reason: str = "configured"
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    fusion_artifact: bytes | None = None
 
 
 class PdfExtractor(Protocol):
@@ -524,6 +542,13 @@ def normalize_extraction(extractor: Any, path: Path) -> ExtractionResult:
 def _with_selection(
     result: ExtractionResult, candidates: tuple[str, ...], reason: str
 ) -> ExtractionResult:
+    """Copy selection metadata while preserving every parser and T05 artifact.
+
+    Fixed, rule, fallback, and agent execution paths call this pure helper after
+    a parser returns. It changes only the considered candidates and reason,
+    performs no parser or external call, and retains the optional fusion bytes so
+    composition wrappers cannot accidentally discard an additive artifact.
+    """
     return ExtractionResult(
         pages=result.pages,
         backend=result.backend,
@@ -534,12 +559,41 @@ def _with_selection(
         considered_backends=candidates,
         selected_reason=reason,
         diagnostics=result.diagnostics,
+        fusion_artifact=result.fusion_artifact,
     )
 
 
 def _fuse_results(
     results: Sequence[ExtractionResult], candidates: tuple[str, ...]
 ) -> ExtractionResult:
+    """Delegate completed compare results to the explicit T05 production service.
+
+    ``ParserRouter(mode="compare")`` is the only production caller. The local
+    import avoids a module cycle because ``parser_fusion`` consumes immutable
+    extraction records from this module. T05 performs no parser execution,
+    provider, network, or LLM call; it returns a deterministic compatibility
+    result carrying the authoritative v3.2 artifact. Typed T05 failures propagate
+    unchanged and no persistence occurs here.
+    """
+    from cognityx_ingest.parser_fusion import ParserFusionService
+
+    return ParserFusionService().fuse_extraction_results(
+        results, candidates
+    ).extraction_result
+
+
+def _legacy_compatibility_projection(
+    results: Sequence[ExtractionResult], candidates: tuple[str, ...]
+) -> ExtractionResult:
+    """Project T05 inputs into the established one-value extraction field shape.
+
+    ``ParserFusionService`` calls this only after it has created explicit
+    observation and adjudication records. The historical deterministic logic is
+    retained so existing compare-mode consumers do not change shape or selected
+    values. Its choices are compatibility projections, not evidence acceptance;
+    the T05 artifact and diagnostics remain authoritative. The pure algorithm is
+    order-independent and performs no parser, network, provider, or LLM call.
+    """
     ordered = tuple(sorted(results, key=lambda item: item.backend))
     pages_by_index: dict[int, list[tuple[str, ExtractedPage]]] = {}
     for result in ordered:

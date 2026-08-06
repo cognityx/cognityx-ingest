@@ -5,9 +5,10 @@ control decisions, provenance, and Storage without making those collaborators on
 component. The main flow resolves a SourceAsset, runs the configured parser,
 builds compatibility records, adds independently versioned artifacts, and writes
 them through immutable keys. Its design principle is compatibility by additive
-contracts: v2 outputs remain stable while T01 native evidence and T02 canonical
-content gain separate identities. Python callers, CLI composition, DataForge
-handoff, operations, and audit tooling use the service.
+contracts: v2 outputs remain stable while T01 native evidence, T02 canonical
+content, and T05 parser-fusion decisions gain separate identities. Python
+callers, CLI composition, DataForge handoff, operations, and audit tooling use
+the service.
 """
 
 from __future__ import annotations
@@ -84,6 +85,7 @@ from cognityx_ingest.parser import (
     normalize_repeated_region_text,
     normalize_extraction,
 )
+from cognityx_ingest.parser_fusion import ParserFusionArtifact
 from cognityx_ingest.references import build_reference_provenance
 from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_ingest.structure import (
@@ -713,6 +715,7 @@ class IngestService:
                     result.manifest_key,
                     result.provenance_key,
                     result.canonical_content_key,
+                    result.fusion_artifact_key,
                 )
                 if key
             ),
@@ -733,6 +736,7 @@ class IngestService:
             raw_parser_key=result.raw_parser_key,
             raw_parser_keys=result.raw_parser_keys,
             canonical_content_key=result.canonical_content_key,
+            fusion_artifact_key=result.fusion_artifact_key,
         )
 
     def _persist(
@@ -754,14 +758,17 @@ class IngestService:
         ``canonical-content.json`` and adds references to provenance and manifest
         without replacing or reinterpreting ``document.json``.
 
-        Canonical content is serialized once through its public deterministic
-        byte serializer and those exact bytes are written as ``application/json``.
-        Repeating an equivalent run-bound write is idempotent only when existing
-        bytes and media type match exactly. Changed canonical data, parser bytes,
-        native descriptors, or v3.2 content fails rather than overwriting retained
-        evidence. Storage writes are the only side effect. T06 segmentation and
-        T08 Source Graph work consume the artifact later; no segmentation, graph,
-        retention, SDK, or CLI behavior is implemented here.
+        Canonical content and optional T05 fusion decisions are serialized once
+        through their deterministic public boundaries and written as exact
+        ``application/json`` bytes. The fusion decision artifact is Cognityx
+        processing output and therefore bypasses ``NativeArtifactStore``. Repeating
+        an equivalent run-bound write is idempotent only when existing bytes and
+        media type match exactly. Changed canonical data, parser bytes, native
+        descriptors, or v3.2 content fails rather than overwriting retained
+        evidence. Storage writes are the only side effect. Existing document-prefix
+        deletion removes this additive artifact; T07 owns future retention policy.
+        T06 segmentation and T08 Source Graph work consume the artifacts later;
+        no segmentation, graph, SDK, or CLI behavior is implemented here.
         """
         prefix = f"ingest/documents/{document.document_id}"
         document_key = f"{prefix}/document.json"
@@ -769,6 +776,16 @@ class IngestService:
         manifest_key = f"{prefix}/manifest.json"
         provenance_key = f"{prefix}/provenance.json"
         canonical_content_key = f"{prefix}/canonical-content.json"
+        fusion_artifact_key = (
+            f"{prefix}/parser/fusion-decisions.json"
+            if extraction.fusion_artifact is not None
+            else ""
+        )
+        fusion_artifact = (
+            ParserFusionArtifact.from_json_bytes(extraction.fusion_artifact)
+            if extraction.fusion_artifact is not None
+            else None
+        )
         raw_payloads = dict(extraction.raw_artifacts)
         if extraction.raw_artifact is not None:
             raw_payloads[extraction.backend] = extraction.raw_artifact
@@ -792,6 +809,12 @@ class IngestService:
         if not self._storage.exists(evidence_key):
             self._storage.put_bytes(
                 evidence_key, payload, media_type="application/x-ndjson"
+            )
+        if fusion_artifact is not None:
+            self._put_immutable_bytes(
+                fusion_artifact_key,
+                fusion_artifact.to_json_bytes(),
+                media_type="application/json",
             )
         native_store = NativeArtifactStore(self._storage, context)
         raw_descriptors = {}
@@ -847,6 +870,21 @@ class IngestService:
                     media_type="application/json",
                     schema_version=DOCUMENT_SCHEMA_VERSION,
                 ),
+                *(
+                    (
+                        CanonicalArtifactDescriptor(
+                            artifact_id=(
+                                f"art-{document.document_id}-parser_fusion_decisions"
+                            ),
+                            role="parser_fusion_decisions",
+                            uri=self._artifact_uri(fusion_artifact_key),
+                            media_type="application/json",
+                            schema_version=fusion_artifact.schema,
+                        ),
+                    )
+                    if fusion_artifact is not None
+                    else ()
+                ),
             ),
         )
         native_descriptor_map = {
@@ -881,6 +919,10 @@ class IngestService:
                 for backend, key, _payload in raw_parser_items
             },
         }
+        if fusion_artifact is not None:
+            artifact_uris["parser_fusion_decisions"] = self._artifact_uri(
+                fusion_artifact_key
+            )
         provenance = {
             "schema": "cognityx.ingest.provenance",
             "schema_version": PROVENANCE_SCHEMA_VERSION,
@@ -956,6 +998,28 @@ class IngestService:
                     }
                     for backend, _key, _payload in raw_parser_items
                 ],
+                **(
+                    {
+                        "fusion": {
+                            "fusion_schema": fusion_artifact.schema,
+                            "fusion_artifact_uri": self._artifact_uri(
+                                fusion_artifact_key
+                            ),
+                            "source_backends": list(
+                                fusion_artifact.source_backends
+                            ),
+                            "state_counts": dict(fusion_artifact.state_counts),
+                            "unresolved_count": dict(
+                                fusion_artifact.state_counts
+                            )["unresolved"],
+                            "conflict_count": dict(
+                                fusion_artifact.state_counts
+                            )["conflict"],
+                        }
+                    }
+                    if fusion_artifact is not None
+                    else {}
+                ),
             },
         }
         self._put_immutable_json(provenance_key, provenance)
@@ -965,6 +1029,10 @@ class IngestService:
             "canonical_content": self._storage.stat(canonical_content_key),
             "provenance": self._storage.stat(provenance_key),
         }
+        if fusion_artifact is not None:
+            stored["parser_fusion_decisions"] = self._storage.stat(
+                fusion_artifact_key
+            )
         for backend, key, _payload in raw_parser_items:
             name = _raw_parser_artifact_name(extraction.backend, backend)
             stored[name] = self._storage.stat(key)
@@ -1012,6 +1080,7 @@ class IngestService:
             raw_parser_key=raw_parser_key,
             raw_parser_keys=raw_parser_keys,
             canonical_content_key=canonical_content_key,
+            fusion_artifact_key=fusion_artifact_key,
         )
 
     def _start_job(

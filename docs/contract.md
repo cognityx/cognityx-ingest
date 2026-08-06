@@ -10,6 +10,7 @@ are relative to the supplied artifact storage scope.
 | `canonical-content.json` | Additive v3.2 parser-neutral resources, structure, text nodes, selectors and bindings |
 | `provenance.json` | Complete DataForge handoff without reopening the PDF |
 | `parser/{backend}.json` | Optional raw parser output for audit and comparison |
+| `parser/fusion-decisions.json` | Additive v3.2 parser observations, alignment evidence, and adjudication decisions |
 | `ingest/native-artifacts/{artifact-id}.json` | Small descriptor used to verify and reload one raw parser output |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
 | `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
@@ -53,8 +54,20 @@ The separate routing-plan schema is
 LLM-directed parser invocations plus the hard validation result. A routing plan
 does not execute a parser and does not combine parser outputs. T03 registry facts
 remain unchanged, existing `ExtractionPolicy` values remain the execution
-compatibility boundary, and later T05 work owns alignment and fusion. See
+compatibility boundary, and T05 owns alignment and fusion. See
 [Adaptive Parser Routing](adaptive-parser-routing.md).
+
+After compare-mode parser execution, T05 records each parser fact separately,
+aligns observations using source-location evidence, classifies agreement,
+complementary facts, conflict, and unresolved evidence, then applies explicit
+fact-specific policies. Confidence alone never selects a winner.
+
+The existing `cognityx.ingest.parser-fusion/v1` raw artifact remains readable.
+The additive `cognityx.ingest.parser-fusion/v3.2` decision artifact is stored at
+`parser/fusion-decisions.json`. Compatibility `ExtractionResult` values remain
+available, but conflict or unresolved projections are not accepted gold
+evidence. See [Parser Alignment, Fusion, and
+Adjudication](parser-alignment-fusion-adjudication.md).
 
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff

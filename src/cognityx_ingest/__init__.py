@@ -7,8 +7,9 @@ mechanism is explicit re-export of approved public records and services. The
 design principle is compatibility by addition, which is why T04 routing records
 do not replace existing ``ExtractionPolicy`` execution names and the v3.2
 ``CanonicalRepresentation`` alias does not replace the established enrichment
-``Representation`` name. CLI adapters, DataForge, audit tooling, tests, future
-orchestration, and direct Python integrators use this surface.
+``Representation`` name. T05 observation and decision records likewise accompany
+rather than replace ``ExtractionResult``. CLI adapters, DataForge, audit tooling,
+tests, future orchestration, and direct Python integrators use this surface.
 """
 
 from cognityx_ingest.canonical_content import (
@@ -18,6 +19,7 @@ from cognityx_ingest.canonical_content import (
     CanonicalContentBuilder,
     CanonicalContentError,
     CanonicalContentValidationError,
+    CanonicalFactSource,
     CanonicalOwnershipError,
     CanonicalReferenceError,
     CanonicalRelation,
@@ -120,6 +122,32 @@ from cognityx_ingest.parser import (
     PyPdfExtractor,
     UnsupportedInputError,
 )
+from cognityx_ingest.parser_fusion import (
+    ALIGNMENT_STATUSES,
+    EPISTEMIC_STATES,
+    FUSION_STATES,
+    PARSER_FUSION_ARTIFACT_SCHEMA,
+    PARSER_OBSERVATION_SET_SCHEMA,
+    AlignedObservationGroup,
+    AlignmentEvidence,
+    FactAdjudicationPolicy,
+    FactFusionDecision,
+    FusionOutcome,
+    ObservationSourceRegion,
+    ObservationValue,
+    ParserAdjudicationError,
+    ParserAlignmentError,
+    ParserFusionArtifact,
+    ParserFusionCompatibilityError,
+    ParserFusionError,
+    ParserFusionService,
+    ParserFusionUnresolvedError,
+    ParserFusionValidationError,
+    ParserObservation,
+    ParserObservationSet,
+    ParserObservationValidationError,
+    RegionFusionDecision,
+)
 from cognityx_ingest.parser_capabilities import (
     AutoLearnedCapabilities,
     AutoLearnedMeasurement,
@@ -173,6 +201,9 @@ from cognityx_resource import ExecutionContext, ResourceContext, ResourceRef
 
 __all__ = [
     "ADAPTIVE_ROUTING_MODES",
+    "ALIGNMENT_STATUSES",
+    "AlignedObservationGroup",
+    "AlignmentEvidence",
     "ArtifactRef",
     "AutoLearnedCapabilities",
     "AutoLearnedMeasurement",
@@ -186,6 +217,7 @@ __all__ = [
     "CanonicalContentBuilder",
     "CanonicalContentError",
     "CanonicalContentValidationError",
+    "CanonicalFactSource",
     "CanonicalDocument",
     "CanonicalOwnershipError",
     "CanonicalReferenceError",
@@ -216,6 +248,11 @@ __all__ = [
     "ExtractedSection",
     "ExtractionPolicy",
     "ExtractionResult",
+    "EPISTEMIC_STATES",
+    "FUSION_STATES",
+    "FactAdjudicationPolicy",
+    "FactFusionDecision",
+    "FusionOutcome",
     "HumanGuidance",
     "IngestAuthorizationError",
     "IngestJobState",
@@ -240,9 +277,24 @@ __all__ = [
     "NativeBindingValidationError",
     "NativePointerError",
     "OfficialDocumentationEvidence",
+    "ObservationSourceRegion",
+    "ObservationValue",
+    "PARSER_FUSION_ARTIFACT_SCHEMA",
+    "PARSER_OBSERVATION_SET_SCHEMA",
     "PARSER_CAPABILITY_REGISTRY_SCHEMA",
     "PageRecord",
     "ParserInvocation",
+    "ParserAdjudicationError",
+    "ParserAlignmentError",
+    "ParserFusionArtifact",
+    "ParserFusionCompatibilityError",
+    "ParserFusionError",
+    "ParserFusionService",
+    "ParserFusionUnresolvedError",
+    "ParserFusionValidationError",
+    "ParserObservation",
+    "ParserObservationSet",
+    "ParserObservationValidationError",
     "ParserRoutingCapabilityError",
     "ParserRoutingCompatibilityError",
     "ParserRoutingError",
@@ -274,6 +326,7 @@ __all__ = [
     "RegisteredSource",
     "Representation",
     "ResolutionTask",
+    "RegionFusionDecision",
     "RoutingBoundary",
     "RoutingInputFacts",
     "RoutingPlan",
