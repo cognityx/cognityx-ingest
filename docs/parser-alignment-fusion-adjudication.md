@@ -24,7 +24,7 @@ T04 parser routing plan
 existing parser execution
         |
         v
-T05 observation alignment
+T05 source-region aggregation and alignment
         |
         v
 T05 fact fusion
@@ -33,7 +33,7 @@ T05 fact fusion
 T05 adjudication
         |
         v
-compatibility ExtractionResult + auditable fusion artifact
+compatibility ExtractionResult + observations.json + fusion-decisions.json
         |
         v
 T06 segmentation views later
@@ -67,7 +67,11 @@ known, such as observed, inferred, ambiguous, contradicted, or unresolved.
 Native artifact IDs and pointers appear only when a caller has real T01 identity.
 
 The value is stored once in the observation set. Decisions reference observation
-IDs instead of copying accepted text repeatedly.
+IDs instead of copying accepted text repeatedly. `ParserObservationSet` is not a
+temporary calculation: Ingest writes its exact deterministic bytes to
+`parser/observations.json`. Audit tools, later segmentation work, and later
+Source Graph work can reload that file and resolve every observation ID retained
+by a decision.
 
 `ObservationValue` accepts JSON-safe scalar, sequence, and mapping values. It
 preserves strings exactly, rejects non-finite numbers, serializes deterministic
@@ -86,8 +90,19 @@ never copied into the region record.
 
 ## Alignment Algorithm
 
-Alignment asks whether two observations refer to the same source region. It does
-not decide whether their values agree.
+Alignment asks whether two parser-native source regions describe the same place.
+It does not decide whether their fact values agree.
+
+Before cross-parser matching, T05 groups every observation with the same
+`source_region_id`. For example, one parser block's text, block type, bounding
+box, and reading order become one initial region. This happens even when only one
+parser ran. Repeated location fields must be compatible; contradictory page,
+anchor, character-span, or geometry evidence fails validation.
+
+Cross-parser matching compares those region aggregates once. It does not compare
+every text fact with every geometry or structure fact. Alignment records retain
+deterministic representative observation IDs for compatibility and explicit
+left and right source-region IDs to make their region-level meaning clear.
 
 The deterministic priority is:
 
@@ -114,6 +129,12 @@ candidates tie or remain plausible, T05 records both as ambiguous and does not
 greedily connect them. Ambiguous alignment produces unresolved decisions and is
 never gold support.
 
+Evidence priority is operational rather than descriptive. If region A has an
+exact anchor match with region B and also overlaps region C, the exact A-B edge
+is accepted. The weaker A-C geometry candidate remains in the audit trail as
+`superseded`, but it cannot make the accepted A-B group ambiguous. Rejected and
+superseded edges never change group state.
+
 ## Fact Fusion and Four States
 
 After alignment, T05 groups observations by source region and fact. Fusion asks
@@ -131,19 +152,41 @@ agreement merely because a compatibility field needs one value.
 
 Adjudication applies a fact-specific reviewed rule. A
 `FactAdjudicationPolicy` is bounded data, not a Python callable or expression.
-Its strategies include exact agreement, retaining complementary facts,
-preserving conflict, preferring an explicit value, requiring review, and
-preserving segmentation variants.
+Its strategies have these concrete behaviors:
+
+- `exact-agreement` accepts equivalent bytes only when at least two distinct
+  parser IDs support them; incompatible values remain conflict with no winner.
+- `retain-complementary` accepts an independently valid fact but never renames
+  incompatible values for the same fact as complementary.
+- `preserve-conflict` retains and rejects every incompatible observation without
+  choosing one.
+- `prefer-explicit-value` accepts only observations matching an exact reviewed
+  value, rejects the others, and keeps the state as conflict.
+- `require-review` makes incompatible values unresolved, accepts none, and
+  records a required review action.
+- `preserve-segmentation-variants` retains split and merged alternatives as
+  conflict under the reviewed resolution without creating a T06 boundary.
+
+Policies may target one exact fact or one bounded fact family: textual,
+geometry, segmentation, structure, relation, or object. An exact fact policy
+overrides its family policy. Duplicate ownership and
+`retain_all_observations=false` are rejected because T05 never deletes evidence.
 
 There is no global backend-precedence table. A policy can accept one observation
 inside a conflict, but the state remains `conflict` and every rejected
-observation remains referenced.
+observation remains referenced. The fusion artifact stores complete policy
+records, including strategy, preferred values, resolution, and flags. Strict
+reload validation reapplies those records and requires identical decisions.
 
 ## Confidence Behavior
 
 Confidence is supporting evidence. T05 does not average unrelated confidence
 values, treat missing confidence as zero, or choose a winner solely because one
 number is larger. Confidence does not make evidence gold eligible.
+
+An `ExtractedPage` has no page-level confidence field. Its T05 observations
+therefore record `confidence=null`; they never manufacture `1.0`. Existing
+legacy fact-source confidence remains unchanged where compatibility requires it.
 
 A future policy may use a typed minimum confidence only when the policy and its
 tests state that rule explicitly.
@@ -221,16 +264,38 @@ artifact is Cognityx processing output, not parser-native data.
 For document `<document-id>`, `IngestService` writes:
 
 ```text
+ingest/documents/<document-id>/parser/observations.json
 ingest/documents/<document-id>/parser/fusion-decisions.json
 ```
 
-The artifact uses `application/json` and stable artifact ID
-`art-<document-id>-parser_fusion_decisions`. Manifest and provenance records add
-references, source backends, state counts, conflict count, and unresolved count.
-They do not copy complete observation values.
+Both artifacts use `application/json`. Their stable artifact IDs are
+`art-<document-id>-parser_observations` and
+`art-<document-id>-parser_fusion_decisions`. The fusion artifact records both the
+observation-set ID and SHA-256 over exact `ParserObservationSet.to_json_bytes()`.
+Ingest reloads both public artifacts and validates the complete binding before it
+writes either one.
 
-Output-byte accounting includes the new artifact. Existing document-prefix
-deletion removes it. T07 owns future retention and purge policy.
+Manifest, artifact references, and output-byte accounting include both files.
+Provenance summarizes only the observation schema, set ID, artifact URI,
+SHA-256, observation count, and parser IDs; it does not copy observation values.
+Fusion provenance retains its decision summary and binding.
+
+Existing document-prefix deletion removes both files. T07 owns future retention
+and purge policy.
+
+## Identity and Integrity Validation
+
+Strict readers recompute every public stable ID from its documented canonical
+identity. This covers observations, observation sets, alignment evidence,
+aligned groups, fact decisions, region decisions, and the fusion aggregate.
+A syntactically valid replacement ID is rejected.
+
+Validation also recomputes parser and version indexes, exact state counts,
+region membership, representative endpoints, group parser IDs, and one region
+summary per final region. It reruns region alignment with the persisted threshold
+and reapplies retained policy records. Changing observation bytes while keeping
+the same observation-set ID fails the SHA binding; changing policy strategy,
+preferred values, or resolution fails fusion integrity.
 
 ## Canonical Fact Sources
 
@@ -245,12 +310,16 @@ readability.
 ## Consumers
 
 - `ParserRouter(mode="compare")` calls T05 after parser execution.
-- `IngestService` persists the additive artifact.
+- `IngestService` validates and persists both additive artifacts.
 - Canonical-content builders retain fact-source references.
 - Audit tools inspect observations, policies, conflicts, and unresolved states.
 - T06 can later consume canonical IDs and spans for segmentation views.
 - T08 can later use accepted source evidence when building the Source Graph.
 - DataForge can later exclude unsafe evidence from gold support.
+
+T06 may consume references but remains the owner of non-copying segmentation
+views. T08 may consume accepted evidence but remains the owner of source graph
+nodes and provenance-address resolution. T05 creates neither API.
 
 ## Gold-Eligibility Rules
 

@@ -4,7 +4,8 @@ This module owns parser adapters, existing selection policies, and the stable
 ``ExtractionResult`` consumed by ingest callers. T05 alignment, fusion, and
 adjudication live in ``parser_fusion`` rather than expanding this execution
 module. Compare mode delegates completed parser results to that service, then
-receives a compatibility projection plus an additive auditable artifact. The
+receives a compatibility projection plus additive observation and decision
+artifacts. The
 separation keeps routing and parser execution distinct from evidence decisions.
 """
 
@@ -119,10 +120,12 @@ class ExtractionResult:
     Parser adapters construct this record and ``ParserRouter`` returns it to
     ``IngestService`` and direct Python callers. Its fields preserve the existing
     normalized page model, native raw artifacts, selection diagnostics, and
-    considered backends. T05 adds ``fusion_artifact`` as optional exact bytes so
-    every old constructor remains valid. The record is frozen, retains no open
-    parser resources, performs no work itself, and is safe for concurrent reads
-    when nested caller-supplied mappings are treated as immutable.
+    considered backends. T05 adds exact observation and fusion artifacts as
+    optional bytes so every old constructor remains valid. The observation bytes
+    preserve parser evidence; the fusion bytes preserve decisions that reference
+    that evidence. The record is frozen, retains no open parser resources,
+    performs no work itself, and is safe for concurrent reads when nested
+    caller-supplied mappings are treated as immutable.
     """
 
     pages: tuple[ExtractedPage, ...]
@@ -134,6 +137,7 @@ class ExtractionResult:
     considered_backends: tuple[str, ...] = ()
     selected_reason: str = "configured"
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    observation_artifact: bytes | None = None
     fusion_artifact: bytes | None = None
 
 
@@ -546,8 +550,9 @@ def _with_selection(
 
     Fixed, rule, fallback, and agent execution paths call this pure helper after
     a parser returns. It changes only the considered candidates and reason,
-    performs no parser or external call, and retains the optional fusion bytes so
-    composition wrappers cannot accidentally discard an additive artifact.
+    performs no parser or external call, and retains both optional observation
+    and fusion bytes so composition wrappers cannot accidentally break their
+    integrity binding.
     """
     return ExtractionResult(
         pages=result.pages,
@@ -559,6 +564,7 @@ def _with_selection(
         considered_backends=candidates,
         selected_reason=reason,
         diagnostics=result.diagnostics,
+        observation_artifact=result.observation_artifact,
         fusion_artifact=result.fusion_artifact,
     )
 

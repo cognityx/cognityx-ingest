@@ -6,7 +6,7 @@ component. The main flow resolves a SourceAsset, runs the configured parser,
 builds compatibility records, adds independently versioned artifacts, and writes
 them through immutable keys. Its design principle is compatibility by additive
 contracts: v2 outputs remain stable while T01 native evidence, T02 canonical
-content, and T05 parser-fusion decisions gain separate identities. Python
+content, and T05 parser observations plus fusion decisions gain separate identities. Python
 callers, CLI composition, DataForge handoff, operations, and audit tooling use
 the service.
 """
@@ -85,7 +85,11 @@ from cognityx_ingest.parser import (
     normalize_repeated_region_text,
     normalize_extraction,
 )
-from cognityx_ingest.parser_fusion import ParserFusionArtifact
+from cognityx_ingest.parser_fusion import (
+    ParserFusionArtifact,
+    ParserFusionCompatibilityError,
+    ParserObservationSet,
+)
 from cognityx_ingest.references import build_reference_provenance
 from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_ingest.structure import (
@@ -715,6 +719,7 @@ class IngestService:
                     result.manifest_key,
                     result.provenance_key,
                     result.canonical_content_key,
+                    result.observation_artifact_key,
                     result.fusion_artifact_key,
                 )
                 if key
@@ -736,6 +741,7 @@ class IngestService:
             raw_parser_key=result.raw_parser_key,
             raw_parser_keys=result.raw_parser_keys,
             canonical_content_key=result.canonical_content_key,
+            observation_artifact_key=result.observation_artifact_key,
             fusion_artifact_key=result.fusion_artifact_key,
         )
 
@@ -758,10 +764,11 @@ class IngestService:
         ``canonical-content.json`` and adds references to provenance and manifest
         without replacing or reinterpreting ``document.json``.
 
-        Canonical content and optional T05 fusion decisions are serialized once
-        through their deterministic public boundaries and written as exact
-        ``application/json`` bytes. The fusion decision artifact is Cognityx
-        processing output and therefore bypasses ``NativeArtifactStore``. Repeating
+        Canonical content plus optional T05 observations and fusion decisions are
+        validated together, serialized once through their deterministic public
+        boundaries, and written as exact ``application/json`` bytes. Both T05
+        artifacts are Cognityx processing output and therefore bypass
+        ``NativeArtifactStore``. Repeating
         an equivalent run-bound write is idempotent only when existing bytes and
         media type match exactly. Changed canonical data, parser bytes, native
         descriptors, or v3.2 content fails rather than overwriting retained
@@ -776,16 +783,42 @@ class IngestService:
         manifest_key = f"{prefix}/manifest.json"
         provenance_key = f"{prefix}/provenance.json"
         canonical_content_key = f"{prefix}/canonical-content.json"
+        observation_artifact_key = (
+            f"{prefix}/parser/observations.json"
+            if extraction.observation_artifact is not None
+            else ""
+        )
         fusion_artifact_key = (
             f"{prefix}/parser/fusion-decisions.json"
             if extraction.fusion_artifact is not None
             else ""
+        )
+        if (extraction.observation_artifact is None) != (
+            extraction.fusion_artifact is None
+        ):
+            raise ParserFusionCompatibilityError(
+                "Parser observations and fusion decisions must be supplied together."
+            )
+        observation_set = (
+            ParserObservationSet.from_json_bytes(extraction.observation_artifact)
+            if extraction.observation_artifact is not None
+            else None
         )
         fusion_artifact = (
             ParserFusionArtifact.from_json_bytes(extraction.fusion_artifact)
             if extraction.fusion_artifact is not None
             else None
         )
+        if observation_set is not None and fusion_artifact is not None:
+            if observation_set.to_json_bytes() != extraction.observation_artifact:
+                raise ParserFusionCompatibilityError(
+                    "Parser observation bytes are not canonical."
+                )
+            if fusion_artifact.to_json_bytes() != extraction.fusion_artifact:
+                raise ParserFusionCompatibilityError(
+                    "Parser fusion bytes are not canonical."
+                )
+            fusion_artifact.validate_against_observation_set(observation_set)
         raw_payloads = dict(extraction.raw_artifacts)
         if extraction.raw_artifact is not None:
             raw_payloads[extraction.backend] = extraction.raw_artifact
@@ -809,6 +842,12 @@ class IngestService:
         if not self._storage.exists(evidence_key):
             self._storage.put_bytes(
                 evidence_key, payload, media_type="application/x-ndjson"
+            )
+        if observation_set is not None:
+            self._put_immutable_bytes(
+                observation_artifact_key,
+                observation_set.to_json_bytes(),
+                media_type="application/json",
             )
         if fusion_artifact is not None:
             self._put_immutable_bytes(
@@ -874,6 +913,21 @@ class IngestService:
                     (
                         CanonicalArtifactDescriptor(
                             artifact_id=(
+                                f"art-{document.document_id}-parser_observations"
+                            ),
+                            role="parser_observations",
+                            uri=self._artifact_uri(observation_artifact_key),
+                            media_type="application/json",
+                            schema_version=observation_set.schema,
+                        ),
+                    )
+                    if observation_set is not None
+                    else ()
+                ),
+                *(
+                    (
+                        CanonicalArtifactDescriptor(
+                            artifact_id=(
                                 f"art-{document.document_id}-parser_fusion_decisions"
                             ),
                             role="parser_fusion_decisions",
@@ -922,6 +976,10 @@ class IngestService:
         if fusion_artifact is not None:
             artifact_uris["parser_fusion_decisions"] = self._artifact_uri(
                 fusion_artifact_key
+            )
+        if observation_set is not None:
+            artifact_uris["parser_observations"] = self._artifact_uri(
+                observation_artifact_key
             )
         provenance = {
             "schema": "cognityx.ingest.provenance",
@@ -1000,11 +1058,31 @@ class IngestService:
                 ],
                 **(
                     {
+                        "observations": {
+                            "observation_schema": observation_set.schema,
+                            "observation_set_id": observation_set.observation_set_id,
+                            "observation_artifact_uri": self._artifact_uri(
+                                observation_artifact_key
+                            ),
+                            "sha256": hashlib.sha256(
+                                observation_set.to_json_bytes()
+                            ).hexdigest(),
+                            "observation_count": len(observation_set.observations),
+                            "parser_ids": list(observation_set.parser_ids),
+                        }
+                    }
+                    if observation_set is not None
+                    else {}
+                ),
+                **(
+                    {
                         "fusion": {
                             "fusion_schema": fusion_artifact.schema,
                             "fusion_artifact_uri": self._artifact_uri(
                                 fusion_artifact_key
                             ),
+                            "observation_set_id": fusion_artifact.observation_set_id,
+                            "observation_set_sha256": fusion_artifact.observation_set_sha256,
                             "source_backends": list(
                                 fusion_artifact.source_backends
                             ),
@@ -1032,6 +1110,10 @@ class IngestService:
         if fusion_artifact is not None:
             stored["parser_fusion_decisions"] = self._storage.stat(
                 fusion_artifact_key
+            )
+        if observation_set is not None:
+            stored["parser_observations"] = self._storage.stat(
+                observation_artifact_key
             )
         for backend, key, _payload in raw_parser_items:
             name = _raw_parser_artifact_name(extraction.backend, backend)
@@ -1080,6 +1162,7 @@ class IngestService:
             raw_parser_key=raw_parser_key,
             raw_parser_keys=raw_parser_keys,
             canonical_content_key=canonical_content_key,
+            observation_artifact_key=observation_artifact_key,
             fusion_artifact_key=fusion_artifact_key,
         )
 

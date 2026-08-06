@@ -18,6 +18,13 @@ not an automatic winner rule. Persisted policies are bounded data rather than
 callables or Python expressions. Every public aggregate is immutable and every
 serialized collection has a stable logical order.
 
+Alignment aggregates all facts sharing an original source-region ID before it
+compares regions across parsers. One parser block's text, block type, box, and
+reading order therefore begin in one region even when no second parser exists.
+Stronger accepted identity or anchor evidence suppresses weaker ambiguous
+geometry candidates for that region; the weaker edge remains as superseded audit
+evidence instead of changing the accepted group's state.
+
 Processing flow
 ---------------
 ``ParserFusionService`` adapts parser results into observations, aligns them to
@@ -27,6 +34,12 @@ fusion artifact, and finally asks the legacy parser layer for an
 older callers require one value in fields such as page text or bounding box; it
 is not evidence acceptance. A conflict or unresolved decision remains visible
 and ineligible for gold support even when the old shape needs a projected value.
+
+The compatibility result carries two deterministic public byte aggregates.
+``ParserObservationSet`` becomes durable ``observations.json`` evidence, while
+``ParserFusionArtifact`` becomes ``fusion-decisions.json`` and binds the exact
+observation bytes with both an observation-set ID and SHA-256. Ingest reloads
+and validates both before writing either processing artifact.
 
 Primary consumers
 -----------------
@@ -44,6 +57,20 @@ these questions separate lets operators inspect why two parser records were
 grouped even when no fact can safely be accepted. It also lets downstream users
 distinguish a compatibility field needed by old code from reviewed evidence.
 
+Adjudication policies retain their complete data records in the fusion artifact,
+not only their IDs. Exact agreement, complementary retention, conflict
+preservation, explicit reviewed values, required review, and segmentation
+variant preservation are separate executable strategies. A bounded fact-family
+vocabulary supports reviewed defaults, while an exact fact policy takes
+precedence. Validation replays these retained policies and rejects changed
+strategies, preferred values, resolutions, or arbitrary replacement identities.
+No policy can discard an observation.
+
+Missing confidence stays absent. Page records have no native page-level
+confidence field, so page observations use ``None`` instead of an invented zero
+or one. Existing compatibility metadata can retain historical confidence where
+required, but it is not reinterpreted as T05 observed evidence.
+
 Ownership boundary
 ------------------
 Ingest owns parser observations and processing decisions. T01 remains the owner
@@ -51,6 +78,9 @@ of parser-native payload storage, T03 owns capability evidence, and T04 owns
 routing plans. This module performs no parser execution, provider call, network
 request, or LLM call. It references native artifact IDs only when a caller
 actually supplies them and never copies parser-native payloads.
+``IngestService`` persists observations and decisions directly rather than using
+``NativeArtifactStore``. T07 remains the owner of later retention and purge
+policy; normal document-prefix deletion is the only cleanup behavior in T05.
 
 Non-goals
 ---------
@@ -93,7 +123,30 @@ EPISTEMIC_STATES = (
     "contradicted",
     "unresolved",
 )
-ALIGNMENT_STATUSES = ("exact", "accepted-candidate", "ambiguous", "rejected")
+ALIGNMENT_STATUSES = (
+    "exact",
+    "accepted-candidate",
+    "ambiguous",
+    "rejected",
+    "superseded",
+)
+FACT_FAMILIES = (
+    "textual",
+    "geometry",
+    "segmentation",
+    "structure",
+    "relation",
+    "object",
+)
+
+_FACT_FAMILY_MEMBERS: Mapping[str, frozenset[str]] = {
+    "textual": frozenset({"text", "caption", "object_text", "title", "target_text"}),
+    "geometry": frozenset({"bbox", "image_bbox", "width", "height", "page_range"}),
+    "segmentation": frozenset({"blocks", "segmentation"}),
+    "structure": frozenset({"block_type", "reading_order", "page_label", "printed_page_label"}),
+    "relation": frozenset({"source_anchor", "target_anchor", "relation_type", "relation_status"}),
+    "object": frozenset({"object_type"}),
+}
 
 JSONScalar: TypeAlias = None | bool | int | float | str
 JSONValue: TypeAlias = JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
@@ -498,7 +551,8 @@ class ParserObservation:
     Invariants:
         ``value_sha256`` matches the exact value bytes and identities are bounded.
     Lifecycle/persistence:
-        Observations live in the observation set referenced by a fusion artifact.
+        Observations persist inside document-local ``parser/observations.json``;
+        fusion decisions reference their stable IDs rather than copying values.
     Side effects:
         None.
     Typed failures:
@@ -548,6 +602,17 @@ class ParserObservation:
             raise ParserObservationValidationError("epistemic_state is unsupported.")
         if isinstance(self.occurrence_index, bool) or self.occurrence_index < 1:
             raise ParserObservationValidationError("occurrence_index must be positive.")
+        if self.observation_id != _parser_observation_id(
+            self.parser_id,
+            self.parser_version,
+            self.source_region,
+            self.fact,
+            self.value_sha256,
+            self.occurrence_index,
+        ):
+            raise ParserObservationValidationError(
+                "observation_id does not match the canonical observation identity."
+            )
 
     @classmethod
     def create(
@@ -574,15 +639,14 @@ class ParserObservation:
         ``ParserObservationValidationError``.
         """
         wrapped = value if isinstance(value, ObservationValue) else ObservationValue.from_value(value)
-        identity = {
-            "parser_id": parser_id,
-            "parser_version": parser_version,
-            "source_region": source_region.to_dict(),
-            "fact": fact,
-            "value_sha256": wrapped.sha256,
-            "occurrence_index": occurrence_index,
-        }
-        observation_id = f"obs-{_sha256_json(identity)[:32]}"
+        observation_id = _parser_observation_id(
+            parser_id,
+            parser_version,
+            source_region,
+            fact,
+            wrapped.sha256,
+            occurrence_index,
+        )
         return cls(
             observation_id=observation_id,
             parser_id=parser_id,
@@ -663,8 +727,8 @@ class ParserObservationSet:
     Invariants:
         Schema is exact; IDs and parser/fact/occurrence identities are unique.
     Lifecycle/persistence:
-        It is embedded logically by reference from the fusion artifact and may be
-        serialized for audit exchange.
+        Exact deterministic bytes persist as ``parser/observations.json``. The
+        fusion artifact binds those bytes by set ID and SHA-256.
     Side effects:
         Lookup and serialization are pure.
     Typed failures:
@@ -702,14 +766,13 @@ class ParserObservationSet:
         """
         ordered = tuple(sorted(observations, key=lambda item: item.observation_id))
         parser_ids = tuple(sorted({item.parser_id for item in ordered}))
-        identity = {
-            "source_document_id": source_document_id,
-            "observation_ids": [item.observation_id for item in ordered],
-            "processing_activity_id": processing_activity_id,
-        }
         return cls(
             schema=PARSER_OBSERVATION_SET_SCHEMA,
-            observation_set_id=f"obset-{_sha256_json(identity)[:32]}",
+            observation_set_id=_parser_observation_set_id(
+                source_document_id,
+                ordered,
+                processing_activity_id,
+            ),
             source_document_id=source_document_id,
             parser_ids=parser_ids,
             observations=ordered,
@@ -787,6 +850,15 @@ class ParserObservationSet:
             raise ParserObservationValidationError("Duplicate observation_id detected.")
         if tuple(sorted({item.parser_id for item in self.observations})) != self.parser_ids:
             raise ParserObservationValidationError("parser_ids do not match observations.")
+        expected_id = _parser_observation_set_id(
+            self.source_document_id,
+            self.observations,
+            self.processing_activity_id,
+        )
+        if self.observation_set_id != expected_id:
+            raise ParserObservationValidationError(
+                "observation_set_id does not match the canonical set identity."
+            )
         identities = [
             (
                 item.parser_id,
@@ -831,7 +903,8 @@ class AlignmentEvidence:
     Used by:
         Aligned groups, artifact readers, and audit reviewers.
     Main algorithm:
-        Record the strongest source-native matching rule and optional score.
+        Record one region-level matching rule and optional score. Observation
+        endpoints are deterministic representatives of the two source regions.
     Invariants:
         IDs are ordered, scores are finite unit values, and status is bounded.
     Lifecycle/persistence:
@@ -850,6 +923,8 @@ class AlignmentEvidence:
     left_observation_id: str
     right_observation_id: str
     alignment_method: str
+    left_source_region_id: str = "region-unknown"
+    right_source_region_id: str = "region-unknown"
     alignment_score: float | None = None
     supporting_selector_ids: tuple[str, ...] = ()
     status: str = "rejected"
@@ -859,6 +934,8 @@ class AlignmentEvidence:
         _require_id(self.alignment_id, "alignment_id", alignment=True)
         _require_id(self.left_observation_id, "left_observation_id", alignment=True)
         _require_id(self.right_observation_id, "right_observation_id", alignment=True)
+        _require_id(self.left_source_region_id, "left_source_region_id", alignment=True)
+        _require_id(self.right_source_region_id, "right_source_region_id", alignment=True)
         if self.left_observation_id >= self.right_observation_id:
             raise ParserAlignmentError("Alignment observation IDs must be ordered.")
         _bounded_text(self.alignment_method, "alignment_method", alignment=True)
@@ -867,6 +944,20 @@ class AlignmentEvidence:
             raise ParserAlignmentError("Alignment selector IDs must be unique and ordered.")
         if self.status not in ALIGNMENT_STATUSES:
             raise ParserAlignmentError("Alignment status is unsupported.")
+        expected_id = _alignment_evidence_id(
+            self.left_observation_id,
+            self.right_observation_id,
+            self.left_source_region_id,
+            self.right_source_region_id,
+            self.alignment_method,
+            self.alignment_score,
+            self.supporting_selector_ids,
+            self.status,
+        )
+        if self.alignment_id != expected_id:
+            raise ParserAlignmentError(
+                "alignment_id does not match the canonical evidence identity."
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Serialize alignment evidence in stable JSON-safe form."""
@@ -874,6 +965,8 @@ class AlignmentEvidence:
             "alignment_id": self.alignment_id,
             "left_observation_id": self.left_observation_id,
             "right_observation_id": self.right_observation_id,
+            "left_source_region_id": self.left_source_region_id,
+            "right_source_region_id": self.right_source_region_id,
             "alignment_method": self.alignment_method,
             "alignment_score": self.alignment_score,
             "supporting_selector_ids": list(self.supporting_selector_ids),
@@ -910,6 +1003,7 @@ class AlignedObservationGroup:
 
     alignment_group_id: str
     source_region_id: str
+    source_region_ids: tuple[str, ...]
     observation_ids: tuple[str, ...]
     parser_ids: tuple[str, ...]
     alignment_evidence_ids: tuple[str, ...]
@@ -921,6 +1015,7 @@ class AlignedObservationGroup:
         _require_id(self.source_region_id, "source_region_id", alignment=True)
         for label, values in (
             ("observation_ids", self.observation_ids),
+            ("source_region_ids", self.source_region_ids),
             ("parser_ids", self.parser_ids),
             ("alignment_evidence_ids", self.alignment_evidence_ids),
         ):
@@ -928,14 +1023,29 @@ class AlignedObservationGroup:
                 raise ParserAlignmentError(f"{label} must be unique and ordered.")
         if not self.observation_ids:
             raise ParserAlignmentError("Aligned group requires an observation.")
+        if not self.source_region_ids:
+            raise ParserAlignmentError("Aligned group requires a source region.")
         if self.alignment_status not in {"exact", "accepted-candidate", "ambiguous"}:
             raise ParserAlignmentError("Aligned group status is unsupported.")
+        expected_id = _aligned_group_id(
+            self.source_region_id,
+            self.source_region_ids,
+            self.observation_ids,
+            self.parser_ids,
+            self.alignment_evidence_ids,
+            self.alignment_status,
+        )
+        if self.alignment_group_id != expected_id:
+            raise ParserAlignmentError(
+                "alignment_group_id does not match the canonical group identity."
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Serialize the group without copying any observation value."""
         return {
             "alignment_group_id": self.alignment_group_id,
             "source_region_id": self.source_region_id,
+            "source_region_ids": list(self.source_region_ids),
             "observation_ids": list(self.observation_ids),
             "parser_ids": list(self.parser_ids),
             "alignment_evidence_ids": list(self.alignment_evidence_ids),
@@ -959,7 +1069,8 @@ class FactAdjudicationPolicy:
     Invariants:
         Strategies are bounded data; no executable callable or expression exists.
     Lifecycle/persistence:
-        Decisions retain the policy ID; policy code remains versioned with T05.
+        Applied policy records persist inside the fusion artifact so strict
+        readers can replay decisions without executable policy code.
     Side effects:
         None.
     Typed failures:
@@ -987,6 +1098,8 @@ class FactAdjudicationPolicy:
         target = self.fact if self.fact is not None else self.fact_family
         if target is None or not _FACT_PATTERN.fullmatch(target):
             raise ParserAdjudicationError("Policy fact target is malformed.")
+        if self.fact_family is not None and self.fact_family not in FACT_FAMILIES:
+            raise ParserAdjudicationError("Policy fact family is unsupported.")
         if self.strategy not in {
             "exact-agreement", "retain-complementary", "preserve-conflict",
             "prefer-explicit-value", "require-review",
@@ -995,6 +1108,10 @@ class FactAdjudicationPolicy:
             raise ParserAdjudicationError("Policy strategy is unsupported.")
         if not all(isinstance(item, ObservationValue) for item in self.preferred_values):
             raise ParserAdjudicationError("preferred_values must be immutable observation values.")
+        if not self.retain_all_observations:
+            raise ParserAdjudicationError(
+                "v3.2 policies must retain every parser observation."
+            )
         _bounded_text(self.resolution_code, "resolution_code", adjudication=True)
 
     def to_dict(self) -> dict[str, object]:
@@ -1009,6 +1126,50 @@ class FactAdjudicationPolicy:
             "retain_all_observations": self.retain_all_observations,
             "gold_eligible_on_accept": self.gold_eligible_on_accept,
         }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, object]) -> "FactAdjudicationPolicy":
+        """Read one bounded data-only policy for persistence replay.
+
+        Fusion artifact readers call this strict constructor. It accepts only the
+        declared scalar fields and canonical preferred values, performs no code
+        evaluation, and raises ``ParserAdjudicationError`` for unsupported policy
+        ownership or behavior.
+        """
+        required = {
+            "policy_id", "fact", "fact_family", "strategy", "preferred_values",
+            "resolution_code", "retain_all_observations", "gold_eligible_on_accept",
+        }
+        if set(value) != required:
+            raise ParserAdjudicationError("Policy fields do not match the required schema.")
+        preferred = value["preferred_values"]
+        if not isinstance(preferred, list):
+            raise ParserAdjudicationError("preferred_values must be an array.")
+        retain = value["retain_all_observations"]
+        gold = value["gold_eligible_on_accept"]
+        if not isinstance(retain, bool) or not isinstance(gold, bool):
+            raise ParserAdjudicationError("Policy flags must be booleans.")
+        policy_id = value["policy_id"]
+        strategy = value["strategy"]
+        resolution = value["resolution_code"]
+        fact = value["fact"]
+        family = value["fact_family"]
+        if not all(isinstance(item, str) for item in (policy_id, strategy, resolution)):
+            raise ParserAdjudicationError("Policy identifiers must be strings.")
+        if fact is not None and not isinstance(fact, str):
+            raise ParserAdjudicationError("Policy fact must be null or a string.")
+        if family is not None and not isinstance(family, str):
+            raise ParserAdjudicationError("Policy fact_family must be null or a string.")
+        return cls(
+            policy_id=policy_id,
+            fact=fact,
+            fact_family=family,
+            strategy=strategy,
+            preferred_values=tuple(ObservationValue.from_value(item) for item in preferred),
+            resolution_code=resolution,
+            retain_all_observations=retain,
+            gold_eligible_on_accept=gold,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1074,6 +1235,12 @@ class FactFusionDecision:
             raise ParserFusionValidationError("Rejected observations are outside the decision.")
         if set(self.accepted_observation_ids) & set(self.rejected_observation_ids):
             raise ParserFusionValidationError("Accepted and rejected observations overlap.")
+        if set(self.accepted_observation_ids) | set(self.rejected_observation_ids) != set(
+            self.observation_ids
+        ):
+            raise ParserFusionValidationError(
+                "Accepted and rejected observations must classify every observation."
+            )
         if self.state == "unresolved" and self.accepted_observation_ids:
             raise ParserFusionValidationError("Unresolved decisions cannot accept observations.")
         if self.state == "agreement" and len(self.accepted_observation_ids) < 2:
@@ -1087,6 +1254,22 @@ class FactFusionDecision:
             _bounded_text(self.required_action, "required_action", fusion=True)
         if self.policy_id is not None:
             _require_id(self.policy_id, "policy_id", fusion=True)
+        expected_id = _fact_decision_id(
+            self.source_region_id,
+            self.fact,
+            self.state,
+            self.observation_ids,
+            self.accepted_observation_ids,
+            self.rejected_observation_ids,
+            self.resolution,
+            self.required_action,
+            self.gold_eligible,
+            self.policy_id,
+        )
+        if self.decision_id != expected_id:
+            raise ParserFusionValidationError(
+                "decision_id does not match the canonical fact decision identity."
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Serialize the decision by observation references rather than values."""
@@ -1154,6 +1337,18 @@ class RegionFusionDecision:
             raise ParserFusionValidationError("Region fusion state is unsupported.")
         if self.state in {"conflict", "unresolved"} and self.gold_eligible:
             raise ParserFusionValidationError("Conflict or unresolved region cannot be gold eligible.")
+        expected_id = _region_decision_id(
+            self.source_region_id,
+            self.alignment_group_ids,
+            self.fact_decision_ids,
+            self.state,
+            self.source_parsers,
+            self.gold_eligible,
+        )
+        if self.region_decision_id != expected_id:
+            raise ParserFusionValidationError(
+                "region_decision_id does not match the canonical region decision identity."
+            )
 
     def to_dict(self) -> dict[str, object]:
         """Serialize the region summary in deterministic ID order."""
@@ -1174,7 +1369,7 @@ class ParserFusionArtifact:
 
     Responsibility:
         Bind alignment evidence, groups, fact decisions, region summaries, and
-        policy identities to one observation set.
+        complete replayable policies to the exact bytes of one observation set.
     Constructed by:
         ``ParserFusionService.fuse`` or strict deserialization.
     Used by:
@@ -1185,7 +1380,8 @@ class ParserFusionArtifact:
         Schema and ordering are exact; decisions reference observations rather
         than repeating accepted text; state counts match fact decisions.
     Lifecycle/persistence:
-        Stored as the additive document-local ``fusion-decisions.json`` artifact.
+        Stored as additive document-local ``fusion-decisions.json`` beside the
+        separately durable and SHA-bound ``observations.json`` artifact.
     Side effects:
         Validation, lookups, and serialization are side-effect free.
     Typed failures:
@@ -1199,12 +1395,14 @@ class ParserFusionArtifact:
     schema: str
     fusion_id: str
     observation_set_id: str
+    observation_set_sha256: str
     source_backends: tuple[str, ...]
     backend_versions: tuple[tuple[str, str], ...]
     alignment_evidence: tuple[AlignmentEvidence, ...]
     aligned_groups: tuple[AlignedObservationGroup, ...]
     fact_decisions: tuple[FactFusionDecision, ...]
     region_decisions: tuple[RegionFusionDecision, ...]
+    adjudication_policies: tuple[FactAdjudicationPolicy, ...]
     policy_ids: tuple[str, ...]
     processing_activity: tuple[tuple[str, str], ...]
     state_counts: tuple[tuple[str, int], ...]
@@ -1217,9 +1415,9 @@ class ParserFusionArtifact:
     def from_dict(cls, value: Mapping[str, object]) -> "ParserFusionArtifact":
         """Parse one strict JSON-safe artifact mapping and validate every record."""
         required = {
-            "schema", "fusion_id", "observation_set_id", "source_backends",
+            "schema", "fusion_id", "observation_set_id", "observation_set_sha256", "source_backends",
             "backend_versions", "alignment_evidence", "aligned_groups",
-            "fact_decisions", "region_decisions", "policy_ids",
+            "fact_decisions", "region_decisions", "adjudication_policies", "policy_ids",
             "processing_activity", "state_counts",
         }
         _require_fields(value, required=required, optional=set(), fusion=True)
@@ -1227,6 +1425,7 @@ class ParserFusionArtifact:
             schema=_text_field(value, "schema", fusion=True),
             fusion_id=_text_field(value, "fusion_id", fusion=True),
             observation_set_id=_text_field(value, "observation_set_id", fusion=True),
+            observation_set_sha256=_text_field(value, "observation_set_sha256", fusion=True),
             source_backends=_string_tuple(value["source_backends"], "source_backends", fusion=True),
             backend_versions=_string_mapping_tuple(value["backend_versions"], "backend_versions"),
             alignment_evidence=tuple(
@@ -1240,6 +1439,10 @@ class ParserFusionArtifact:
             ),
             region_decisions=tuple(
                 _region_decision_from_dict(item) for item in _object_array(value["region_decisions"], "region_decisions")
+            ),
+            adjudication_policies=tuple(
+                FactAdjudicationPolicy.from_dict(item)
+                for item in _object_array(value["adjudication_policies"], "adjudication_policies")
             ),
             policy_ids=_string_tuple(value["policy_ids"], "policy_ids", fusion=True),
             processing_activity=_string_mapping_tuple(value["processing_activity"], "processing_activity"),
@@ -1260,12 +1463,14 @@ class ParserFusionArtifact:
             "schema": self.schema,
             "fusion_id": self.fusion_id,
             "observation_set_id": self.observation_set_id,
+            "observation_set_sha256": self.observation_set_sha256,
             "source_backends": list(self.source_backends),
             "backend_versions": dict(self.backend_versions),
             "alignment_evidence": [item.to_dict() for item in self.alignment_evidence],
             "aligned_groups": [item.to_dict() for item in self.aligned_groups],
             "fact_decisions": [item.to_dict() for item in self.fact_decisions],
             "region_decisions": [item.to_dict() for item in self.region_decisions],
+            "adjudication_policies": [item.to_dict() for item in self.adjudication_policies],
             "policy_ids": list(self.policy_ids),
             "processing_activity": dict(self.processing_activity),
             "state_counts": dict(self.state_counts),
@@ -1286,6 +1491,8 @@ class ParserFusionArtifact:
             raise ParserFusionValidationError("Fusion artifact schema is unsupported.")
         _require_id(self.fusion_id, "fusion_id", fusion=True)
         _require_id(self.observation_set_id, "observation_set_id", fusion=True)
+        if not _is_sha256(self.observation_set_sha256):
+            raise ParserFusionValidationError("observation_set_sha256 must be SHA-256.")
         _validate_ordered_unique(self.source_backends, "source_backends")
         _validate_ordered_unique(self.policy_ids, "policy_ids")
         _validate_pair_order(self.backend_versions, "backend_versions")
@@ -1298,6 +1505,11 @@ class ParserFusionArtifact:
         _validate_record_order(self.aligned_groups, "alignment_group_id", "aligned_groups")
         _validate_record_order(self.fact_decisions, "decision_id", "fact_decisions")
         _validate_record_order(self.region_decisions, "region_decision_id", "region_decisions")
+        _validate_record_order(self.adjudication_policies, "policy_id", "adjudication_policies")
+        if self.policy_ids != tuple(item.policy_id for item in self.adjudication_policies):
+            raise ParserFusionValidationError(
+                "policy_ids do not match retained adjudication policies."
+            )
         evidence_ids = {item.alignment_id for item in self.alignment_evidence}
         group_ids = {item.alignment_group_id for item in self.aligned_groups}
         decision_ids = {item.decision_id for item in self.fact_decisions}
@@ -1311,6 +1523,15 @@ class ParserFusionArtifact:
                 "An observation appears in more than one aligned group."
             )
         grouped_observation_set = set(grouped_observation_ids)
+        grouped_source_region_ids = [
+            source_region_id
+            for group in self.aligned_groups
+            for source_region_id in group.source_region_ids
+        ]
+        if len(grouped_source_region_ids) != len(set(grouped_source_region_ids)):
+            raise ParserFusionValidationError(
+                "An original source region appears in more than one aligned group."
+            )
         for item in self.alignment_evidence:
             if {
                 item.left_observation_id,
@@ -1322,6 +1543,28 @@ class ParserFusionArtifact:
         for group in self.aligned_groups:
             if not set(group.alignment_evidence_ids) <= evidence_ids:
                 raise ParserFusionValidationError("Aligned group references missing evidence.")
+            for evidence_id in group.alignment_evidence_ids:
+                item = next(
+                    value for value in self.alignment_evidence
+                    if value.alignment_id == evidence_id
+                )
+                if not {
+                    item.left_source_region_id,
+                    item.right_source_region_id,
+                } & set(group.source_region_ids):
+                    raise ParserFusionValidationError(
+                        "Aligned group references evidence outside its source regions."
+                    )
+        if len({item.source_region_id for item in self.region_decisions}) != len(
+            self.region_decisions
+        ):
+            raise ParserFusionValidationError("Duplicate region decision summary detected.")
+        if {item.source_region_id for item in self.region_decisions} != {
+            item.source_region_id for item in self.aligned_groups
+        }:
+            raise ParserFusionValidationError(
+                "Region decisions must summarize every aligned group exactly once."
+            )
         for region in self.region_decisions:
             if not set(region.alignment_group_ids) <= group_ids:
                 raise ParserFusionValidationError("Region decision references missing group.")
@@ -1343,30 +1586,73 @@ class ParserFusionArtifact:
                 raise ParserFusionValidationError(
                     "Decision observations are outside their aligned region."
                 )
+        try:
+            _policy_index(self.adjudication_policies)
+        except ParserAdjudicationError as exc:
+            raise ParserFusionValidationError(
+                "Retained adjudication policy ownership is invalid."
+            ) from exc
         expected_counts = tuple(
             (state, sum(item.state == state for item in self.fact_decisions))
             for state in FUSION_STATES
         )
         if self.state_counts != expected_counts:
             raise ParserFusionValidationError("state_counts do not match fact decisions.")
+        expected_fusion_id = _parser_fusion_id(
+            self.observation_set_id,
+            self.observation_set_sha256,
+            self.source_backends,
+            self.backend_versions,
+            self.alignment_evidence,
+            self.aligned_groups,
+            self.fact_decisions,
+            self.region_decisions,
+            self.adjudication_policies,
+            self.processing_activity,
+            self.state_counts,
+        )
+        if self.fusion_id != expected_fusion_id:
+            raise ParserFusionValidationError(
+                "fusion_id does not match the canonical fusion identity."
+            )
 
     def validate_against_observation_set(
         self, observation_set: ParserObservationSet
     ) -> None:
-        """Prove artifact references and agreement against exact observations.
+        """Replay alignment and policy semantics against exact observation bytes.
 
-        Persistence and strict consumers call this after obtaining the separately
-        validated observation set. The algorithm checks aggregate identity,
-        complete one-group membership, decision fact and region membership, exact
-        value equality for agreement, and unsafe gold states. It mutates nothing,
-        performs no parser or external call, and raises
-        ``ParserFusionValidationError`` on failure.
+        ``IngestService`` and strict readers call this before trusting or writing
+        either artifact. Validation binds both the set ID and SHA-256, recomputes
+        parser/version indexes, reruns deterministic region alignment using the
+        persisted threshold, reapplies retained data-only policies, and requires
+        every group, fact decision, and region summary to match exactly. The pure
+        replay performs no parser, provider, network, or LLM call.
         """
         self.validate()
         observation_set.validate()
         if self.observation_set_id != observation_set.observation_set_id:
             raise ParserFusionValidationError(
                 "Fusion artifact references another observation set."
+            )
+        observation_sha256 = hashlib.sha256(
+            observation_set.to_json_bytes()
+        ).hexdigest()
+        if self.observation_set_sha256 != observation_sha256:
+            raise ParserFusionValidationError(
+                "Fusion artifact observation-set SHA-256 does not match."
+            )
+        if self.source_backends != observation_set.parser_ids:
+            raise ParserFusionValidationError(
+                "Fusion source_backends do not match the observation set."
+            )
+        expected_versions = tuple(sorted({
+            (item.parser_id, item.parser_version)
+            for item in observation_set.observations
+            if item.parser_version is not None
+        }))
+        if self.backend_versions != expected_versions:
+            raise ParserFusionValidationError(
+                "Fusion backend_versions do not match the observation set."
             )
         expected_ids = {item.observation_id for item in observation_set.observations}
         grouped_ids = {
@@ -1379,6 +1665,37 @@ class ParserFusionArtifact:
                 "Aligned groups do not cover the observation set exactly once."
             )
         index = {item.observation_id: item for item in observation_set.observations}
+        region_ids_by_observation = {
+            item.observation_id: item.source_region.source_region_id
+            for item in observation_set.observations
+        }
+        for evidence in self.alignment_evidence:
+            if evidence.left_observation_id not in index or evidence.right_observation_id not in index:
+                raise ParserFusionValidationError(
+                    "Alignment evidence references a missing observation."
+                )
+            if (
+                region_ids_by_observation[evidence.left_observation_id]
+                != evidence.left_source_region_id
+                or region_ids_by_observation[evidence.right_observation_id]
+                != evidence.right_source_region_id
+            ):
+                raise ParserFusionValidationError(
+                    "Alignment representative does not belong to its source region."
+                )
+        for group in self.aligned_groups:
+            actual_region_ids = tuple(sorted({
+                region_ids_by_observation[item] for item in group.observation_ids
+            }))
+            actual_parsers = tuple(sorted({index[item].parser_id for item in group.observation_ids}))
+            if group.source_region_ids != actual_region_ids:
+                raise ParserFusionValidationError(
+                    "Aligned group source regions do not match its observations."
+                )
+            if group.parser_ids != actual_parsers:
+                raise ParserFusionValidationError(
+                    "Aligned group parser IDs do not match its observations."
+                )
         for decision in self.fact_decisions:
             observations = tuple(index[item] for item in decision.observation_ids)
             if any(item.fact != decision.fact for item in observations):
@@ -1391,6 +1708,12 @@ class ParserFusionArtifact:
                 raise ParserFusionValidationError(
                     "Agreement observations do not have equivalent values."
                 )
+            if decision.state == "agreement" and len(
+                {item.parser_id for item in observations}
+            ) < 2:
+                raise ParserFusionValidationError(
+                    "Agreement requires observations from distinct parsers."
+                )
             if decision.gold_eligible and any(
                 item.epistemic_state in _UNSAFE_GOLD_STATES
                 for item in observations
@@ -1398,6 +1721,47 @@ class ParserFusionArtifact:
                 raise ParserFusionValidationError(
                     "Unsafe observation state cannot be gold eligible."
                 )
+        activity = dict(self.processing_activity)
+        if activity.get("method") != "deterministic-parser-fusion":
+            raise ParserFusionValidationError("Fusion processing method is unsupported.")
+        try:
+            threshold = float(activity["bbox_iou_threshold"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ParserFusionValidationError(
+                "Fusion bbox threshold is missing or invalid."
+            ) from exc
+        if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+            raise ParserFusionValidationError("Fusion bbox threshold is out of range.")
+        expected_evidence, expected_groups = ParserFusionService(
+            bbox_iou_threshold=threshold
+        ).align(observation_set)
+        if self.alignment_evidence != expected_evidence:
+            raise ParserFusionValidationError(
+                "Alignment evidence does not replay from the observation set."
+            )
+        if self.aligned_groups != expected_groups:
+            raise ParserFusionValidationError(
+                "Aligned groups do not replay from the observation set."
+            )
+        policy_index = _policy_index(self.adjudication_policies)
+        expected_fact_decisions = _build_fact_decisions(
+            observation_set,
+            expected_groups,
+            policy_index,
+        )
+        if self.fact_decisions != expected_fact_decisions:
+            raise ParserFusionValidationError(
+                "Fact decisions do not replay from retained policies."
+            )
+        expected_region_decisions = _build_region_decisions(
+            observation_set,
+            expected_groups,
+            expected_fact_decisions,
+        )
+        if self.region_decisions != expected_region_decisions:
+            raise ParserFusionValidationError(
+                "Region decisions do not replay from retained policies."
+            )
 
     def decision(self, decision_id: str) -> FactFusionDecision:
         """Return one fact decision or raise a typed missing-reference failure."""
@@ -1436,7 +1800,8 @@ class FusionOutcome:
     Main algorithm:
         Aggregate three already validated immutable results.
     Invariants:
-        ``extraction_result.fusion_artifact`` equals the artifact's exact bytes.
+        The extraction result carries exact bytes for both public aggregates, and
+        the fusion artifact binds the observation bytes by ID and SHA-256.
     Lifecycle/persistence:
         ``IngestService`` persists only the relevant result and artifact outputs.
     Side effects:
@@ -1454,11 +1819,17 @@ class FusionOutcome:
     extraction_result: ExtractionResult
 
     def __post_init__(self) -> None:
-        """Ensure the compatibility result carries the exact authority bytes."""
+        """Ensure compatibility transport carries both exact bound aggregates."""
+        observation_bytes = self.observation_set.to_json_bytes()
+        if self.extraction_result.observation_artifact != observation_bytes:
+            raise ParserFusionCompatibilityError(
+                "Compatibility result does not carry the observation-set bytes."
+            )
         if self.extraction_result.fusion_artifact != self.fusion_artifact.to_json_bytes():
             raise ParserFusionCompatibilityError(
                 "Compatibility result does not carry the fusion artifact bytes."
             )
+        self.fusion_artifact.validate_against_observation_set(self.observation_set)
 
 
 class ParserFusionService:
@@ -1471,8 +1842,9 @@ class ParserFusionService:
     Used by:
         ``ParserRouter(mode="compare")``, tests, and future ingest orchestration.
     Main algorithm:
-        Adapt results, align by source evidence, group facts, apply bounded
-        policies, summarize regions, and create a marked compatibility projection.
+        Adapt results, aggregate same-region facts, align source regions by
+        evidence priority, apply replayable bounded policies, summarize regions,
+        and create a marked compatibility projection carrying both artifacts.
     Invariants:
         Equivalent inputs in any sequence order produce identical IDs, decisions,
         artifact bytes, and compatibility results.
@@ -1538,17 +1910,19 @@ class ParserFusionService:
     ) -> tuple[tuple[AlignmentEvidence, ...], tuple[AlignedObservationGroup, ...]]:
         """Align observations using source-native evidence in bounded priority order.
 
-        Fusion callers may inspect this stage independently. Exact region,
-        anchor, selector, span, unique mutual-best IoU, and exact digest evidence
-        are considered in that order. Ambiguous candidates are retained and not
-        greedily joined. The pure operation is order-independent and performs no
+        Fusion callers may inspect this stage independently. Observations first
+        aggregate by original source-region ID, including one-parser regions.
+        Exact region, anchor, selector, span, unique mutual-best IoU, and exact
+        digest evidence are then considered in that order. Stronger accepted
+        edges supersede weaker candidates; genuine ambiguity remains visible and
+        is not greedily joined. The pure operation is order-independent and performs no
         parser, network, provider, or LLM call. Invalid references raise
         ``ParserAlignmentError`` and nothing is persisted.
         """
         observation_set.validate()
-        observations = observation_set.observations
-        evidence = _build_alignment_evidence(observations, self._bbox_iou_threshold)
-        groups = _build_alignment_groups(observations, evidence)
+        regions = _build_source_region_aggregates(observation_set.observations)
+        evidence = _build_alignment_evidence(regions, self._bbox_iou_threshold)
+        groups = _build_alignment_groups(regions, evidence)
         return evidence, groups
 
     def fuse(
@@ -1567,7 +1941,8 @@ class ParserFusionService:
         or cross-record state raises a typed T05 error.
         """
         alignment_evidence, groups = self.align(observation_set)
-        selected_policies = _policy_index(policies or _default_policies())
+        policy_records = tuple(sorted(policies or _default_policies(), key=lambda item: item.policy_id))
+        selected_policies = _policy_index(policy_records)
         fact_decisions = _build_fact_decisions(observation_set, groups, selected_policies)
         region_decisions = _build_region_decisions(
             observation_set, groups, fact_decisions
@@ -1575,34 +1950,55 @@ class ParserFusionService:
         policy_ids = tuple(sorted({
             item.policy_id for item in fact_decisions if item.policy_id is not None
         }))
+        applied_policies = tuple(
+            item for item in policy_records if item.policy_id in policy_ids
+        )
         source_backends = observation_set.parser_ids
         versions = tuple(sorted({
             (item.parser_id, item.parser_version)
             for item in observation_set.observations
             if item.parser_version is not None
         }))
-        identity = {
-            "observation_set_id": observation_set.observation_set_id,
-            "alignment_ids": [item.alignment_id for item in alignment_evidence],
-            "decision_ids": [item.decision_id for item in fact_decisions],
-        }
+        observation_bytes = observation_set.to_json_bytes()
+        observation_sha256 = hashlib.sha256(observation_bytes).hexdigest()
         activity_id = observation_set.processing_activity_id or "activity-parser-fusion"
+        processing_activity = (
+            ("activity_id", activity_id),
+            ("bbox_iou_threshold", format(self._bbox_iou_threshold, ".17g")),
+            ("method", "deterministic-parser-fusion"),
+        )
+        state_counts = tuple(
+            (state, sum(item.state == state for item in fact_decisions))
+            for state in FUSION_STATES
+        )
+        fusion_id = _parser_fusion_id(
+            observation_set.observation_set_id,
+            observation_sha256,
+            source_backends,
+            versions,  # type: ignore[arg-type]
+            alignment_evidence,
+            groups,
+            fact_decisions,
+            region_decisions,
+            applied_policies,
+            processing_activity,
+            state_counts,
+        )
         artifact = ParserFusionArtifact(
             schema=PARSER_FUSION_ARTIFACT_SCHEMA,
-            fusion_id=f"fusion-{_sha256_json(identity)[:32]}",
+            fusion_id=fusion_id,
             observation_set_id=observation_set.observation_set_id,
+            observation_set_sha256=observation_sha256,
             source_backends=source_backends,
             backend_versions=versions,  # type: ignore[arg-type]
             alignment_evidence=alignment_evidence,
             aligned_groups=groups,
             fact_decisions=fact_decisions,
             region_decisions=region_decisions,
+            adjudication_policies=applied_policies,
             policy_ids=policy_ids,
-            processing_activity=(("activity_id", activity_id), ("method", "deterministic-parser-fusion")),
-            state_counts=tuple(
-                (state, sum(item.state == state for item in fact_decisions))
-                for state in FUSION_STATES
-            ),
+            processing_activity=processing_activity,
+            state_counts=state_counts,
         )
         artifact.validate_against_observation_set(observation_set)
         return artifact
@@ -1670,6 +2066,7 @@ class ParserFusionService:
         extraction_result = replace(
             projected,
             diagnostics=diagnostics,
+            observation_artifact=observation_set.to_json_bytes(),
             fusion_artifact=artifact.to_json_bytes(),
         )
         return FusionOutcome(observation_set, artifact, extraction_result)
@@ -1877,6 +2274,162 @@ def _sha256_json(value: object) -> str:
     return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
 
 
+def _parser_observation_id(
+    parser_id: str,
+    parser_version: str | None,
+    source_region: ObservationSourceRegion,
+    fact: str,
+    value_sha256: str,
+    occurrence_index: int,
+) -> str:
+    """Recompute one observation ID from its complete canonical identity."""
+    identity = {
+        "parser_id": parser_id,
+        "parser_version": parser_version,
+        "source_region": source_region.to_dict(),
+        "fact": fact,
+        "value_sha256": value_sha256,
+        "occurrence_index": occurrence_index,
+    }
+    return f"obs-{_sha256_json(identity)[:32]}"
+
+
+def _parser_observation_set_id(
+    source_document_id: str | None,
+    observations: tuple[ParserObservation, ...],
+    processing_activity_id: str | None,
+) -> str:
+    """Recompute the set ID from ordered observations and processing context."""
+    identity = {
+        "source_document_id": source_document_id,
+        "observation_ids": [item.observation_id for item in observations],
+        "processing_activity_id": processing_activity_id,
+    }
+    return f"obset-{_sha256_json(identity)[:32]}"
+
+
+def _alignment_evidence_id(
+    left_observation_id: str,
+    right_observation_id: str,
+    left_source_region_id: str,
+    right_source_region_id: str,
+    method: str,
+    score: float | None,
+    selector_ids: tuple[str, ...],
+    status: str,
+) -> str:
+    """Recompute a region edge ID including evidence and disposition."""
+    identity = {
+        "left_observation_id": left_observation_id,
+        "right_observation_id": right_observation_id,
+        "left_source_region_id": left_source_region_id,
+        "right_source_region_id": right_source_region_id,
+        "method": method,
+        "score": score,
+        "selector_ids": list(selector_ids),
+        "status": status,
+    }
+    return f"align-{_sha256_json(identity)[:32]}"
+
+
+def _aligned_group_id(
+    source_region_id: str,
+    source_region_ids: tuple[str, ...],
+    observation_ids: tuple[str, ...],
+    parser_ids: tuple[str, ...],
+    evidence_ids: tuple[str, ...],
+    status: str,
+) -> str:
+    """Recompute one final region-group ID from all public membership fields."""
+    identity = {
+        "source_region_id": source_region_id,
+        "source_region_ids": list(source_region_ids),
+        "observation_ids": list(observation_ids),
+        "parser_ids": list(parser_ids),
+        "alignment_evidence_ids": list(evidence_ids),
+        "alignment_status": status,
+    }
+    return f"group-{_sha256_json(identity)[:32]}"
+
+
+def _fact_decision_id(
+    source_region_id: str,
+    fact: str,
+    state: str,
+    observation_ids: tuple[str, ...],
+    accepted_ids: tuple[str, ...],
+    rejected_ids: tuple[str, ...],
+    resolution: str,
+    required_action: str | None,
+    gold_eligible: bool,
+    policy_id: str | None,
+) -> str:
+    """Recompute one adjudication decision ID from its full public meaning."""
+    identity = {
+        "source_region_id": source_region_id,
+        "fact": fact,
+        "state": state,
+        "observation_ids": list(observation_ids),
+        "accepted_observation_ids": list(accepted_ids),
+        "rejected_observation_ids": list(rejected_ids),
+        "resolution": resolution,
+        "required_action": required_action,
+        "gold_eligible": gold_eligible,
+        "policy_id": policy_id,
+    }
+    return f"decision-{_sha256_json(identity)[:32]}"
+
+
+def _region_decision_id(
+    source_region_id: str,
+    alignment_group_ids: tuple[str, ...],
+    fact_decision_ids: tuple[str, ...],
+    state: str,
+    source_parsers: tuple[str, ...],
+    gold_eligible: bool,
+) -> str:
+    """Recompute one region summary ID from groups, facts, and state."""
+    identity = {
+        "source_region_id": source_region_id,
+        "alignment_group_ids": list(alignment_group_ids),
+        "fact_decision_ids": list(fact_decision_ids),
+        "state": state,
+        "source_parsers": list(source_parsers),
+        "gold_eligible": gold_eligible,
+    }
+    return f"region-decision-{_sha256_json(identity)[:32]}"
+
+
+def _parser_fusion_id(
+    observation_set_id: str,
+    observation_set_sha256: str,
+    source_backends: tuple[str, ...],
+    backend_versions: tuple[tuple[str, str], ...],
+    alignment_evidence: tuple[AlignmentEvidence, ...],
+    aligned_groups: tuple[AlignedObservationGroup, ...],
+    fact_decisions: tuple[FactFusionDecision, ...],
+    region_decisions: tuple[RegionFusionDecision, ...],
+    policies: tuple[FactAdjudicationPolicy, ...],
+    processing_activity: tuple[tuple[str, str], ...],
+    state_counts: tuple[tuple[str, int], ...],
+) -> str:
+    """Recompute the fusion ID from every persisted semantic component."""
+    identity = {
+        "observation_set_id": observation_set_id,
+        "observation_set_sha256": observation_set_sha256,
+        "source_backends": list(source_backends),
+        "backend_versions": dict(backend_versions),
+        "alignment_evidence": [item.to_dict() for item in alignment_evidence],
+        "aligned_groups": [item.to_dict() for item in aligned_groups],
+        "fact_decisions": [item.to_dict() for item in fact_decisions],
+        "region_decisions": [item.to_dict() for item in region_decisions],
+        "adjudication_policies": [item.to_dict() for item in policies],
+        "processing_activity": dict(processing_activity),
+        "state_counts": dict(state_counts),
+    }
+    return f"fusion-{_sha256_json(identity)[:32]}"
+
+
 def _adapt_result(result: ExtractionResult, source_document_id: str | None) -> tuple[ParserObservation, ...]:
     """Adapt one parser result into stable page, block, object, relation, and section facts."""
     if not _PARSER_ID_PATTERN.fullmatch(result.backend):
@@ -1900,7 +2453,16 @@ def _adapt_result(result: ExtractionResult, source_document_id: str | None) -> t
             ("height", page.height),
         ):
             if value is not None and value != "":
-                observations.append(_make_observation(result, page_region, fact, value, "parser_page_fact", 1.0))
+                observations.append(
+                    _make_observation(
+                        result,
+                        page_region,
+                        fact,
+                        value,
+                        "parser_page_fact",
+                        None,
+                    )
+                )
         for block in sorted(page.blocks, key=lambda item: (item.block_id, item.reading_order)):
             region = _block_region(result.backend, page_index, block, resource_id)
             for fact, value in (
@@ -2010,71 +2572,248 @@ def _safe_component(value: str) -> str:
     return digest
 
 
+@dataclass(frozen=True, slots=True)
+class _SourceRegionAggregate:
+    """Hold every fact emitted for one original parser source region.
+
+    Why it exists:
+        Alignment is about source regions, not individual fact values. Grouping
+        first prevents text, type, geometry, and reading-order facts from one
+        block from competing as separate geometry candidates.
+    Core algorithm:
+        Collect observations sharing ``source_region_id``, verify that their
+        non-null location evidence does not contradict, and expose one stable
+        representative observation for compatibility alignment endpoints.
+    Design principle:
+        Preserve every observation while comparing location only once per region.
+    Used by:
+        The private deterministic alignment stage. It is never persisted as a
+        third artifact or exposed as a T06 segmentation API.
+    """
+
+    source_region_id: str
+    source_region: ObservationSourceRegion
+    observation_ids: tuple[str, ...]
+    parser_ids: tuple[str, ...]
+    representative_observation_id: str
+    representative_observation_ids: tuple[str, ...]
+    text_digest_occurrences: tuple[tuple[str, int], ...]
+
+
+def _build_source_region_aggregates(
+    observations: tuple[ParserObservation, ...],
+) -> tuple[_SourceRegionAggregate, ...]:
+    """Aggregate same-region facts and reject contradictory location evidence.
+
+    ``ParserFusionService.align`` calls this before cross-parser matching. The
+    operation groups even a single parser's facts, validates all location fields,
+    and returns deterministic immutable aggregates without copying source text.
+    """
+    grouped: dict[str, list[ParserObservation]] = {}
+    for observation in observations:
+        grouped.setdefault(observation.source_region.source_region_id, []).append(
+            observation
+        )
+    aggregates: list[_SourceRegionAggregate] = []
+    for source_region_id, values in sorted(grouped.items()):
+        ordered = tuple(sorted(values, key=lambda item: item.observation_id))
+        source_region = _compatible_region_location(source_region_id, ordered)
+        text_occurrences = tuple(sorted({
+            (_normalized_text_digest(value), item.occurrence_index)
+            for item in ordered
+            if item.fact in {"text", "blocks", "segmentation"}
+            and isinstance((value := item.value.to_value()), str)
+        }))
+        aggregates.append(
+            _SourceRegionAggregate(
+                source_region_id=source_region_id,
+                source_region=source_region,
+                observation_ids=tuple(item.observation_id for item in ordered),
+                parser_ids=tuple(sorted({item.parser_id for item in ordered})),
+                representative_observation_id=ordered[0].observation_id,
+                representative_observation_ids=tuple(
+                    min(
+                        item.observation_id
+                        for item in ordered
+                        if item.parser_id == parser_id
+                    )
+                    for parser_id in sorted({item.parser_id for item in ordered})
+                ),
+                text_digest_occurrences=text_occurrences,
+            )
+        )
+    return tuple(aggregates)
+
+
+def _compatible_region_location(
+    source_region_id: str,
+    observations: tuple[ParserObservation, ...],
+) -> ObservationSourceRegion:
+    """Merge non-conflicting location fields for one original source region.
+
+    Parser adapters may repeat the same region record for several facts. A field
+    may be absent on some facts, but two different non-null values would make the
+    region unsafe to align and therefore raise ``ParserAlignmentError``.
+    """
+    def one_value(name: str) -> object:
+        """Return one non-null location value or reject contradictory evidence."""
+        found = {
+            getattr(item.source_region, name)
+            for item in observations
+            if getattr(item.source_region, name) is not None
+        }
+        if len(found) > 1:
+            raise ParserAlignmentError(
+                f"Source-region observations disagree about {name}."
+            )
+        return next(iter(found), None)
+
+    selector_ids = tuple(sorted({
+        selector
+        for item in observations
+        for selector in item.source_region.selector_ids
+    }))
+    return ObservationSourceRegion(
+        source_region_id=source_region_id,
+        resource_id=one_value("resource_id"),  # type: ignore[arg-type]
+        physical_page_index=one_value("physical_page_index"),  # type: ignore[arg-type]
+        presentation_unit_id=one_value("presentation_unit_id"),  # type: ignore[arg-type]
+        source_anchor=one_value("source_anchor"),  # type: ignore[arg-type]
+        selector_ids=selector_ids,
+        char_start=one_value("char_start"),  # type: ignore[arg-type]
+        char_end=one_value("char_end"),  # type: ignore[arg-type]
+        bbox=one_value("bbox"),  # type: ignore[arg-type]
+        text_span_sha256=one_value("text_span_sha256"),  # type: ignore[arg-type]
+    )
+
+
 def _build_alignment_evidence(
-    observations: tuple[ParserObservation, ...], threshold: float
+    regions: tuple[_SourceRegionAggregate, ...], threshold: float
 ) -> tuple[AlignmentEvidence, ...]:
-    """Compute exact evidence first, then unique mutual-best geometry candidates."""
-    candidates: list[tuple[ParserObservation, ParserObservation]] = []
-    exact: list[AlignmentEvidence] = []
-    for index, left in enumerate(observations):
-        for right in observations[index + 1:]:
-            if left.parser_id == right.parser_id or not _compatible_fact_family(left.fact, right.fact):
+    """Compare region aggregates once and enforce stronger-evidence precedence.
+
+    Exact anchor, selector, and span matches are accepted before geometry. Any
+    lower-priority bbox candidate touching an exactly matched region is retained
+    as ``superseded`` audit evidence and cannot make that accepted region
+    ambiguous. Remaining geometry uses unique mutual-best IoU; exact normalized
+    text plus occurrence is considered only when stronger location is absent.
+    """
+    exact: list[AlignmentEvidence] = [
+        _internal_region_alignment_record(region)
+        for region in regions
+        if len(region.representative_observation_ids) >= 2
+    ]
+    bbox_candidates: list[tuple[_SourceRegionAggregate, _SourceRegionAggregate]] = []
+    digest: list[AlignmentEvidence] = []
+    for index, left in enumerate(regions):
+        for right in regions[index + 1:]:
+            if set(left.parser_ids) & set(right.parser_ids):
                 continue
-            direct = _direct_alignment(left, right)
+            direct = _direct_region_alignment(left, right)
             if direct is not None:
-                method, score, selectors = direct
-                exact.append(_alignment_record(left, right, method, score, selectors, "exact"))
-            elif _same_page(left, right) and left.source_region.bbox and right.source_region.bbox:
-                candidates.append((left, right))
-            else:
-                fallback = _digest_alignment(left, right)
-                if fallback is not None:
-                    exact.append(_alignment_record(left, right, fallback, 1.0, (), "exact"))
-    bbox_evidence = _mutual_best_bbox(candidates, threshold)
-    return tuple(sorted((*exact, *bbox_evidence), key=lambda item: item.alignment_id))
+                method, selectors = direct
+                exact.append(
+                    _alignment_record(left, right, method, 1.0, selectors, "exact")
+                )
+            elif (
+                _same_region_page(left, right)
+                and left.source_region.bbox is not None
+                and right.source_region.bbox is not None
+            ):
+                bbox_candidates.append((left, right))
+            elif _digest_region_alignment(left, right):
+                digest.append(
+                    _alignment_record(
+                        left,
+                        right,
+                        "exact-text-digest-occurrence",
+                        1.0,
+                        (),
+                        "exact",
+                    )
+                )
+    locked = {
+        region_id
+        for item in exact
+        for region_id in (item.left_source_region_id, item.right_source_region_id)
+    }
+    bbox_evidence = _mutual_best_region_bbox(bbox_candidates, threshold, locked)
+    return tuple(
+        sorted((*exact, *bbox_evidence, *digest), key=lambda item: item.alignment_id)
+    )
 
 
-def _direct_alignment(
-    left: ParserObservation, right: ParserObservation
-) -> tuple[str, float, tuple[str, ...]] | None:
-    """Return the strongest exact source-native alignment shared by two observations."""
+def _internal_region_alignment_record(
+    region: _SourceRegionAggregate,
+) -> AlignmentEvidence:
+    """Record explicit identity when multiple parsers already share one region ID."""
+    first, second = sorted(region.representative_observation_ids)[:2]
+    alignment_id = _alignment_evidence_id(
+        first,
+        second,
+        region.source_region_id,
+        region.source_region_id,
+        "exact-source-region-id",
+        1.0,
+        (),
+        "exact",
+    )
+    return AlignmentEvidence(
+        alignment_id=alignment_id,
+        left_observation_id=first,
+        right_observation_id=second,
+        left_source_region_id=region.source_region_id,
+        right_source_region_id=region.source_region_id,
+        alignment_method="exact-source-region-id",
+        alignment_score=1.0,
+        status="exact",
+    )
+
+
+def _direct_region_alignment(
+    left: _SourceRegionAggregate,
+    right: _SourceRegionAggregate,
+) -> tuple[str, tuple[str, ...]] | None:
+    """Return the strongest exact source-native evidence for two regions."""
     a, b = left.source_region, right.source_region
     if a.source_region_id == b.source_region_id:
-        return "exact-source-region-id", 1.0, tuple(sorted(set(a.selector_ids) & set(b.selector_ids)))
+        return "exact-source-region-id", tuple(
+            sorted(set(a.selector_ids) & set(b.selector_ids))
+        )
     if (
-        a.resource_id is not None and a.resource_id == b.resource_id
+        a.resource_id is not None
+        and a.resource_id == b.resource_id
         and a.physical_page_index == b.physical_page_index
-        and a.source_anchor is not None and a.source_anchor == b.source_anchor
+        and a.source_anchor is not None
+        and a.source_anchor == b.source_anchor
     ):
-        return "exact-resource-page-anchor", 1.0, ()
+        return "exact-resource-page-anchor", ()
     shared_selectors = tuple(sorted(set(a.selector_ids) & set(b.selector_ids)))
     if shared_selectors:
-        return "exact-selector", 1.0, shared_selectors
+        return "exact-selector", shared_selectors
     if (
         a.resource_id == b.resource_id
         and a.physical_page_index == b.physical_page_index
-        and a.char_start is not None and b.char_start is not None
-        and a.char_start == b.char_start and a.char_end == b.char_end
+        and a.char_start is not None
+        and b.char_start is not None
+        and a.char_start == b.char_start
+        and a.char_end == b.char_end
     ):
-        return "exact-character-span", 1.0, ()
+        return "exact-character-span", ()
     return None
 
 
-def _digest_alignment(left: ParserObservation, right: ParserObservation) -> str | None:
-    """Use exact normalized text digest plus occurrence only when location is absent."""
-    if left.fact not in {"text", "blocks", "segmentation"} or right.fact != left.fact:
-        return None
-    if left.occurrence_index != right.occurrence_index:
-        return None
-    if _has_strong_location(left.source_region) or _has_strong_location(right.source_region):
-        return None
-    left_value = left.value.to_value()
-    right_value = right.value.to_value()
-    if not isinstance(left_value, str) or not isinstance(right_value, str):
-        return None
-    if _normalized_text_digest(left_value) == _normalized_text_digest(right_value):
-        return "exact-text-digest-occurrence"
-    return None
+def _digest_region_alignment(
+    left: _SourceRegionAggregate,
+    right: _SourceRegionAggregate,
+) -> bool:
+    """Match exact normalized text occurrences only without stronger location."""
+    return bool(
+        left.text_digest_occurrences
+        and left.text_digest_occurrences == right.text_digest_occurrences
+        and not _has_strong_location(left.source_region)
+        and not _has_strong_location(right.source_region)
+    )
 
 
 def _has_strong_location(region: ObservationSourceRegion) -> bool:
@@ -2096,8 +2835,11 @@ def _normalized_text_digest(value: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def _same_page(left: ParserObservation, right: ParserObservation) -> bool:
-    """Require equal resource and physical page before geometry can be compared."""
+def _same_region_page(
+    left: _SourceRegionAggregate,
+    right: _SourceRegionAggregate,
+) -> bool:
+    """Require equal resource and physical page before region geometry comparison."""
     a, b = left.source_region, right.source_region
     return (
         a.physical_page_index is not None
@@ -2122,37 +2864,47 @@ def _bbox_iou(
     return 0.0 if union <= 0 else intersection / union
 
 
-def _mutual_best_bbox(
-    candidates: list[tuple[ParserObservation, ParserObservation]], threshold: float
+def _mutual_best_region_bbox(
+    candidates: list[tuple[_SourceRegionAggregate, _SourceRegionAggregate]],
+    threshold: float,
+    locked_regions: set[str],
 ) -> tuple[AlignmentEvidence, ...]:
-    """Accept only unique mutual-best IoU and retain tied plausible candidates."""
+    """Accept unique mutual-best region IoU and preserve every rejected candidate."""
     scored = [
         (left, right, _bbox_iou(left.source_region.bbox, right.source_region.bbox))  # type: ignore[arg-type]
         for left, right in candidates
     ]
     best: dict[tuple[str, str], float] = {}
     for left, right, score in scored:
-        best[(left.observation_id, right.parser_id)] = max(
-            score, best.get((left.observation_id, right.parser_id), -1.0)
+        right_parser_key = "|".join(right.parser_ids)
+        left_parser_key = "|".join(left.parser_ids)
+        best[(left.source_region_id, right_parser_key)] = max(
+            score, best.get((left.source_region_id, right_parser_key), -1.0)
         )
-        best[(right.observation_id, left.parser_id)] = max(
-            score, best.get((right.observation_id, left.parser_id), -1.0)
+        best[(right.source_region_id, left_parser_key)] = max(
+            score, best.get((right.source_region_id, left_parser_key), -1.0)
         )
     peer_counts: dict[tuple[str, str], int] = {}
     for left, right, score in scored:
-        if math.isclose(score, best[(left.observation_id, right.parser_id)]):
-            key = (left.observation_id, right.parser_id)
+        right_parser_key = "|".join(right.parser_ids)
+        left_parser_key = "|".join(left.parser_ids)
+        if math.isclose(score, best[(left.source_region_id, right_parser_key)]):
+            key = (left.source_region_id, right_parser_key)
             peer_counts[key] = peer_counts.get(key, 0) + 1
-        if math.isclose(score, best[(right.observation_id, left.parser_id)]):
-            key = (right.observation_id, left.parser_id)
+        if math.isclose(score, best[(right.source_region_id, left_parser_key)]):
+            key = (right.source_region_id, left_parser_key)
             peer_counts[key] = peer_counts.get(key, 0) + 1
     result: list[AlignmentEvidence] = []
     for left, right, score in scored:
-        left_best = best[(left.observation_id, right.parser_id)]
-        right_best = best[(right.observation_id, left.parser_id)]
-        peers_left = peer_counts[(left.observation_id, right.parser_id)]
-        peers_right = peer_counts[(right.observation_id, left.parser_id)]
-        if score < threshold:
+        right_parser_key = "|".join(right.parser_ids)
+        left_parser_key = "|".join(left.parser_ids)
+        left_best = best[(left.source_region_id, right_parser_key)]
+        right_best = best[(right.source_region_id, left_parser_key)]
+        peers_left = peer_counts[(left.source_region_id, right_parser_key)]
+        peers_right = peer_counts[(right.source_region_id, left_parser_key)]
+        if left.source_region_id in locked_regions or right.source_region_id in locked_regions:
+            status = "superseded"
+        elif score < threshold:
             status = "rejected"
         elif math.isclose(score, left_best) and math.isclose(score, right_best) and peers_left == peers_right == 1:
             status = "accepted-candidate"
@@ -2163,45 +2915,50 @@ def _mutual_best_bbox(
 
 
 def _alignment_record(
-    left: ParserObservation,
-    right: ParserObservation,
+    left: _SourceRegionAggregate,
+    right: _SourceRegionAggregate,
     method: str,
     score: float,
     selectors: tuple[str, ...],
     status: str,
 ) -> AlignmentEvidence:
-    """Construct one stable pairwise alignment record with ordered endpoints."""
-    first, second = sorted((left.observation_id, right.observation_id))
-    identity = {"left": first, "right": second, "method": method, "status": status, "score": score}
+    """Create a stable region edge with representative observation endpoints."""
+    ordered = sorted(
+        (
+            (left.representative_observation_id, left.source_region_id),
+            (right.representative_observation_id, right.source_region_id),
+        )
+    )
+    (first, first_region), (second, second_region) = ordered
+    selector_ids = tuple(sorted(set(selectors)))
     return AlignmentEvidence(
-        alignment_id=f"align-{_sha256_json(identity)[:32]}",
+        alignment_id=_alignment_evidence_id(
+            first,
+            second,
+            first_region,
+            second_region,
+            method,
+            score,
+            selector_ids,
+            status,
+        ),
         left_observation_id=first,
         right_observation_id=second,
+        left_source_region_id=first_region,
+        right_source_region_id=second_region,
         alignment_method=method,
         alignment_score=score,
-        supporting_selector_ids=tuple(sorted(set(selectors))),
+        supporting_selector_ids=selector_ids,
         status=status,
     )
 
 
-def _compatible_fact_family(left: str, right: str) -> bool:
-    """Allow same facts or distinct facts that can coexist in one source region."""
-    families = (
-        {"text", "block_type", "bbox", "reading_order", "blocks", "segmentation"},
-        {"object_type", "caption", "object_text", "bbox", "image_bbox"},
-        {"source_anchor", "target_anchor", "relation_type", "target_text", "relation_status"},
-        {"title", "page_range", "owner_division", "native_link_target"},
-        {"page_label", "printed_page_label", "width", "height", "text"},
-    )
-    return left == right or any(left in family and right in family for family in families)
-
-
 def _build_alignment_groups(
-    observations: tuple[ParserObservation, ...],
+    regions: tuple[_SourceRegionAggregate, ...],
     evidence: tuple[AlignmentEvidence, ...],
 ) -> tuple[AlignedObservationGroup, ...]:
-    """Build accepted connected components while keeping ambiguous edges visible."""
-    parent = {item.observation_id: item.observation_id for item in observations}
+    """Build region components while retaining but not applying uncertain edges."""
+    parent = {item.source_region_id: item.source_region_id for item in regions}
 
     def find(value: str) -> str:
         """Resolve the deterministic root of one accepted alignment component."""
@@ -2218,33 +2975,55 @@ def _build_alignment_groups(
 
     for item in evidence:
         if item.status in {"exact", "accepted-candidate"}:
-            union(item.left_observation_id, item.right_observation_id)
+            union(item.left_source_region_id, item.right_source_region_id)
     components: dict[str, list[str]] = {}
-    for observation_id in sorted(parent):
-        components.setdefault(find(observation_id), []).append(observation_id)
-    observation_index = {item.observation_id: item for item in observations}
+    for source_region_id in sorted(parent):
+        components.setdefault(find(source_region_id), []).append(source_region_id)
+    region_index = {item.source_region_id: item for item in regions}
     groups: list[AlignedObservationGroup] = []
-    for ids in components.values():
-        ordered_ids = tuple(sorted(ids))
+    for region_ids in components.values():
+        ordered_region_ids = tuple(sorted(region_ids))
+        ordered_ids = tuple(sorted({
+            observation_id
+            for region_id in ordered_region_ids
+            for observation_id in region_index[region_id].observation_ids
+        }))
         related = tuple(sorted(
             item.alignment_id for item in evidence
-            if item.left_observation_id in ordered_ids or item.right_observation_id in ordered_ids
+            if item.left_source_region_id in ordered_region_ids
+            or item.right_source_region_id in ordered_region_ids
         ))
         statuses = {
             item.status for item in evidence
-            if item.alignment_id in related and item.status != "rejected"
+            if item.alignment_id in related
+            and item.status not in {"rejected", "superseded"}
         }
         status = "ambiguous" if "ambiguous" in statuses else (
             "accepted-candidate" if "accepted-candidate" in statuses else "exact"
         )
-        region_ids = tuple(sorted({observation_index[item].source_region.source_region_id for item in ordered_ids}))
-        source_region_id = region_ids[0] if len(region_ids) == 1 else f"region-aligned-{_sha256_json(region_ids)[:24]}"
-        identity = {"source_region_id": source_region_id, "observation_ids": ordered_ids}
+        source_region_id = (
+            ordered_region_ids[0]
+            if len(ordered_region_ids) == 1
+            else f"region-aligned-{_sha256_json(ordered_region_ids)[:24]}"
+        )
+        parser_ids = tuple(sorted({
+            parser_id
+            for region_id in ordered_region_ids
+            for parser_id in region_index[region_id].parser_ids
+        }))
         groups.append(AlignedObservationGroup(
-            alignment_group_id=f"group-{_sha256_json(identity)[:32]}",
+            alignment_group_id=_aligned_group_id(
+                source_region_id,
+                ordered_region_ids,
+                ordered_ids,
+                parser_ids,
+                related,
+                status,
+            ),
             source_region_id=source_region_id,
+            source_region_ids=ordered_region_ids,
             observation_ids=ordered_ids,
-            parser_ids=tuple(sorted({observation_index[item].parser_id for item in ordered_ids})),
+            parser_ids=parser_ids,
             alignment_evidence_ids=related,
             alignment_status=status,
         ))
@@ -2266,19 +3045,47 @@ def _default_policies() -> tuple[FactAdjudicationPolicy, ...]:
 
 
 def _policy_index(policies: tuple[FactAdjudicationPolicy, ...]) -> dict[str, FactAdjudicationPolicy]:
-    """Index reviewed policies by fact and reject ambiguous duplicate ownership."""
+    """Index exact and bounded-family policy ownership without ambiguity."""
     result: dict[str, FactAdjudicationPolicy] = {}
     ids: set[str] = set()
     for policy in policies:
         if policy.policy_id in ids:
             raise ParserAdjudicationError("Duplicate policy_id detected.")
         ids.add(policy.policy_id)
+        target_type = "fact" if policy.fact is not None else "family"
         target = policy.fact or policy.fact_family
-        if target in result:
-            raise ParserAdjudicationError("Multiple policies target the same fact.")
-        if target is not None:
-            result[target] = policy
+        key = f"{target_type}:{target}"
+        if key in result:
+            raise ParserAdjudicationError("Multiple policies target the same ownership scope.")
+        result[key] = policy
     return result
+
+
+def _fact_family(fact: str) -> str | None:
+    """Return the one reviewed family containing a fact, if any.
+
+    Policy dispatch uses this bounded vocabulary rather than prefixes or fuzzy
+    matching. A fact can belong to at most one family, making ownership stable
+    for persisted replay.
+    """
+    matches = tuple(
+        family for family, members in _FACT_FAMILY_MEMBERS.items() if fact in members
+    )
+    if len(matches) > 1:
+        raise ParserAdjudicationError("Fact belongs to multiple policy families.")
+    return matches[0] if matches else None
+
+
+def _policy_for_fact(
+    fact: str,
+    policies: Mapping[str, FactAdjudicationPolicy],
+) -> FactAdjudicationPolicy | None:
+    """Select an exact policy before a reviewed family policy."""
+    exact = policies.get(f"fact:{fact}")
+    if exact is not None:
+        return exact
+    family = _fact_family(fact)
+    return policies.get(f"family:{family}") if family is not None else None
 
 
 def _build_fact_decisions(
@@ -2294,17 +3101,13 @@ def _build_fact_decisions(
         for observation_id in group.observation_ids:
             item = observation_index[observation_id]
             grouped.setdefault(item.fact, []).append(item)
-        complementary_region = len(grouped) > 1 and len({
-            item.parser_id for values in grouped.values() for item in values
-        }) > 1
         for fact, values in sorted(grouped.items()):
             decisions.append(_adjudicate_fact(
                 group.source_region_id,
                 fact,
                 tuple(sorted(values, key=lambda item: item.observation_id)),
                 group.alignment_status,
-                policies.get(fact),
-                complementary_region,
+                _policy_for_fact(fact, policies),
             ))
     return tuple(sorted(decisions, key=lambda item: item.decision_id))
 
@@ -2315,15 +3118,22 @@ def _adjudicate_fact(
     observations: tuple[ParserObservation, ...],
     alignment_status: str,
     policy: FactAdjudicationPolicy | None,
-    complementary_region: bool,
 ) -> FactFusionDecision:
-    """Derive one state without confidence-only selection or hidden conflict loss."""
+    """Execute one bounded policy strategy without discarding observations.
+
+    Fact fusion calls this pure dispatcher after region alignment. Agreement
+    requires equivalent bytes from at least two distinct parser IDs. Every
+    strategy classifies all observations as accepted or rejected, never chooses
+    by confidence, and preserves conflict or unresolved state when review is
+    required.
+    """
     ids = tuple(item.observation_id for item in observations)
     values = {item.value_sha256 for item in observations}
+    parser_ids = {item.parser_id for item in observations}
     unsafe = any(item.epistemic_state in _UNSAFE_GOLD_STATES for item in observations)
     policy_id = policy.policy_id if policy is not None else None
     accepted: tuple[str, ...] = ()
-    rejected: tuple[str, ...] = ()
+    rejected: tuple[str, ...] = ids
     required_action: str | None = None
     resolution = policy.resolution_code if policy is not None else "preserve-unreviewed-conflict"
     gold = False
@@ -2331,53 +3141,67 @@ def _adjudicate_fact(
         state = "unresolved"
         required_action = "selective-review-or-third-parser"
         resolution = "ambiguous-source-alignment"
-    elif fact == "reading_order" and len(values) > 1:
-        state = "unresolved"
-        required_action = "selective-review-or-third-parser"
-        resolution = policy.resolution_code if policy is not None else "unresolved-reading-order"
-    elif len(observations) >= 2 and len(values) == 1:
+    elif len(parser_ids) >= 2 and len(values) == 1:
         state = "agreement"
         accepted = ids
+        rejected = ()
         resolution = "exact-typed-value"
         gold = not unsafe
     elif len(values) == 1:
-        state = "complementary" if complementary_region else "complementary"
+        state = "complementary"
         accepted = ids
+        rejected = ()
         resolution = policy.resolution_code if policy is not None else "single-observed-fact"
         gold = not unsafe and (policy.gold_eligible_on_accept if policy is not None else False)
     else:
         state = "conflict"
-        if policy is not None and policy.strategy == "prefer-explicit-value":
-            preferred_hashes = [item.sha256 for item in policy.preferred_values]
-            chosen = next((item for digest in preferred_hashes for item in observations if item.value_sha256 == digest), None)
-            if chosen is not None:
-                accepted = (chosen.observation_id,)
-                rejected = tuple(item.observation_id for item in observations if item != chosen)
-                gold = policy.gold_eligible_on_accept and not unsafe
-        elif policy is not None and policy.strategy == "require-review":
+        strategy = policy.strategy if policy is not None else "preserve-conflict"
+        if strategy == "prefer-explicit-value":
+            preferred_hashes = {item.sha256 for item in policy.preferred_values} if policy else set()
+            accepted = tuple(
+                item.observation_id
+                for item in observations
+                if item.value_sha256 in preferred_hashes
+            )
+            rejected = tuple(item for item in ids if item not in set(accepted))
+        elif strategy == "require-review":
             state = "unresolved"
             required_action = "selective-review-or-third-parser"
-        elif policy is None:
+        elif strategy in {
+            "exact-agreement",
+            "retain-complementary",
+            "preserve-conflict",
+            "preserve-segmentation-variants",
+        }:
+            accepted = ()
+            rejected = ids
+        if policy is None:
             resolution = "preserve-unreviewed-conflict"
-    identity = {
-        "source_region_id": source_region_id,
-        "fact": fact,
-        "observation_ids": ids,
-        "state": state,
-        "accepted": accepted,
-        "policy_id": policy_id,
-    }
+    accepted = tuple(sorted(accepted))
+    rejected = tuple(sorted(rejected))
+    gold_eligible = gold and state not in {"conflict", "unresolved"}
     return FactFusionDecision(
-        decision_id=f"decision-{_sha256_json(identity)[:32]}",
+        decision_id=_fact_decision_id(
+            source_region_id,
+            fact,
+            state,
+            ids,
+            accepted,
+            rejected,
+            resolution,
+            required_action,
+            gold_eligible,
+            policy_id,
+        ),
         source_region_id=source_region_id,
         fact=fact,
         state=state,
         observation_ids=ids,
-        accepted_observation_ids=tuple(sorted(accepted)),
-        rejected_observation_ids=tuple(sorted(rejected)),
+        accepted_observation_ids=accepted,
+        rejected_observation_ids=rejected,
         resolution=resolution,
         required_action=required_action,
-        gold_eligible=gold and state not in {"conflict", "unresolved"},
+        gold_eligible=gold_eligible,
         policy_id=policy_id,
     )
 
@@ -2393,7 +3217,6 @@ def _build_region_decisions(
     for group in groups:
         decisions = tuple(item for item in fact_decisions if item.source_region_id == group.source_region_id)
         states = {item.state for item in decisions}
-        facts = {item.fact for item in decisions}
         parsers = tuple(sorted({
             observation_index[observation_id].parser_id
             for decision in decisions for observation_id in decision.observation_ids
@@ -2402,36 +3225,51 @@ def _build_region_decisions(
             state = "unresolved"
         elif "conflict" in states:
             state = "conflict"
-        elif len(facts) > 1 and len(parsers) > 1:
+        elif "complementary" in states:
             state = "complementary"
         else:
-            state = "agreement" if "agreement" in states else "complementary"
-        identity = {
-            "source_region_id": group.source_region_id,
-            "group": group.alignment_group_id,
-            "decisions": [item.decision_id for item in decisions],
-            "state": state,
-        }
+            state = "agreement"
+        group_ids = (group.alignment_group_id,)
+        fact_ids = tuple(sorted(item.decision_id for item in decisions))
+        gold_eligible = state not in {"conflict", "unresolved"} and all(
+            item.gold_eligible for item in decisions
+        )
         result.append(RegionFusionDecision(
-            region_decision_id=f"region-decision-{_sha256_json(identity)[:32]}",
+            region_decision_id=_region_decision_id(
+                group.source_region_id,
+                group_ids,
+                fact_ids,
+                state,
+                parsers,
+                gold_eligible,
+            ),
             source_region_id=group.source_region_id,
-            alignment_group_ids=(group.alignment_group_id,),
-            fact_decision_ids=tuple(sorted(item.decision_id for item in decisions)),
+            alignment_group_ids=group_ids,
+            fact_decision_ids=fact_ids,
             state=state,
             source_parsers=parsers,
-            gold_eligible=state not in {"conflict", "unresolved"} and all(item.gold_eligible for item in decisions),
+            gold_eligible=gold_eligible,
         ))
-    return tuple(sorted(result, key=lambda item: item.region_decision_id))
+    ordered = tuple(sorted(result, key=lambda item: item.region_decision_id))
+    if len({item.source_region_id for item in ordered}) != len(ordered):
+        raise ParserFusionValidationError("Duplicate source-region summary detected.")
+    return ordered
 
 
 def _alignment_from_dict(value: Mapping[str, object]) -> AlignmentEvidence:
     """Parse one strict alignment record for artifact deserialization."""
-    required = {"alignment_id", "left_observation_id", "right_observation_id", "alignment_method", "alignment_score", "supporting_selector_ids", "status"}
+    required = {
+        "alignment_id", "left_observation_id", "right_observation_id",
+        "left_source_region_id", "right_source_region_id", "alignment_method",
+        "alignment_score", "supporting_selector_ids", "status",
+    }
     _require_fields(value, required=required, optional=set(), fusion=True)
     return AlignmentEvidence(
         alignment_id=_text_field(value, "alignment_id", fusion=True),
         left_observation_id=_text_field(value, "left_observation_id", fusion=True),
         right_observation_id=_text_field(value, "right_observation_id", fusion=True),
+        left_source_region_id=_text_field(value, "left_source_region_id", fusion=True),
+        right_source_region_id=_text_field(value, "right_source_region_id", fusion=True),
         alignment_method=_text_field(value, "alignment_method", fusion=True),
         alignment_score=_optional_float(value["alignment_score"], "alignment_score", fusion=True),
         supporting_selector_ids=_string_tuple(value["supporting_selector_ids"], "supporting_selector_ids", fusion=True),
@@ -2441,11 +3279,16 @@ def _alignment_from_dict(value: Mapping[str, object]) -> AlignmentEvidence:
 
 def _group_from_dict(value: Mapping[str, object]) -> AlignedObservationGroup:
     """Parse one strict aligned group without copying observation values."""
-    required = {"alignment_group_id", "source_region_id", "observation_ids", "parser_ids", "alignment_evidence_ids", "alignment_status"}
+    required = {
+        "alignment_group_id", "source_region_id", "source_region_ids",
+        "observation_ids", "parser_ids", "alignment_evidence_ids",
+        "alignment_status",
+    }
     _require_fields(value, required=required, optional=set(), fusion=True)
     return AlignedObservationGroup(
         alignment_group_id=_text_field(value, "alignment_group_id", fusion=True),
         source_region_id=_text_field(value, "source_region_id", fusion=True),
+        source_region_ids=_string_tuple(value["source_region_ids"], "source_region_ids", fusion=True),
         observation_ids=_string_tuple(value["observation_ids"], "observation_ids", fusion=True),
         parser_ids=_string_tuple(value["parser_ids"], "parser_ids", fusion=True),
         alignment_evidence_ids=_string_tuple(value["alignment_evidence_ids"], "alignment_evidence_ids", fusion=True),

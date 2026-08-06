@@ -10,7 +10,8 @@ are relative to the supplied artifact storage scope.
 | `canonical-content.json` | Additive v3.2 parser-neutral resources, structure, text nodes, selectors and bindings |
 | `provenance.json` | Complete DataForge handoff without reopening the PDF |
 | `parser/{backend}.json` | Optional raw parser output for audit and comparison |
-| `parser/fusion-decisions.json` | Additive v3.2 parser observations, alignment evidence, and adjudication decisions |
+| `parser/observations.json` | Additive v3.2 exact parser observations and source-region locations |
+| `parser/fusion-decisions.json` | Additive v3.2 alignment evidence, retained policies, and adjudication decisions |
 | `ingest/native-artifacts/{artifact-id}.json` | Small descriptor used to verify and reload one raw parser output |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
 | `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
@@ -58,15 +59,19 @@ compatibility boundary, and T05 owns alignment and fusion. See
 [Adaptive Parser Routing](adaptive-parser-routing.md).
 
 After compare-mode parser execution, T05 records each parser fact separately,
-aligns observations using source-location evidence, classifies agreement,
+groups facts by their parser-native source region, aligns those regions using
+source-location evidence, classifies agreement,
 complementary facts, conflict, and unresolved evidence, then applies explicit
-fact-specific policies. Confidence alone never selects a winner.
+fact-specific or bounded-family policies. Confidence alone never selects a
+winner, and missing page confidence remains absent.
 
 The existing `cognityx.ingest.parser-fusion/v1` raw artifact remains readable.
-The additive `cognityx.ingest.parser-fusion/v3.2` decision artifact is stored at
-`parser/fusion-decisions.json`. Compatibility `ExtractionResult` values remain
-available, but conflict or unresolved projections are not accepted gold
-evidence. See [Parser Alignment, Fusion, and
+The additive observation set is stored at `parser/observations.json`; its exact
+bytes are bound into `parser/fusion-decisions.json` by set ID and SHA-256. The
+fusion artifact retains complete data-only policies so strict reload validation
+can replay every decision. Compatibility `ExtractionResult` values remain
+available, but conflict or unresolved projections are not accepted gold evidence.
+See [Parser Alignment, Fusion, and
 Adjudication](parser-alignment-fusion-adjudication.md).
 
 The immutable provenance artifact is the complete package another program

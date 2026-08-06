@@ -7,11 +7,14 @@ import math
 import pytest
 
 from cognityx_ingest import (
+    ExtractedPage,
+    ExtractionResult,
     ObservationSourceRegion,
     ObservationValue,
     ParserObservation,
     ParserObservationSet,
     ParserObservationValidationError,
+    ParserFusionService,
 )
 
 
@@ -101,3 +104,32 @@ def test_source_region_requires_valid_real_locator_and_never_copies_text() -> No
         ObservationSourceRegion("region-invalid", char_start=20, char_end=10)
     with pytest.raises(ParserObservationValidationError):
         ObservationSourceRegion("region-invalid", bbox=(10.0, 2.0, 1.0, 20.0))
+
+
+def test_page_facts_do_not_fabricate_missing_confidence() -> None:
+    """Preserve absent page confidence as unknown rather than zero or one."""
+    observation_set = ParserFusionService().build_observation_set(
+        (
+            ExtractionResult(
+                pages=(
+                    ExtractedPage(
+                        1,
+                        "Page text",
+                        page_index=0,
+                        page_label="1",
+                        width=612.0,
+                        height=792.0,
+                    ),
+                ),
+                backend="docling",
+            ),
+        )
+    )
+    page_observations = tuple(
+        item
+        for item in observation_set.observations
+        if item.source_region.source_region_id == "page:0"
+    )
+    assert page_observations
+    assert all(item.confidence is None for item in page_observations)
+    assert all(item.confidence not in {0, 1} for item in page_observations)

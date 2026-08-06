@@ -12,8 +12,11 @@ from cognityx_ingest import (
     ExtractedPage,
     ExtractionPolicy,
     ExtractionResult,
+    FusionOutcome,
     ParserFusionArtifact,
+    ParserFusionCompatibilityError,
     ParserFusionService,
+    ParserObservationSet,
     ParserRouter,
 )
 
@@ -62,6 +65,7 @@ def test_fuse_results_delegates_to_production_t05_service(monkeypatch) -> None:
     monkeypatch.setattr(ParserFusionService, "fuse_extraction_results", tracked)
     result = parser_module._fuse_results(_results(), ("docling", "pymupdf"))
     assert calls == [(('docling', 'pymupdf'), ('docling', 'pymupdf'))]
+    assert result.observation_artifact is not None
     assert result.fusion_artifact is not None
 
 
@@ -70,6 +74,8 @@ def test_existing_v1_raw_artifact_and_additive_v3_2_artifact_coexist() -> None:
     result = parser_module._fuse_results(_results(), ("docling", "pymupdf"))
     assert json.loads(result.raw_artifact)["schema"] == "cognityx.ingest.parser-fusion/v1"
     artifact = ParserFusionArtifact.from_json_bytes(result.fusion_artifact)
+    observations = ParserObservationSet.from_json_bytes(result.observation_artifact)
+    artifact.validate_against_observation_set(observations)
     assert artifact.schema == "cognityx.ingest.parser-fusion/v3.2"
     assert result.raw_artifacts == {
         "docling": b'{"native":"docling"}',
@@ -88,6 +94,7 @@ def test_fixed_single_parser_behavior_remains_object_identical(tmp_path: Path) -
     ).extract_document(path)
     assert result.pages is original.pages
     assert result.raw_artifact == original.raw_artifact
+    assert result.observation_artifact is None
     assert result.fusion_artifact is None
     assert result.backend == "docling"
 
@@ -106,6 +113,9 @@ def test_fusion_performs_no_parser_network_provider_or_llm_call(monkeypatch) -> 
         _results(), ("docling", "pymupdf")
     )
     assert outcome.extraction_result.backend == "fusion"
+    assert outcome.extraction_result.observation_artifact == (
+        outcome.observation_set.to_json_bytes()
+    )
     assert outcome.fusion_artifact.fact_decisions
 
 
@@ -122,6 +132,7 @@ def test_compare_with_one_available_backend_is_deterministic(tmp_path: Path) -> 
     second = router.extract_document(path)
     assert first == second
     assert first.considered_backends == ("docling",)
+    assert first.observation_artifact == second.observation_artifact
     assert first.fusion_artifact == second.fusion_artifact
 
 
@@ -131,3 +142,17 @@ def test_t05_introduces_no_segmentation_view_api() -> None:
 
     assert not hasattr(fusion, "SegmentationView")
     assert not hasattr(fusion, "materialize_segmentation_view")
+
+
+def test_fusion_outcome_requires_both_exact_public_aggregate_bytes() -> None:
+    """Prevent compatibility transport from dropping or replacing observations."""
+    outcome = ParserFusionService().fuse_extraction_results(
+        _results(), ("docling", "pymupdf")
+    )
+    value = outcome.observation_set.to_dict()
+    value["observations"][0]["confidence"] = 0.25
+    changed = ParserObservationSet.from_json_bytes(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    )
+    with pytest.raises(ParserFusionCompatibilityError):
+        FusionOutcome(changed, outcome.fusion_artifact, outcome.extraction_result)

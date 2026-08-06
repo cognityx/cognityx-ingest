@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from copy import deepcopy
 
 import pytest
 
@@ -164,3 +165,80 @@ def test_fusion_artifact_references_values_in_observation_set_not_decisions(
     exact_text = case["expected"]["accepted_value"].encode("utf-8")
     assert exact_text in observation_set.to_json_bytes()
     assert exact_text not in artifact.to_json_bytes()
+
+
+def test_every_stable_record_id_rejects_arbitrary_replacement(
+    fusion_cases, build_fusion_observation_set
+) -> None:
+    """Recompute identities for observations, sets, edges, groups, and decisions."""
+    observation_set = build_fusion_observation_set(fusion_cases[0])
+    artifact = ParserFusionService().fuse(observation_set)
+
+    observation = observation_set.observations[0].to_dict()
+    observation["observation_id"] = "obs-arbitrary-replacement"
+    with pytest.raises(ParserObservationValidationError):
+        ParserObservation.from_dict(observation)
+
+    set_value = observation_set.to_dict()
+    set_value["observation_set_id"] = "obset-arbitrary-replacement"
+    with pytest.raises(ParserObservationValidationError):
+        ParserObservationSet.from_dict(set_value)
+
+    for collection, id_field, replacement in (
+        ("alignment_evidence", "alignment_id", "align-arbitrary-replacement"),
+        ("aligned_groups", "alignment_group_id", "group-arbitrary-replacement"),
+        ("fact_decisions", "decision_id", "decision-arbitrary-replacement"),
+        (
+            "region_decisions",
+            "region_decision_id",
+            "region-decision-arbitrary-replacement",
+        ),
+    ):
+        value = deepcopy(artifact.to_dict())
+        assert value[collection]
+        value[collection][0][id_field] = replacement
+        with pytest.raises((ParserFusionValidationError, ParserAlignmentError)):
+            ParserFusionArtifact.from_json_bytes(json.dumps(value).encode())
+
+    value = artifact.to_dict()
+    value["fusion_id"] = "fusion-arbitrary-replacement"
+    with pytest.raises(ParserFusionValidationError):
+        ParserFusionArtifact.from_json_bytes(json.dumps(value).encode())
+
+
+def test_same_observation_set_id_with_changed_bytes_fails_sha_binding(
+    fusion_cases, build_fusion_observation_set
+) -> None:
+    """Bind fusion to exact bytes even when non-identity evidence changes."""
+    observation_set = build_fusion_observation_set(fusion_cases[0])
+    artifact = ParserFusionService().fuse(observation_set)
+    value = observation_set.to_dict()
+    value["observations"][0]["confidence"] = 0.125
+    changed = ParserObservationSet.from_json_bytes(json.dumps(value).encode())
+    assert changed.observation_set_id == observation_set.observation_set_id
+    assert changed.to_json_bytes() != observation_set.to_json_bytes()
+    with pytest.raises(ParserFusionValidationError, match="SHA-256"):
+        artifact.validate_against_observation_set(changed)
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("strategy", "require-review"),
+        ("preferred_values", ["unreviewed-value"]),
+        ("resolution_code", "altered-resolution"),
+    ),
+)
+def test_altered_persisted_policy_semantics_fail_integrity_validation(
+    field: str,
+    replacement: object,
+    fusion_cases,
+    build_fusion_observation_set,
+) -> None:
+    """Reject changed policy behavior rather than trusting a retained policy ID."""
+    case = next(item for item in fusion_cases if item["case_id"] == "table-versus-text")
+    artifact = ParserFusionService().fuse(build_fusion_observation_set(case))
+    value = deepcopy(artifact.to_dict())
+    value["adjudication_policies"][0][field] = replacement
+    with pytest.raises(ParserFusionValidationError):
+        ParserFusionArtifact.from_json_bytes(json.dumps(value).encode())
