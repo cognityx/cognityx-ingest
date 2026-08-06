@@ -20,16 +20,16 @@ source PDF
     v
 parser -> parser-native payload ---------> audit or parser-specific reader
     |                 |
-    |                 +-> native descriptor -> future NativeBinding / retention
+    |                 +-> native descriptor -> NativeBinding / future retention
     v
 canonical document + provenance --------> DataForge and normal consumers
 ```
 
-The **canonical document** is the stable parser-neutral view used by normal
-Cognityx consumers. A future T02 record will connect canonical objects to native
-pointers; that connection is called a **NativeBinding**. T01 preserves the bytes
-and pointers needed for that later connection but does not create the generalized
-binding model.
+The **canonical document** is the stable parser-neutral view used by existing
+Cognityx consumers. The additive v3.2 canonical-content artifact can connect a
+canonical record to a retained native pointer through a **NativeBinding**. T01
+preserves the bytes and pointers; T02 owns the generalized binding record without
+copying either into canonical content.
 
 DataForge normally reads the canonical document and provenance handoff. It does
 not need the raw parser payload for ordinary paragraph, question-and-answer, or
@@ -106,9 +106,9 @@ become part of a descriptor key or diagnostic.
 ## Consumers And Ownership
 
 `IngestService` writes payloads and descriptors. Audit tools and future SDK read
-APIs can reload them. T02 will use descriptors when it introduces generalized
-NativeBinding records. T07 will decide reuse, expiry, legal hold, and purge
-behavior.
+APIs can reload them. T02 validates generalized NativeBinding records against
+these descriptors and retained pointers. T07 will decide reuse, expiry, legal
+hold, and purge behavior.
 
 Cognityx Storage owns physical writes and reads. Ingest owns artifact identity,
 descriptor metadata, and verification. Parser libraries own the meaning of
@@ -178,10 +178,11 @@ application composition root.
 Errors identify logical artifact IDs. They do not include parser payload
 contents, credentials, or local operating-system paths.
 
-## T01 Limits
+## T01 And T02 Limits
 
-T01 does not generalize canonical records, infer semantic ownership from native
-pointers, reuse extraction across documents, expire artifacts, enforce legal
-holds, purge data, change parser routing or fusion, or add SDK/CLI commands.
-Generalized NativeBinding belongs to T02. Reuse, retention, and purge belong to
-T07.
+T01 does not infer semantic ownership from native pointers. T02 adds generalized
+canonical records and NativeBinding validation, but it does not invent bindings
+when a parser adapter supplies none. Neither task reuses extraction across
+documents, expires artifacts, enforces legal holds, purges data, changes parser
+routing or fusion, or adds SDK/CLI commands. Reuse, retention, and purge remain
+T07 responsibilities.

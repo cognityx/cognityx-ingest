@@ -1,5 +1,36 @@
-"""Cognityx SourceAsset registration and document-ingestion API."""
+"""Expose Cognityx Ingest's deliberate stable Python composition surface.
 
+This module exists so applications can import supported SourceAsset, ingestion,
+artifact, and canonical-content APIs without depending on internal file layout.
+It performs no processing itself: the core mechanism is explicit re-export of
+approved public records and services. The design principle is compatibility by
+addition, which is why the v3.2 ``CanonicalRepresentation`` alias does not replace
+the established enrichment ``Representation`` name. CLI adapters, DataForge,
+audit tooling, tests, and direct Python integrators use this surface.
+"""
+
+from cognityx_ingest.canonical_content import (
+    CANONICAL_CONTENT_SCHEMA_VERSION,
+    CanonicalArtifactDescriptor,
+    CanonicalContentArtifact,
+    CanonicalContentBuilder,
+    CanonicalContentError,
+    CanonicalContentValidationError,
+    CanonicalOwnershipError,
+    CanonicalReferenceError,
+    CanonicalRelation,
+    CanonicalResource,
+    CanonicalText,
+    ContentNode,
+    Division,
+    NativeBinding,
+    NativeBindingValidationError,
+    PresentationLabel,
+    PresentationUnit,
+    ProcessingActivity,
+    Representation as CanonicalRepresentation,
+    SourceSelector,
+)
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.control import (
@@ -102,14 +133,28 @@ __all__ = [
     "BasicPdfParser",
     "Block",
     "BoundedInferenceResolver",
+    "CANONICAL_CONTENT_SCHEMA_VERSION",
+    "CanonicalArtifactDescriptor",
+    "CanonicalContentArtifact",
+    "CanonicalContentBuilder",
+    "CanonicalContentError",
+    "CanonicalContentValidationError",
     "CanonicalDocument",
+    "CanonicalOwnershipError",
+    "CanonicalReferenceError",
+    "CanonicalRelation",
+    "CanonicalRepresentation",
+    "CanonicalResource",
+    "CanonicalText",
     "ControlClient",
     "ControlDecision",
+    "ContentNode",
     "DecisionRecord",
     "DocBundle",
     "DocBundleDeletionResult",
     "DoclingParser",
     "DocumentObject",
+    "Division",
     "EnrichmentCatalog",
     "EnrichmentIdentity",
     "Evidence",
@@ -139,12 +184,17 @@ __all__ = [
     "NativeArtifactIntegrityError",
     "NativeArtifactNotFoundError",
     "NativeArtifactStore",
+    "NativeBinding",
+    "NativeBindingValidationError",
     "NativePointerError",
     "PageRecord",
     "ParserRouter",
     "ParserUnavailableError",
     "PyMuPDFParser",
     "PyPdfExtractor",
+    "PresentationLabel",
+    "PresentationUnit",
+    "ProcessingActivity",
     "Relation",
     "RepeatedRegion",
     "RepeatedRegionOccurrence",
@@ -175,6 +225,7 @@ __all__ = [
     "SourceContext",
     "SourceLocation",
     "SourceRecord",
+    "SourceSelector",
     "SourceRegistrationResult",
     "SourceAnchor",
     "SourceRegistry",

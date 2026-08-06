@@ -1,4 +1,13 @@
-"""Canonical ingestion records independent of extraction or model providers."""
+"""Define stable ingestion records independent of parser and model providers.
+
+This module exists to keep the established v2 document, evidence, lifecycle, and
+result contracts readable while parser implementations evolve. Its core approach
+is immutable typed records with explicit dictionary projections. Compatibility is
+the governing design principle: v3.2's generalized source model lives separately
+in ``canonical_content`` and is exposed here only through an additive result key.
+Ingest services, CLI adapters, DataForge integrations, and existing Python callers
+use these records.
+"""
 
 from __future__ import annotations
 
@@ -751,6 +760,27 @@ class CanonicalDocument:
 
 @dataclass(frozen=True, slots=True)
 class IngestResult:
+    """Return one completed document's compatibility and additive artifact handles.
+
+    Responsibility:
+        Keep the established document, evidence, manifest, provenance, parser, and
+        usage results while exposing T02's canonical-content key additively.
+    Constructed by:
+        ``IngestService`` after all immutable document artifacts persist.
+    Used by:
+        Existing Python callers, run aggregation, usage accounting, and future
+        readers that opt into the v3.2 artifact.
+    Invariants:
+        Existing positional constructor fields and artifact identities remain
+        unchanged; every newly added field has a backward-compatible default.
+    Lifecycle/persistence:
+        This frozen in-memory result references Storage objects but stores no
+        payload bytes of its own.
+    Thread-safety assumptions:
+        Frozen scalar and tuple fields are safe for concurrent reads; referenced
+        clients and storage backends retain their own concurrency contracts.
+    """
+
     document: CanonicalDocument
     evidence: tuple[Evidence, ...]
     manifest_key: str
@@ -763,6 +793,7 @@ class IngestResult:
     provenance_key: str = ""
     raw_parser_key: str | None = None
     raw_parser_keys: tuple[str, ...] = ()
+    canonical_content_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)

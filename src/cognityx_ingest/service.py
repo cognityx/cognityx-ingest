@@ -1,4 +1,14 @@
-"""SourceAsset-first PDF normalization, provenance, and artifact persistence."""
+"""Orchestrate SourceAsset-first normalization and immutable artifact persistence.
+
+This module exists to connect registration, parser-neutral normalization, Jobs,
+control decisions, provenance, and Storage without making those collaborators one
+component. The main flow resolves a SourceAsset, runs the configured parser,
+builds compatibility records, adds independently versioned artifacts, and writes
+them through immutable keys. Its design principle is compatibility by additive
+contracts: v2 outputs remain stable while T01 native evidence and T02 canonical
+content gain separate identities. Python callers, CLI composition, DataForge
+handoff, operations, and audit tooling use the service.
+"""
 
 from __future__ import annotations
 
@@ -14,8 +24,18 @@ from typing import Any, Mapping
 from uuid import uuid4
 
 from cognityx_jobs import JobRepository
-from cognityx_storage import StorageClient, StorageConfig, StorageRuntime
+from cognityx_storage import (
+    ObjectAlreadyExistsError,
+    StorageClient,
+    StorageConfig,
+    StorageRuntime,
+)
 
+from cognityx_ingest.canonical_content import (
+    CANONICAL_CONTENT_SCHEMA_VERSION,
+    CanonicalArtifactDescriptor,
+    CanonicalContentBuilder,
+)
 from cognityx_ingest.control import (
     INGEST_JOB_SUBMIT,
     ControlClient,
@@ -89,7 +109,29 @@ LOGGER = logging.getLogger(__name__)
 
 
 class IngestService:
-    """Ingest registered SourceAssets into canonical document artifacts."""
+    """Coordinate one SourceAsset from parser execution through durable artifacts.
+
+    Responsibility:
+        Preserve the established v2 ingest flow and add independently versioned
+        artifacts, including T01 native descriptors and T02 canonical content.
+    Constructed by:
+        The Python composition root, CLI adapters, tests, or applications that
+        provide scoped Storage, optional Jobs, parser, control, and registry seams.
+    Used by:
+        ``IngestManager``, normal Python callers, compatibility CLI paths, and
+        DataForge-facing ingestion workflows.
+    Invariants:
+        Existing document identities, v2 schemas, parser keys, and public ingest
+        methods remain stable; generated objects are written immutably and usage
+        accounts for every returned document-local artifact.
+    Lifecycle/persistence:
+        A service instance owns collaborators but no source payload state. Each
+        call creates or reuses run-scoped records in the supplied repositories.
+    Thread-safety assumptions:
+        The service does not add mutable coordination state, but callers must obey
+        the concurrency contracts of the supplied parser, Storage, Jobs, control,
+        and registry implementations.
+    """
 
     def __init__(
         self,
@@ -670,6 +712,7 @@ class IngestService:
                     result.evidence_key,
                     result.manifest_key,
                     result.provenance_key,
+                    result.canonical_content_key,
                 )
                 if key
             ),
@@ -689,6 +732,7 @@ class IngestService:
             provenance_key=result.provenance_key,
             raw_parser_key=result.raw_parser_key,
             raw_parser_keys=result.raw_parser_keys,
+            canonical_content_key=result.canonical_content_key,
         )
 
     def _persist(
@@ -703,22 +747,28 @@ class IngestService:
     ) -> IngestResult:
         """Persist one ingest result while retaining legacy and native identities.
 
-        The ingest pipeline calls this after normalization. Canonical artifacts
-        retain their established keys, while every parser-native payload is sent
-        through ``NativeArtifactStore`` using its existing
-        ``parser/<backend>.json`` key and existing ``ArtifactRef`` ID. The store
-        adds independently verifiable descriptors for future NativeBinding, audit,
-        retention, and SDK readers without creating a second payload.
+        The ingest pipeline calls this after normalization. Existing v2 artifacts
+        retain their established keys and schema meanings. Parser-native payloads
+        still pass through ``NativeArtifactStore`` at their existing keys. T02
+        then builds one validated additive parser-neutral artifact at
+        ``canonical-content.json`` and adds references to provenance and manifest
+        without replacing or reinterpreting ``document.json``.
 
-        Repeating an equivalent run-bound write is idempotent. Changed canonical
-        data, parser bytes, or descriptor metadata fails rather than overwriting
-        retained evidence. Storage writes are the only side effect.
+        Canonical content is serialized once through its public deterministic
+        byte serializer and those exact bytes are written as ``application/json``.
+        Repeating an equivalent run-bound write is idempotent only when existing
+        bytes and media type match exactly. Changed canonical data, parser bytes,
+        native descriptors, or v3.2 content fails rather than overwriting retained
+        evidence. Storage writes are the only side effect. T06 segmentation and
+        T08 Source Graph work consume the artifact later; no segmentation, graph,
+        retention, SDK, or CLI behavior is implemented here.
         """
         prefix = f"ingest/documents/{document.document_id}"
         document_key = f"{prefix}/document.json"
         evidence_key = f"{prefix}/evidence.jsonl"
         manifest_key = f"{prefix}/manifest.json"
         provenance_key = f"{prefix}/provenance.json"
+        canonical_content_key = f"{prefix}/canonical-content.json"
         raw_payloads = dict(extraction.raw_artifacts)
         if extraction.raw_artifact is not None:
             raw_payloads[extraction.backend] = extraction.raw_artifact
@@ -756,6 +806,60 @@ class IngestService:
                 media_type="application/json",
                 payload_key=key,
             )
+        canonical_content = CanonicalContentBuilder().build(
+            document,
+            asset,
+            context,
+            native_descriptors=tuple(raw_descriptors.values()),
+            artifact_descriptors=(
+                CanonicalArtifactDescriptor(
+                    artifact_id=f"art-{document.document_id}-document",
+                    role="document",
+                    uri=self._artifact_uri(document_key),
+                    media_type="application/json",
+                    schema_version=DOCUMENT_SCHEMA_VERSION,
+                ),
+                CanonicalArtifactDescriptor(
+                    artifact_id=f"art-{document.document_id}-evidence",
+                    role="evidence",
+                    uri=self._artifact_uri(evidence_key),
+                    media_type="application/x-ndjson",
+                    schema_version=EVIDENCE_SCHEMA_VERSION,
+                ),
+                CanonicalArtifactDescriptor(
+                    artifact_id=f"art-{document.document_id}-canonical_content",
+                    role="canonical_content",
+                    uri=self._artifact_uri(canonical_content_key),
+                    media_type="application/json",
+                    schema_version=CANONICAL_CONTENT_SCHEMA_VERSION,
+                ),
+                CanonicalArtifactDescriptor(
+                    artifact_id=f"art-{document.document_id}-provenance",
+                    role="provenance",
+                    uri=self._artifact_uri(provenance_key),
+                    media_type="application/json",
+                    schema_version=PROVENANCE_SCHEMA_VERSION,
+                ),
+                CanonicalArtifactDescriptor(
+                    artifact_id=f"art-{document.document_id}-manifest",
+                    role="manifest",
+                    uri=self._artifact_uri(manifest_key),
+                    media_type="application/json",
+                    schema_version=DOCUMENT_SCHEMA_VERSION,
+                ),
+            ),
+        )
+        native_descriptor_map = {
+            descriptor.artifact_id: descriptor
+            for descriptor in raw_descriptors.values()
+        }
+        self._put_immutable_bytes(
+            canonical_content_key,
+            canonical_content.to_json_bytes(
+                native_descriptors=native_descriptor_map,
+            ),
+            media_type="application/json",
+        )
         relation_records = [
             {**item.to_dict(), "gold": _relation_is_gold(item)}
             for item in document.relations
@@ -769,6 +873,7 @@ class IngestService:
         artifact_uris = {
             "document": self._artifact_uri(document_key),
             "evidence": self._artifact_uri(evidence_key),
+            "canonical_content": self._artifact_uri(canonical_content_key),
             "provenance": self._artifact_uri(provenance_key),
             "manifest": self._artifact_uri(manifest_key),
             "parser": {
@@ -857,6 +962,7 @@ class IngestService:
         stored = {
             "document": self._storage.stat(document_key),
             "evidence": self._storage.stat(evidence_key),
+            "canonical_content": self._storage.stat(canonical_content_key),
             "provenance": self._storage.stat(provenance_key),
         }
         for backend, key, _payload in raw_parser_items:
@@ -905,6 +1011,7 @@ class IngestService:
             provenance_key=provenance_key,
             raw_parser_key=raw_parser_key,
             raw_parser_keys=raw_parser_keys,
+            canonical_content_key=canonical_content_key,
         )
 
     def _start_job(
@@ -974,6 +1081,50 @@ class IngestService:
                     raise RuntimeError(f"Immutable ingest artifact already exists: {key}")
             return
         self._storage.put_json(key, value)
+
+    def _put_immutable_bytes(
+        self,
+        key: str,
+        payload: bytes,
+        *,
+        media_type: str,
+    ) -> None:
+        """Publish canonical serializer bytes without normalizing retry content.
+
+        ``_persist`` calls this for ``canonical-content.json`` after the aggregate
+        validates against real T01 descriptors. The method compares an existing
+        object byte-for-byte and verifies its media type; equivalent retries are
+        idempotent, while any changed bytes or metadata fail. A concurrent writer
+        that wins create-only Storage publication is checked by the same path.
+        Source text is never included in conflict diagnostics.
+        """
+        if self._storage.exists(key):
+            self._verify_immutable_bytes(key, payload, media_type=media_type)
+            return
+        try:
+            self._storage.put_bytes(key, payload, media_type=media_type)
+        except ObjectAlreadyExistsError:
+            self._verify_immutable_bytes(key, payload, media_type=media_type)
+
+    def _verify_immutable_bytes(
+        self,
+        key: str,
+        expected: bytes,
+        *,
+        media_type: str,
+    ) -> None:
+        """Require an existing immutable object to match exact bytes and media type.
+
+        Idempotent retries and publication-race losers call this read-only helper.
+        It performs no decoding or JSON comparison, so stored canonical formatting
+        remains part of artifact identity. A mismatch raises without rewriting the
+        object or exposing source content.
+        """
+        with self._storage.open(key) as current:
+            actual = current.read()
+        stored = self._storage.stat(key)
+        if actual != expected or stored.media_type != media_type:
+            raise RuntimeError(f"Immutable ingest artifact already exists: {key}")
 
     def _local_registry(self) -> SourceAssetRegistry:
         try:

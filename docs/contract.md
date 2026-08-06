@@ -7,6 +7,7 @@ are relative to the supplied artifact storage scope.
 | --- | --- |
 | `document.json` | Versioned pages, blocks, sections, objects, relations and decisions |
 | `evidence.jsonl` | Evidence v2 with exact source anchors, page facts and SourceAsset lineage |
+| `canonical-content.json` | Additive v3.2 parser-neutral resources, structure, text nodes, selectors and bindings |
 | `provenance.json` | Complete DataForge handoff without reopening the PDF |
 | `parser/{backend}.json` | Optional raw parser output for audit and comparison |
 | `ingest/native-artifacts/{artifact-id}.json` | Small descriptor used to verify and reload one raw parser output |
@@ -20,6 +21,14 @@ are relative to the supplied artifact storage scope.
 `Evidence.from_dict()` remains compatible with v1 rows that predate those
 fields. `CanonicalDocument.from_dict()` and `Evidence.from_dict()` continue to
 read stored v1 records.
+
+The additive `canonical-content.json` uses
+`cognityx.ingest.canonical-content/v3.2`. It keeps exact extracted text only in
+`content_nodes[*].content.text`; presentation units, logical Divisions,
+selectors, representations, relations, processing activities and bindings use
+IDs and observed source facts. The existing v2 files may still repeat text for
+backward compatibility, so the text-once rule applies to the v3.2 artifact rather
+than the repository as a whole. See [Canonical Content](canonical-content.md).
 
 Run manifests use `cognityx.ingest.run/v2` and are never overwritten. A folder
 run has one run ID, one job ID, and one run manifest even when individual PDFs

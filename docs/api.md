@@ -22,6 +22,8 @@ same implementation.
 
 ::: cognityx_ingest.native_artifacts
 
+::: cognityx_ingest.canonical_content
+
 ::: cognityx_ingest.enhancement
 
 ::: cognityx_ingest.enrichment
