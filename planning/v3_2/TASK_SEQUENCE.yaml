@@ -1,0 +1,31 @@
+tasks:
+  - id: T01
+    title: Native parser preservation
+    stop_condition: One PR with parser-native artifact preservation behavior and tests is ready.
+  - id: T02
+    title: Generalized canonical model
+    stop_condition: One PR with the new canonical model and coverage is ready.
+  - id: T03
+    title: Parser capability registry
+    stop_condition: One PR with registry-backed capability sourcing is ready.
+  - id: T04
+    title: Adaptive parser routing
+    stop_condition: One PR with routing modes and selection tests is ready.
+  - id: T05
+    title: Parser alignment fusion adjudication
+    stop_condition: One PR with alignment, fusion, and adjudication behavior is ready.
+  - id: T06
+    title: Non-copying segmentation views
+    stop_condition: One PR with derived segmentation views is ready.
+  - id: T07
+    title: Extraction reuse retention purge
+    stop_condition: One PR with retention and purge boundaries is ready.
+  - id: T08
+    title: Source graph and provenance addresses
+    stop_condition: One PR with graph and address resolution behavior is ready.
+  - id: T09
+    title: DataForge handoff
+    stop_condition: One PR with the focused downstream proof artifacts is ready.
+  - id: T10
+    title: SDK and CLI
+    stop_condition: One PR with compatibility updates in the user-facing surfaces is ready.

@@ -7,11 +7,17 @@ import pytest
 
 
 FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "v3_2_focused"
+DESIGN_INPUT_ROOT = Path(__file__).resolve().parents[2] / "design_input" / "v3_2"
 
 
 @pytest.fixture(scope="session")
 def v3_2_fixture_root() -> Path:
     return FIXTURE_ROOT
+
+
+@pytest.fixture(scope="session")
+def design_input_v3_2_root() -> Path:
+    return DESIGN_INPUT_ROOT
 
 
 @pytest.fixture(scope="session")

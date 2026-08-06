@@ -1,14 +1,12 @@
-# Cross-task invariants
+# Cross Task Invariants
 
-1. Existing SourceAsset, Storage, Jobs, parser, table, object, reference, cleanup and v1/v2 compatibility
-   behaviour is preserved unless a test proves a required change.
+1. Existing SourceAsset, Storage, Jobs, parser, table, object, reference, cleanup, and v1/v2 compatibility behavior is preserved unless a test proves a required change.
 2. The existing normal `cogni` commands and Python ingest methods remain supported.
 3. Source bytes and parser-native artifacts are immutable while retained.
 4. Canonical text is stored once; divisions, provenance, views, KUs and training records reference IDs/spans.
 5. Native parser richness is never discarded merely to fit the common abstraction.
 6. Canonical field sources retain parser/model, version, method, confidence and conflicts.
-7. Observed, deterministic, parser-inferred, model-inferred, human-validated, ambiguous, contradicted and
-   unresolved states remain distinguishable.
+7. Observed, deterministic, parser-inferred, model-inferred, human-validated, ambiguous, contradicted and unresolved states remain distinguishable.
 8. Parser routing and parser fusion are separate stages.
 9. The capability registry has exactly three source classes.
 10. Adaptive routing has exactly three higher-level modes.
