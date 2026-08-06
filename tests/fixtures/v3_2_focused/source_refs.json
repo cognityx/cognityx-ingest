@@ -1,0 +1,13 @@
+{
+  "base": {
+    "repository": "cognityx/cognityx-ingest",
+    "path": "tests/fixtures/provenance_v1/main_policy_v2.pdf",
+    "sha256": "73a2dc18cc0ed79419a2208db93cc151e0a1fe092c96ed4322e449207f22630c",
+    "must_reuse_existing_bytes": true
+  },
+  "notes": [
+    "The base PDF is not duplicated in this pack.",
+    "The repository verifier checks the exact SHA-256 before tests use it.",
+    "Optional runtime parser tests may create additional generated artifacts outside frozen fixture truth."
+  ]
+}

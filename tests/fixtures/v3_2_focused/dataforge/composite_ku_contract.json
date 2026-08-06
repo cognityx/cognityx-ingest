@@ -1,0 +1,45 @@
+{
+  "schema": "cognityx.dataforge.composite-ku-handoff/v1",
+  "seed": {
+    "division_id": "div-policy-4.2"
+  },
+  "allowed_relation_ids": [
+    "rel-policy-to-7.1",
+    "rel-7.1-exception",
+    "rel-policy-to-authority",
+    "rel-authority-defines"
+  ],
+  "excluded_relation_ids": [
+    "rel-ambiguous-example"
+  ],
+  "expected_knowledge_unit": {
+    "knowledge_unit_id": "ku-travel-approval-001",
+    "task_schema": "travel-expense-approval",
+    "claims": [
+      {
+        "claim_id": "claim-rule",
+        "text": "The ordinary limit is ₹25,000 with Manager approval.",
+        "support_address_ids": [
+          "addr-strong-pol-p2"
+        ]
+      },
+      {
+        "claim_id": "claim-exception",
+        "text": "Emergency travel may begin before approval, but the claim must be submitted within two business days and ratified by the Division Director.",
+        "support_address_ids": [
+          "addr-strong-pol-p5"
+        ]
+      },
+      {
+        "claim_id": "claim-authority",
+        "text": "Amounts above ₹25,000 and up to ₹100,000 require Division Director approval.",
+        "support_address_ids": [
+          "addr-strong-auth-21"
+        ]
+      }
+    ],
+    "evidence_set_address_id": "addr-evidence-ku-travel-approval",
+    "gold_support_contains_only_validated_relations": true,
+    "source_reparse_allowed": false
+  }
+}

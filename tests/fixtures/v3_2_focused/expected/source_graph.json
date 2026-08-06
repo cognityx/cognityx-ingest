@@ -1,0 +1,149 @@
+{
+  "schema": "cognityx.ingest.source-graph/v3.2",
+  "graph_revision": "sg-rev-001",
+  "resources": [
+    {
+      "resource_id": "res-policy-v2",
+      "family_id": "aster-vale-travel-policy",
+      "version": "2",
+      "source_sha256": "08ce21d34cc5efbbda589676c3d4b0fdcdcba0162c9afb80cef35bf09f3e4862"
+    },
+    {
+      "resource_id": "res-authority-v2",
+      "family_id": "aster-vale-authority-matrix",
+      "version": "2",
+      "source_sha256": "454ea5900391d4c8f18223b2b881eed77cf1f9e9ff7a93b655486dbb6c8034c6"
+    }
+  ],
+  "presentation_units": [
+    {
+      "presentation_unit_id": "pu-policy-document",
+      "resource_id": "res-policy-v2",
+      "unit_type": "document"
+    },
+    {
+      "presentation_unit_id": "pu-authority-document",
+      "resource_id": "res-authority-v2",
+      "unit_type": "document"
+    }
+  ],
+  "divisions": [
+    {
+      "division_id": "div-policy-root",
+      "resource_id": "res-policy-v2",
+      "division_role": "document",
+      "parent_division_id": null,
+      "child_division_ids": [
+        "div-policy-4.2",
+        "div-policy-7.1"
+      ],
+      "direct_node_ids": [
+        "pol-heading-root"
+      ]
+    },
+    {
+      "division_id": "div-policy-4.2",
+      "resource_id": "res-policy-v2",
+      "division_role": "section",
+      "number": "4.2",
+      "parent_division_id": "div-policy-root",
+      "child_division_ids": [],
+      "direct_node_ids": [
+        "pol-heading-42",
+        "pol-p1",
+        "pol-p2",
+        "pol-p3",
+        "pol-p4"
+      ]
+    },
+    {
+      "division_id": "div-policy-7.1",
+      "resource_id": "res-policy-v2",
+      "division_role": "section",
+      "number": "7.1",
+      "parent_division_id": "div-policy-root",
+      "child_division_ids": [],
+      "direct_node_ids": [
+        "pol-heading-71",
+        "pol-p5"
+      ]
+    },
+    {
+      "division_id": "div-authority-root",
+      "resource_id": "res-authority-v2",
+      "division_role": "document",
+      "parent_division_id": null,
+      "child_division_ids": [
+        "div-authority-2.1"
+      ],
+      "direct_node_ids": [
+        "auth-heading-root"
+      ]
+    },
+    {
+      "division_id": "div-authority-2.1",
+      "resource_id": "res-authority-v2",
+      "division_role": "section",
+      "number": "2.1",
+      "parent_division_id": "div-authority-root",
+      "child_division_ids": [],
+      "direct_node_ids": [
+        "auth-heading-21",
+        "auth-p1",
+        "auth-p2",
+        "auth-p3"
+      ]
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "rel-policy-to-7.1",
+      "source_id": "pol-p3",
+      "target_id": "div-policy-7.1",
+      "relation_type": "references",
+      "status": "validated",
+      "epistemic_state": "deterministically-derived",
+      "gold_eligible": true
+    },
+    {
+      "relation_id": "rel-7.1-exception",
+      "source_id": "div-policy-7.1",
+      "target_id": "div-policy-4.2",
+      "relation_type": "exception_to",
+      "status": "human-validated",
+      "epistemic_state": "human-validated",
+      "gold_eligible": true
+    },
+    {
+      "relation_id": "rel-policy-to-authority",
+      "source_id": "pol-p4",
+      "target_id": "div-authority-2.1",
+      "relation_type": "references",
+      "status": "validated",
+      "epistemic_state": "deterministically-derived",
+      "gold_eligible": true
+    },
+    {
+      "relation_id": "rel-authority-defines",
+      "source_id": "div-authority-2.1",
+      "target_id": "div-policy-4.2",
+      "relation_type": "defines_authority_for",
+      "status": "human-validated",
+      "epistemic_state": "human-validated",
+      "gold_eligible": true
+    },
+    {
+      "relation_id": "rel-ambiguous-example",
+      "source_id": "pol-p1",
+      "target_id": null,
+      "relation_type": "related_rule",
+      "status": "ambiguous",
+      "epistemic_state": "ambiguous",
+      "gold_eligible": false,
+      "candidate_target_ids": [
+        "div-policy-7.1",
+        "div-authority-2.1"
+      ]
+    }
+  ]
+}

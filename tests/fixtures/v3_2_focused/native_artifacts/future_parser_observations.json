@@ -1,0 +1,21 @@
+{
+  "schema": "fixture.future-parser/v1",
+  "source_resource_id": "res-future-parser",
+  "capabilities": [
+    "paragraph_text",
+    "text_position_selectors"
+  ],
+  "unsupported": [
+    "tables",
+    "figures",
+    "native_pdf_links"
+  ],
+  "observations": [
+    {
+      "observation_id": "future-p1",
+      "text": "A parser-neutral fixture must remain consumable when Docling is absent.",
+      "char_start": 0,
+      "char_end": 72
+    }
+  ]
+}

@@ -1,0 +1,252 @@
+{
+  "schema": "cognityx.ingest.canonical-content/v3.2",
+  "invariant": "This is the only canonical copy of extracted text in the delta fixture.",
+  "resources": [
+    {
+      "resource_id": "res-policy-v2",
+      "source_path": "sources/segmentation_policy.md",
+      "source_sha256": "08ce21d34cc5efbbda589676c3d4b0fdcdcba0162c9afb80cef35bf09f3e4862"
+    },
+    {
+      "resource_id": "res-authority-v2",
+      "source_path": "sources/authority_matrix_v2.md",
+      "source_sha256": "454ea5900391d4c8f18223b2b881eed77cf1f9e9ff7a93b655486dbb6c8034c6"
+    }
+  ],
+  "content_nodes": [
+    {
+      "node_id": "pol-heading-root",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-root",
+      "node_kind": "heading",
+      "content": {
+        "text": "# Aster Vale Travel Approval Policy",
+        "sha256": "7a92664d6db54897b7349138ba73627572bb42b59f3c317eab6e1627b694d852"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 0,
+          "char_end": 35
+        }
+      ]
+    },
+    {
+      "node_id": "pol-heading-42",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-4.2",
+      "node_kind": "heading",
+      "content": {
+        "text": "## 4.2 Approval Rule",
+        "sha256": "692474ae4382a83a8ff87bd9cafc71adea2a1364982a5a6416bab8434ffaf5dd"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 37,
+          "char_end": 57
+        }
+      ]
+    },
+    {
+      "node_id": "pol-p1",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-4.2",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "Employees may claim travel expenses only for approved business travel.",
+        "sha256": "599b3af5b0e0a61930f3d4b5f2481c6e2d69369f4085890fa0b55f1bc08a92de"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 59,
+          "char_end": 129
+        }
+      ]
+    },
+    {
+      "node_id": "pol-p2",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-4.2",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "The ordinary approval limit is ₹25,000 with manager approval.",
+        "sha256": "6cfad0e66e99dc86ce2abed3d5c4245357fafe969eedf4b7d638299c8d83ebe3"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 131,
+          "char_end": 192
+        }
+      ]
+    },
+    {
+      "node_id": "pol-p3",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-4.2",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "Emergency travel may be submitted retroactively within two business days under Section 7.1.",
+        "sha256": "3b80624861349e9cf2004011be873b5551fb98d1c48d574ba7c326a02f632dea"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 194,
+          "char_end": 285
+        }
+      ]
+    },
+    {
+      "node_id": "pol-p4",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-4.2",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "Authority above the ordinary limit is defined by Authority Matrix v2, Section 2.1.",
+        "sha256": "a9f0de379fc80f4db2bc4ed7835294f60aa987288d3add010c1e011f0d11cd87"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 287,
+          "char_end": 369
+        }
+      ]
+    },
+    {
+      "node_id": "pol-heading-71",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-7.1",
+      "node_kind": "heading",
+      "content": {
+        "text": "## 7.1 Emergency Exception",
+        "sha256": "8bfb7f73fe4ef5c19d64480433b1b7a9243566c9044232f0b86ef35050fbcd02"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 371,
+          "char_end": 397
+        }
+      ]
+    },
+    {
+      "node_id": "pol-p5",
+      "resource_id": "res-policy-v2",
+      "owner_division_id": "div-policy-7.1",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "For a declared emergency, a trip may begin without prior approval. The employee must submit the claim within two business days and obtain Division Director ratification.",
+        "sha256": "a14816326661cbbb817fc177753b73f64b89fba2ba18222ad551f5f086fd1431"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 399,
+          "char_end": 568
+        }
+      ]
+    },
+    {
+      "node_id": "auth-heading-root",
+      "resource_id": "res-authority-v2",
+      "owner_division_id": "div-authority-root",
+      "node_kind": "heading",
+      "content": {
+        "text": "# Aster Vale Authority Matrix v2",
+        "sha256": "54bb6e81a693e5345c983088356976fc86f9f3fae96f64e003b5c4aaee5986c8"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/authority_matrix_v2.md",
+          "char_start": 0,
+          "char_end": 32
+        }
+      ]
+    },
+    {
+      "node_id": "auth-heading-21",
+      "resource_id": "res-authority-v2",
+      "owner_division_id": "div-authority-2.1",
+      "node_kind": "heading",
+      "content": {
+        "text": "## 2.1 Travel Expense Authority",
+        "sha256": "3b75fa54847ef50ed3b86df7c7d64474e3699f36829aec9baa4f11eab3fd06c5"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/authority_matrix_v2.md",
+          "char_start": 34,
+          "char_end": 65
+        }
+      ]
+    },
+    {
+      "node_id": "auth-p1",
+      "resource_id": "res-authority-v2",
+      "owner_division_id": "div-authority-2.1",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "Up to ₹25,000 requires Manager approval.",
+        "sha256": "eccff492469337062dc67091de24d6c7e41eb426768dc96c3720a757655f605b"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/authority_matrix_v2.md",
+          "char_start": 67,
+          "char_end": 107
+        }
+      ]
+    },
+    {
+      "node_id": "auth-p2",
+      "resource_id": "res-authority-v2",
+      "owner_division_id": "div-authority-2.1",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "Above ₹25,000 and up to ₹100,000 requires Division Director approval.",
+        "sha256": "3309efcc50b9c4f55b218bbafd4f7fd9381002d0bdee038247ede154d2391397"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/authority_matrix_v2.md",
+          "char_start": 109,
+          "char_end": 178
+        }
+      ]
+    },
+    {
+      "node_id": "auth-p3",
+      "resource_id": "res-authority-v2",
+      "owner_division_id": "div-authority-2.1",
+      "node_kind": "paragraph",
+      "content": {
+        "text": "Emergency retroactive submissions require Division Director ratification.",
+        "sha256": "e66da08feb6d2597a65f659a242052357bc1786a2d8faad37db49bd6df0b10af"
+      },
+      "source_selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/authority_matrix_v2.md",
+          "char_start": 180,
+          "char_end": 253
+        }
+      ]
+    }
+  ]
+}

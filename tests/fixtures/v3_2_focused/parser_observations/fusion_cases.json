@@ -1,0 +1,193 @@
+{
+  "schema": "cognityx.ingest.parser-observation-fixture/v3.2",
+  "cases": [
+    {
+      "case_id": "agreement-text",
+      "source_region_id": "region-pol-p2",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "text",
+          "value": "The ordinary approval limit is ₹25,000 with manager approval.",
+          "confidence": 0.96
+        },
+        {
+          "parser": "pymupdf",
+          "fact": "text",
+          "value": "The ordinary approval limit is ₹25,000 with manager approval.",
+          "confidence": 1.0
+        }
+      ],
+      "expected": {
+        "state": "agreement",
+        "accepted_value": "The ordinary approval limit is ₹25,000 with manager approval.",
+        "source_parsers": [
+          "docling",
+          "pymupdf"
+        ]
+      }
+    },
+    {
+      "case_id": "complementary-link-and-structure",
+      "source_region_id": "region-pol-p3",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "owner_division",
+          "value": "div-policy-4.2",
+          "confidence": 0.94
+        },
+        {
+          "parser": "pymupdf",
+          "fact": "native_link_target",
+          "value": "div-policy-7.1",
+          "confidence": 1.0
+        }
+      ],
+      "expected": {
+        "state": "complementary",
+        "accepted_facts": [
+          "owner_division",
+          "native_link_target"
+        ]
+      }
+    },
+    {
+      "case_id": "split-versus-merged",
+      "source_region_id": "region-emergency-paragraph",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "blocks",
+          "value": [
+            "For a declared emergency, a trip may begin without prior approval.",
+            "The employee must submit the claim within two business days and obtain Division Director ratification."
+          ]
+        },
+        {
+          "parser": "pymupdf",
+          "fact": "blocks",
+          "value": [
+            "For a declared emergency, a trip may begin without prior approval. The employee must submit the claim within two business days and obtain Division Director ratification."
+          ]
+        }
+      ],
+      "expected": {
+        "state": "conflict",
+        "resolution": "align-by-source-span-then-preserve-both-segmentation-observations"
+      }
+    },
+    {
+      "case_id": "reading-order-conflict",
+      "source_region_id": "region-two-column",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "reading_order",
+          "value": [
+            "a",
+            "b",
+            "c",
+            "d"
+          ]
+        },
+        {
+          "parser": "pymupdf",
+          "fact": "reading_order",
+          "value": [
+            "a",
+            "c",
+            "b",
+            "d"
+          ]
+        }
+      ],
+      "expected": {
+        "state": "unresolved",
+        "gold_eligible": false,
+        "required_action": "selective-review-or-third-parser"
+      }
+    },
+    {
+      "case_id": "bbox-conflict",
+      "source_region_id": "region-caption",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "bbox",
+          "value": [
+            10,
+            20,
+            200,
+            50
+          ]
+        },
+        {
+          "parser": "pymupdf",
+          "fact": "bbox",
+          "value": [
+            8,
+            18,
+            205,
+            52
+          ]
+        }
+      ],
+      "expected": {
+        "state": "conflict",
+        "resolution": "fact-specific-policy",
+        "retain_all_observations": true
+      }
+    },
+    {
+      "case_id": "table-versus-text",
+      "source_region_id": "region-table",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "object_type",
+          "value": "table"
+        },
+        {
+          "parser": "future-parser",
+          "fact": "object_type",
+          "value": "paragraph_text"
+        }
+      ],
+      "expected": {
+        "state": "conflict",
+        "accepted_value": "table",
+        "reason": "richer-validated-structure",
+        "retain_rejected": true
+      }
+    },
+    {
+      "case_id": "caption-and-image-geometry",
+      "source_region_id": "region-figure",
+      "observations": [
+        {
+          "parser": "docling",
+          "fact": "caption",
+          "value": "Approval flow"
+        },
+        {
+          "parser": "pymupdf",
+          "fact": "image_bbox",
+          "value": [
+            40,
+            90,
+            500,
+            410
+          ]
+        }
+      ],
+      "expected": {
+        "state": "complementary",
+        "accepted_facts": [
+          "caption",
+          "image_bbox"
+        ]
+      }
+    }
+  ]
+}

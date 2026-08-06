@@ -1,0 +1,44 @@
+{
+  "_fixture_notice": "Opaque lossless-preservation payload; not a Docling schema conformance sample.",
+  "name": "segmentation_policy",
+  "origin": {
+    "filename": "segmentation_policy.md",
+    "mimetype": "text/markdown"
+  },
+  "body": {
+    "self_ref": "#/body",
+    "children": [
+      {
+        "$ref": "#/texts/0"
+      },
+      {
+        "$ref": "#/texts/1"
+      },
+      {
+        "$ref": "#/tables/0"
+      }
+    ]
+  },
+  "texts": [
+    {
+      "self_ref": "#/texts/0",
+      "label": "section_header",
+      "text": "4.2 Approval Rule"
+    },
+    {
+      "self_ref": "#/texts/1",
+      "label": "paragraph",
+      "text": "The ordinary approval limit is ₹25,000 with manager approval."
+    }
+  ],
+  "tables": [
+    {
+      "self_ref": "#/tables/0",
+      "label": "table",
+      "data": {
+        "num_rows": 2,
+        "num_cols": 2
+      }
+    }
+  ]
+}

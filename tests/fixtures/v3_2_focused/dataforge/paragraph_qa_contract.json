@@ -1,0 +1,21 @@
+{
+  "schema": "cognityx.dataforge.paragraph-qa-handoff/v1",
+  "input": {
+    "source_graph_revision": "sg-rev-001",
+    "segmentation_view_id": "view-paragraph-v1",
+    "segment_id": "para-2",
+    "node_spans": [
+      {
+        "node_id": "pol-p2"
+      }
+    ]
+  },
+  "expected_output": {
+    "question": "What is the ordinary travel approval limit?",
+    "answer": "The ordinary approval limit is ₹25,000 with manager approval.",
+    "support_address_ids": [
+      "addr-strong-pol-p2"
+    ],
+    "must_not_store_independent_source_copy": true
+  }
+}

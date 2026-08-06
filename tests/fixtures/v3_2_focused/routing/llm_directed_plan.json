@@ -1,0 +1,25 @@
+{
+  "schema": "cognityx.ingest.routing-plan/v3.2",
+  "mode": "llm-directed",
+  "registry_version": "2026-08-06.1",
+  "frozen_llm_proposal": {
+    "invocations": [
+      {
+        "parser_id": "docling",
+        "scope": "document"
+      },
+      {
+        "parser_id": "pymupdf",
+        "scope": "pages-with-native-links"
+      }
+    ],
+    "stop_condition": "all-required-capabilities-observed-or-explicitly-unresolved"
+  },
+  "deterministic_validation": {
+    "allowlist_valid": true,
+    "budget_valid": true,
+    "security_valid": true,
+    "schema_valid": true
+  },
+  "result": "accepted"
+}

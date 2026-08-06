@@ -1,0 +1,92 @@
+tasks:
+  - id: T01
+    title: Native parser preservation
+    depends_on: [T00]
+    specification: planning/v3_2/task_specs/T01-NATIVE-PARSER-PRESERVATION.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_native_parser_preservation.py::test_docling_native_artifact_round_trip_preserves_bytes_and_native_pointers
+      - tests/v3_2/test_v3_2_native_parser_preservation.py::test_opaque_docling_artifact_fixture_contains_native_pointers
+    one_pr_stop_condition: Durable native-artifact store/read/reload API passes focused tests and existing ingest behavior remains green.
+  - id: T02
+    title: Generalized canonical model
+    depends_on: [T01]
+    specification: planning/v3_2/task_specs/T02-GENERALIZED-CANONICAL-MODEL.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_canonical_contract.py::test_expected_canonical_content_fixture_matches_contract
+      - tests/v3_2/test_v3_2_canonical_contract.py::test_canonical_document_still_preserves_current_python_ingest_shape
+    one_pr_stop_condition: Canonical overlay model passes focused tests without breaking v1/v2 document artifacts.
+  - id: T03
+    title: Parser capability registry
+    depends_on: [T02]
+    specification: planning/v3_2/task_specs/T03-PARSER-CAPABILITY-REGISTRY.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_capability_registry.py::test_exactly_three_capability_source_classes
+      - tests/v3_2/test_v3_2_capability_registry.py::test_capability_registry_contains_real_parsers
+      - tests/v3_2/test_v3_2_production_contract_scaffold.py::test_parser_capability_registry_api_exposes_three_source_classes
+    one_pr_stop_condition: Registry API exposes frozen capability classes and parser records in one ingest PR.
+  - id: T04
+    title: Adaptive parser routing
+    depends_on: [T03]
+    specification: planning/v3_2/task_specs/T04-ADAPTIVE-PARSER-ROUTING.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_routing_and_compatibility.py::test_exactly_three_adaptive_routing_modes
+      - tests/v3_2/test_v3_2_routing_and_compatibility.py::test_routing_plan_files_match_the_three_modes
+      - tests/v3_2/test_v3_2_routing_and_compatibility.py::test_legacy_parser_policy_names_remain_compatible
+    one_pr_stop_condition: Routing modes are mapped explicitly while legacy ExtractionPolicy names remain accepted.
+  - id: T05
+    title: Parser alignment fusion adjudication
+    depends_on: [T04]
+    specification: planning/v3_2/task_specs/T05-PARSER-ALIGNMENT-FUSION-ADJUDICATION.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_fusion_adjudication.py::test_fusion_cases_preserve_agreement_conflict_and_unresolved_states
+      - tests/v3_2/test_v3_2_fusion_adjudication.py::test_ambiguous_and_unresolved_relations_are_never_gold_support
+    one_pr_stop_condition: Alignment, fusion, and adjudication preserve fixture states and current single-parser behavior.
+  - id: T06
+    title: Non-copying segmentation views
+    depends_on: [T05]
+    specification: planning/v3_2/task_specs/T06-NONCOPYING-SEGMENTATION-VIEWS.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_segmentation_views.py::test_segmentation_views_reference_ids_and_spans_not_copied_text
+      - tests/v3_2/test_v3_2_production_contract_scaffold.py::test_segmentation_view_api_references_ids_and_spans
+    one_pr_stop_condition: View API materializes non-copying segment records and does not alter canonical text storage.
+  - id: T07
+    title: Extraction reuse retention purge
+    depends_on: [T06]
+    specification: planning/v3_2/task_specs/T07-EXTRACTION-REUSE-RETENTION-PURGE.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_retention_and_reuse.py::test_retention_fixture_covers_reuse_hold_and_purge
+    one_pr_stop_condition: Retention and purge metadata behavior passes fixture tests without unsafe physical deletion.
+  - id: T08
+    title: Source graph and provenance addresses
+    depends_on: [T07]
+    specification: planning/v3_2/task_specs/T08-SOURCE-GRAPH-AND-PROVENANCE-ADDRESSES.md
+    repositories: [cognityx-ingest]
+    target_tests:
+      - tests/v3_2/test_v3_2_production_contract_scaffold.py::test_source_graph_and_provenance_resolver_api_returns_exact
+      - tests/v3_2/test_v3_2_fusion_adjudication.py::test_ambiguous_and_unresolved_relations_are_never_gold_support
+    one_pr_stop_condition: Source graph repository and provenance resolver pass focused exact/ambiguous cases.
+  - id: T09
+    title: DataForge handoff
+    depends_on: [T08]
+    specification: planning/v3_2/task_specs/T09-DATAFORGE-HANDOFF.md
+    repositories: [cognityx-ingest, cognityx-dataforge]
+    target_tests:
+      - tests/v3_2/test_v3_2_dataforge_handoff.py::test_dataforge_paragraph_qa_contract
+      - tests/v3_2/test_v3_2_dataforge_handoff.py::test_dataforge_composite_ku_contract
+    one_pr_stop_condition: Focused handoff artifacts are produced by ingest and consumed by DataForge in coordinated PRs.
+  - id: T10
+    title: SDK and CLI
+    depends_on: [T09]
+    specification: planning/v3_2/task_specs/T10-SDK-AND-CLI.md
+    repositories: [cognityx-ingest, cognityx-sdk]
+    target_tests:
+      - tests/v3_2/test_v3_2_cli_and_python_compatibility.py::test_cli_ingest_paths_remain_supported
+      - tests/v3_2/test_v3_2_cli_and_python_compatibility.py::test_cli_compatibility_aliases_remain_supported
+    one_pr_stop_condition: Coordinated ingest and SDK PRs preserve current CLI/Python workflows while exposing v3.2 read surfaces.

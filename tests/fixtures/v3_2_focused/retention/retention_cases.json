@@ -1,0 +1,49 @@
+{
+  "schema": "cognityx.ingest.retention-fixture/v3.2",
+  "extraction_identity_formula": [
+    "source_sha256",
+    "parser_id",
+    "parser_version",
+    "parser_configuration_hash",
+    "model_version",
+    "scope"
+  ],
+  "artifacts": [
+    {
+      "artifact_id": "art-docling-001",
+      "extraction_identity": "7139e5ffcee8e7da3253e44c02afd715d8f56311c6b9e202f29bb7313b1cdf3a",
+      "reference_ids": [
+        "bind-pol-heading-42-docling",
+        "bind-pol-p2-docling",
+        "consumer-dataforge-1"
+      ],
+      "state": "validated",
+      "legal_hold": false,
+      "purge_eligible": false,
+      "reason": "active references remain"
+    },
+    {
+      "artifact_id": "art-old-parser-001",
+      "extraction_identity": "37609f700983d722a35f169995277fd3abaeec02c8fa9dfce732d0afc2a44096",
+      "reference_ids": [],
+      "state": "retention-expired",
+      "legal_hold": false,
+      "purge_eligible": true,
+      "post_purge_tombstone": {
+        "parser_id": "future-parser",
+        "parser_version": "fixture-0",
+        "source_sha256": "08ce21d34cc5efbbda589676c3d4b0fdcdcba0162c9afb80cef35bf09f3e4862",
+        "artifact_sha256": "fixture-artifact-hash",
+        "deletion_reason": "retention-expired"
+      }
+    },
+    {
+      "artifact_id": "art-legal-hold-001",
+      "reference_ids": [],
+      "state": "retention-expired",
+      "legal_hold": true,
+      "purge_eligible": false,
+      "reason": "legal hold blocks purge"
+    }
+  ]
+}

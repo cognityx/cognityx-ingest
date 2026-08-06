@@ -1,0 +1,2 @@
+A parser-neutral fixture must remain consumable when Docling is absent.
+The future parser reports paragraph text and source spans but no table structure.

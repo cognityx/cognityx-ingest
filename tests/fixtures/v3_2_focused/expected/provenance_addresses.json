@@ -1,0 +1,80 @@
+{
+  "schema": "cognityx.ingest.provenance-address/v3.2",
+  "strong_addresses": [
+    {
+      "address_id": "addr-strong-pol-p2",
+      "source_sha256": "08ce21d34cc5efbbda589676c3d4b0fdcdcba0162c9afb80cef35bf09f3e4862",
+      "graph_revision": "sg-rev-001",
+      "resource_id": "res-policy-v2",
+      "canonical_target": {
+        "node_id": "pol-p2"
+      },
+      "selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 131,
+          "char_end": 192
+        }
+      ]
+    },
+    {
+      "address_id": "addr-strong-pol-p5",
+      "source_sha256": "08ce21d34cc5efbbda589676c3d4b0fdcdcba0162c9afb80cef35bf09f3e4862",
+      "graph_revision": "sg-rev-001",
+      "resource_id": "res-policy-v2",
+      "canonical_target": {
+        "node_id": "pol-p5"
+      },
+      "selectors": [
+        {
+          "selector_type": "text-position",
+          "source_path": "sources/segmentation_policy.md",
+          "char_start": 399,
+          "char_end": 568
+        }
+      ]
+    },
+    {
+      "address_id": "addr-strong-auth-21",
+      "source_sha256": "454ea5900391d4c8f18223b2b881eed77cf1f9e9ff7a93b655486dbb6c8034c6",
+      "graph_revision": "sg-rev-001",
+      "resource_id": "res-authority-v2",
+      "canonical_target": {
+        "division_id": "div-authority-2.1"
+      },
+      "selectors": []
+    }
+  ],
+  "logical_addresses": [
+    {
+      "address_id": "addr-logical-policy-4.2-effective",
+      "resource_family_id": "aster-vale-travel-policy",
+      "version_rule": "effective-at-query-time",
+      "division_reference": "4.2"
+    }
+  ],
+  "evidence_set_addresses": [
+    {
+      "address_id": "addr-evidence-ku-travel-approval",
+      "claim_ids": [
+        "claim-rule",
+        "claim-exception",
+        "claim-authority"
+      ],
+      "member_address_ids": [
+        "addr-strong-pol-p2",
+        "addr-strong-pol-p5",
+        "addr-strong-auth-21"
+      ]
+    }
+  ],
+  "resolver_outcomes": [
+    "exact",
+    "redirected",
+    "ambiguous",
+    "obsolete",
+    "forbidden",
+    "unresolved"
+  ]
+}
