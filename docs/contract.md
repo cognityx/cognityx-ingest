@@ -9,6 +9,7 @@ are relative to the supplied artifact storage scope.
 | `evidence.jsonl` | Evidence v2 with exact source anchors, page facts and SourceAsset lineage |
 | `provenance.json` | Complete DataForge handoff without reopening the PDF |
 | `parser/{backend}.json` | Optional raw parser output for audit and comparison |
+| `ingest/native-artifacts/{artifact-id}.json` | Small descriptor used to verify and reload one raw parser output |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
 | `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
 
@@ -23,6 +24,14 @@ read stored v1 records.
 Run manifests use `cognityx.ingest.run/v2` and are never overwritten. A folder
 run has one run ID, one job ID, and one run manifest even when individual PDFs
 fail.
+
+The parser-native payload is the exact output returned by a parser. Ingest keeps
+that output at its existing `parser/{backend}.json` path and stores a separate
+descriptor containing its parser identity, SHA-256, byte count, media type,
+logical URI, retention classification, and optional native pointers. Reloading a
+payload recomputes its byte count and SHA-256 before returning it. The descriptor
+does not replace or reduce the original bytes; see [Native Parser
+Artifacts](native-parser-artifacts.md).
 
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff

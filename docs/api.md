@@ -20,6 +20,8 @@ same implementation.
 
 ::: cognityx_ingest.parser
 
+::: cognityx_ingest.native_artifacts
+
 ::: cognityx_ingest.enhancement
 
 ::: cognityx_ingest.enrichment

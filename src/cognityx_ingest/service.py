@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import time
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 from cognityx_jobs import JobRepository
@@ -49,6 +49,7 @@ from cognityx_ingest.models import (
     UnresolvedItem,
     UsageReport,
 )
+from cognityx_ingest.native_artifacts import NativeArtifactStore
 from cognityx_ingest.objects import (
     ObjectObservations,
     build_owned_objects,
@@ -700,6 +701,19 @@ class IngestService:
         *,
         extraction: ExtractionResult,
     ) -> IngestResult:
+        """Persist one ingest result while retaining legacy and native identities.
+
+        The ingest pipeline calls this after normalization. Canonical artifacts
+        retain their established keys, while every parser-native payload is sent
+        through ``NativeArtifactStore`` using its existing
+        ``parser/<backend>.json`` key and existing ``ArtifactRef`` ID. The store
+        adds independently verifiable descriptors for future NativeBinding, audit,
+        retention, and SDK readers without creating a second payload.
+
+        Repeating an equivalent run-bound write is idempotent. Changed canonical
+        data, parser bytes, or descriptor metadata fails rather than overwriting
+        retained evidence. Storage writes are the only side effect.
+        """
         prefix = f"ingest/documents/{document.document_id}"
         document_key = f"{prefix}/document.json"
         evidence_key = f"{prefix}/evidence.jsonl"
@@ -728,6 +742,19 @@ class IngestService:
         if not self._storage.exists(evidence_key):
             self._storage.put_bytes(
                 evidence_key, payload, media_type="application/x-ndjson"
+            )
+        native_store = NativeArtifactStore(self._storage, context)
+        raw_descriptors = {}
+        for backend, key, raw_payload in raw_parser_items:
+            artifact_name = _raw_parser_artifact_name(extraction.backend, backend)
+            artifact_id = f"art-{document.document_id}-{artifact_name}"
+            raw_descriptors[backend] = native_store.store(
+                artifact_id=artifact_id,
+                parser_id=backend,
+                parser_version=_raw_parser_version(extraction, backend),
+                payload=raw_payload,
+                media_type="application/json",
+                payload_key=key,
             )
         relation_records = [
             {**item.to_dict(), "gold": _relation_is_gold(item)}
@@ -803,30 +830,37 @@ class IngestService:
                 "selected_reason": extraction.selected_reason,
                 "diagnostics": dict(extraction.diagnostics),
                 "raw_artifacts": [
-                    {"backend": backend, "uri": self._artifact_uri(key)}
-                    for backend, key, _payload in raw_parser_items
+                    {
+                        "artifact_id": raw_descriptors[backend].artifact_id,
+                        "backend": backend,
+                        "parser_id": raw_descriptors[backend].parser_id,
+                        "parser_version": raw_descriptors[backend].parser_version,
+                        "sha256": raw_descriptors[backend].sha256,
+                        "size_bytes": raw_descriptors[backend].size_bytes,
+                        "media_type": raw_descriptors[backend].media_type,
+                        "uri": raw_descriptors[backend].uri,
+                        "descriptor_uri": native_store.descriptor_uri(
+                            raw_descriptors[backend].artifact_id
+                        ),
+                        "retention_class": raw_descriptors[
+                            backend
+                        ].retention_class,
+                        "native_pointers": list(
+                            raw_descriptors[backend].native_pointers
+                        ),
+                    }
+                    for backend, _key, _payload in raw_parser_items
                 ],
             },
         }
         self._put_immutable_json(provenance_key, provenance)
-        for _backend, key, raw_payload in raw_parser_items:
-            if not self._storage.exists(key):
-                self._storage.put_bytes(
-                    key,
-                    raw_payload,
-                    media_type="application/json",
-                )
         stored = {
             "document": self._storage.stat(document_key),
             "evidence": self._storage.stat(evidence_key),
             "provenance": self._storage.stat(provenance_key),
         }
         for backend, key, _payload in raw_parser_items:
-            name = (
-                "parser_raw"
-                if backend == extraction.backend
-                else f"parser_raw_{backend.replace('-', '_')}"
-            )
+            name = _raw_parser_artifact_name(extraction.backend, backend)
             stored[name] = self._storage.stat(key)
         artifacts = tuple(
             ArtifactRef(
@@ -998,6 +1032,26 @@ def _relation_is_gold(relation: Relation) -> bool:
     return relation.status in {"observed", "resolved"} and bool(
         relation.target_anchor_id
     )
+
+
+def _raw_parser_artifact_name(selected_backend: str, backend: str) -> str:
+    """Retain the legacy manifest name used to derive public artifact IDs."""
+    if backend == selected_backend:
+        return "parser_raw"
+    return f"parser_raw_{backend.replace('-', '_')}"
+
+
+def _raw_parser_version(
+    extraction: ExtractionResult, backend: str
+) -> str | None:
+    """Use each contributor's version without assigning a fusion wrapper version."""
+    if backend == extraction.backend:
+        return extraction.backend_version
+    versions = extraction.diagnostics.get("backend_versions")
+    if not isinstance(versions, Mapping):
+        return None
+    value = versions.get(backend)
+    return value if isinstance(value, str) and value else None
 
 
 def _now() -> str:
