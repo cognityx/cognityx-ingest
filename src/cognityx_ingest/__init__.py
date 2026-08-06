@@ -157,6 +157,7 @@ from cognityx_ingest.parser_routing import (
     RoutingPlan,
     RoutingProposal,
     RoutingProposalProvider,
+    RoutingProviderProfile,
     RoutingValidationResult,
     adaptive_mode_for_legacy_policy,
 )
@@ -278,6 +279,7 @@ __all__ = [
     "RoutingPlan",
     "RoutingProposal",
     "RoutingProposalProvider",
+    "RoutingProviderProfile",
     "RoutingValidationResult",
     "ResourceContext",
     "ResourceRef",

@@ -25,7 +25,7 @@ def _module_tree(module: object = native_artifacts) -> ast.Module:
 def test_native_artifact_module_has_substantial_architectural_docstring() -> None:
     """Require the purpose, design, flow, consumers, ownership, and non-goals."""
     module_docstring = ast.get_docstring(_module_tree()) or ""
-    normalized = module_docstring.lower()
+    normalized = " ".join(module_docstring.lower().split())
 
     assert len(module_docstring) >= 800
     for concept in (
@@ -257,6 +257,13 @@ def test_parser_routing_module_has_substantial_architectural_docstring() -> None
         "compact",
         "canonical",
         "registry_sha256",
+        "trusted provider profile",
+        "untrusted proposal",
+        "before any provider call",
+        "validate_against_registry",
+        "require_executable",
+        "audit-readable",
+        "execution-authorized",
     ):
         assert concept in normalized
 
@@ -300,6 +307,8 @@ def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
         "_build_deterministic_plan",
         "_deterministic_invocation_is_eligible",
         "_validated_boundary",
+        "_preflight_provider_profile",
+        "_validate_provider_profile",
         "_validate_proposal",
         "_validate_budget",
         "_invocation_purposes_supported",
@@ -311,8 +320,10 @@ def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
         "_parse_deterministic_plan",
         "_parse_hybrid_plan",
         "_parse_llm_directed_plan",
+        "_parse_provider_profile",
         "_strict_json_object",
         "_validation_result_to_dict",
+        "_provider_profile_to_dict",
         "_validate_sha256",
     }
     functions = {
@@ -327,9 +338,9 @@ def test_named_parser_routing_algorithms_have_invariant_documentation() -> None:
 def test_adaptive_routing_guide_explains_corrected_persistence_semantics() -> None:
     """Keep candidate, purpose, canonical context, digest, consumer, and T05 prose."""
     repository_root = Path(parser_routing.__file__).parents[2]
-    guide = (
+    guide = " ".join((
         repository_root / "docs" / "adaptive-parser-routing.md"
-    ).read_text(encoding="utf-8").lower()
+    ).read_text(encoding="utf-8").lower().split())
     for concept in (
         "candidate invocation",
         "selected invocation",
@@ -343,5 +354,43 @@ def test_adaptive_routing_guide_explains_corrected_persistence_semantics() -> No
         "exact runtime evidence snapshot",
         "audit tools",
         "t05",
+        "trusted provider profile",
+        "before the provider is called",
+        "proposal security tags cannot",
+        "validate_against_registry",
+        "require_executable",
+        "audit-readable",
+        "execution-authorized",
     ):
         assert concept in guide
+
+
+def test_registry_bound_public_methods_document_executable_trust_boundary() -> None:
+    """Require callers, algorithm, failures, effects, trust, and parser boundaries."""
+    routing_plan = next(
+        node
+        for node in _module_tree(parser_routing).body
+        if isinstance(node, ast.ClassDef) and node.name == "RoutingPlan"
+    )
+    methods = {
+        node.name: (ast.get_docstring(node) or "").lower()
+        for node in routing_plan.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for name in (
+        "validate_against_registry",
+        "require_executable",
+        "to_extraction_policy",
+    ):
+        docstring = methods[name]
+        for concept in (
+            "call",
+            "algorithm",
+            "return",
+            "raise",
+            "side effect",
+            "trust",
+            "provider",
+            "parser",
+        ):
+            assert concept in docstring, (name, concept)

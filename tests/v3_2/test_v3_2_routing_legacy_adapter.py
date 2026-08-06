@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from cognityx_ingest import (
@@ -12,7 +14,16 @@ from cognityx_ingest import (
     ParserRoutingService,
     RoutingBoundary,
     RoutingInputFacts,
+    RoutingPlan,
     RoutingProposal,
+    RoutingProviderProfile,
+)
+
+
+_PROFILE = RoutingProviderProfile(
+    provider_id="legacy-adapter-test-provider",
+    uses_external_services=False,
+    security_tags=(),
 )
 
 
@@ -46,6 +57,7 @@ def _plan(registry, boundary, requirements, invocations, *, mode="hybrid", stop=
     return ParserRoutingService().plan(
         request,
         proposal_provider=_Provider(proposal),
+        provider_profile=_PROFILE,
     )
 
 
@@ -64,7 +76,7 @@ def test_one_lossless_document_invocation_maps_to_fixed(
         (),
         (ParserInvocation(parser_id="pymupdf", scope="document"),),
     )
-    assert plan.to_extraction_policy() == ExtractionPolicy(
+    assert plan.to_extraction_policy(registry=available_routing_registry) == ExtractionPolicy(
         mode="fixed", backends=("pymupdf",)
     )
 
@@ -82,7 +94,7 @@ def test_multiple_lossless_document_invocations_map_to_compare(
             ParserInvocation(parser_id="pymupdf", scope="document"),
         ),
     )
-    assert plan.to_extraction_policy() == ExtractionPolicy(
+    assert plan.to_extraction_policy(registry=available_routing_registry) == ExtractionPolicy(
         mode="compare", backends=("docling", "pymupdf")
     )
 
@@ -99,7 +111,7 @@ def test_rejected_plan_refuses_legacy_conversion(
     )
     assert plan.validation_result.accepted is False
     with pytest.raises(ParserRoutingCompatibilityError, match="Rejected"):
-        plan.to_extraction_policy()
+        plan.to_extraction_policy(registry=available_routing_registry)
 
 
 def test_page_scope_refuses_lossy_legacy_conversion(
@@ -121,7 +133,7 @@ def test_page_scope_refuses_lossy_legacy_conversion(
     )
     assert plan.validation_result.accepted is True
     with pytest.raises(ParserRoutingCompatibilityError, match="Page-scoped"):
-        plan.to_extraction_policy()
+        plan.to_extraction_policy(registry=available_routing_registry)
 
 
 def test_stop_condition_refuses_lossy_legacy_conversion(
@@ -149,7 +161,7 @@ def test_stop_condition_refuses_lossy_legacy_conversion(
     )
     assert plan.validation_result.accepted is True
     with pytest.raises(ParserRoutingCompatibilityError, match="stop condition"):
-        plan.to_extraction_policy()
+        plan.to_extraction_policy(registry=available_routing_registry)
 
 
 def test_purpose_refuses_lossy_legacy_conversion(
@@ -169,10 +181,57 @@ def test_purpose_refuses_lossy_legacy_conversion(
     plan = ParserRoutingService().plan(request)
     assert plan.validation_result.accepted is True
     with pytest.raises(ParserRoutingCompatibilityError, match="purpose"):
-        plan.to_extraction_policy()
+        plan.to_extraction_policy(registry=available_routing_registry)
 
 
 def test_adaptive_mode_remains_invalid_legacy_extraction_policy() -> None:
     """Keep T04 names outside the existing ParserRouter execution contract."""
     with pytest.raises(ValueError, match="Unknown extraction policy mode"):
         ExtractionPolicy(mode="deterministic")
+
+
+def test_compact_hybrid_fixture_cannot_become_legacy_policy(
+    v3_2_fixture_root, available_routing_registry
+) -> None:
+    """Keep readable frozen proposals outside the execution-authorized adapter."""
+    plan = RoutingPlan.from_json_bytes(
+        (
+            v3_2_fixture_root / "routing" / "hybrid_plan.json"
+        ).read_bytes()
+    )
+    with pytest.raises(ParserRoutingCompatibilityError, match="Unverified"):
+        plan.to_extraction_policy(registry=available_routing_registry)
+
+
+def test_verified_provider_security_tags_refuse_lossy_legacy_conversion(
+    available_routing_registry
+) -> None:
+    """Keep trusted provider security semantics from disappearing into legacy policy."""
+    boundary = RoutingBoundary(
+        allowlist=("pymupdf",),
+        max_parser_runs=1,
+        external_services_allowed=False,
+        required_security_tags=("internal",),
+    )
+    request = ParserRoutingRequest(
+        mode="hybrid",
+        input_facts=RoutingInputFacts(
+            media_type="application/pdf",
+            required_capabilities=(),
+        ),
+        boundary=boundary,
+        registry=available_routing_registry,
+    )
+    plan = ParserRoutingService().plan(
+        request,
+        proposal_provider=_Provider(
+            RoutingProposal(
+                invocations=(
+                    ParserInvocation(parser_id="pymupdf", scope="document"),
+                )
+            )
+        ),
+        provider_profile=replace(_PROFILE, security_tags=("internal",)),
+    )
+    with pytest.raises(ParserRoutingCompatibilityError, match="Provider security"):
+        plan.to_extraction_policy(registry=available_routing_registry)

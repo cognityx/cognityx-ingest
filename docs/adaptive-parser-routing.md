@@ -122,6 +122,22 @@ stop condition, provider, model, request ID, external-service observation, and
 security tags. Provider and model identifiers are audit facts only. They do not
 make a proposal valid.
 
+### RoutingProviderProfile
+
+The trusted provider profile (`RoutingProviderProfile`) contains facts supplied
+by application composition, not by the proposal provider or model:
+
+- stable provider identity;
+- whether the deployment uses external services;
+- governed security tags;
+- optional provider-kind and deployment identifiers.
+
+For example, composition may identify a local deterministic test provider with
+no external service, or a hosted provider that sends requests outside the local
+process. The profile is checked before the provider is called. A proposal saying
+`external_services_used=false` cannot authorize a hosted provider, and proposal
+security tags cannot replace missing trusted profile tags.
+
 ### RoutingValidationResult
 
 `RoutingValidationResult` keeps separate checks for:
@@ -150,6 +166,20 @@ The plan also exposes the routing schema, mode, validation result, registry
 version, exact registry SHA-256 when present, and whether a provider was used. It
 has strict dictionary and JSON readers plus deterministic serializers.
 
+There are two levels of validation:
+
+1. `validate()` proves that the record is internally consistent.
+2. `validate_against_registry(registry)` proves that the decision matches the
+   exact T03 evidence supplied by the caller.
+
+The second method validates the registry, compares its version and SHA-256,
+reconstructs the persisted request, reruns deterministic validation, and compares
+the complete validation result and selected work. It performs no provider call,
+parser execution, network operation, storage write, or fusion. Audit readers can
+use ordinary validation. Future execution orchestration uses
+`require_executable(registry)`, which requires registry verification and an
+accepted result.
+
 The schema is:
 
 ```text
@@ -170,6 +200,12 @@ exact runtime evidence snapshot used for the decision. Audit tools and future
 execution orchestration consume both: facts explain what was needed, the boundary
 explains what was permitted, validation explains the outcome, and the digest
 identifies the evidence. The complete registry is not copied into the plan.
+
+Compact fixtures lack the complete live facts, boundary, provider profile, and
+registry digest needed to reproduce authorization. They are audit-readable but
+not execution-authorized, so `validate_against_registry`, `require_executable`,
+and legacy-policy conversion reject them. Directly constructed compact records
+also reject canonical-only fields instead of silently dropping them.
 
 Readers reject duplicate JSON keys, unknown or missing fields, malformed values,
 unsupported combinations, and noncanonical set-like order. They preserve
@@ -210,14 +246,16 @@ its structural features.
 
 Hybrid routing follows this sequence:
 
-1. Validate the trusted hard boundary.
-2. Give immutable input facts, registry evidence, and boundary to one provider.
-3. Treat every returned field as untrusted.
-4. Require parser order to follow the deterministic boundary.
-5. Check allowlist, run budget, service use, security tags, scopes, registry,
+1. Validate the trusted hard boundary and provider profile.
+2. Before any provider call, reject forbidden external-service use or missing
+   trusted security tags.
+3. Give immutable input facts, registry evidence, and boundary to one provider.
+4. Treat every returned field as untrusted audit data.
+5. Require parser order to follow the deterministic boundary.
+6. Check allowlist, run budget, trusted service use and tags, scopes, registry,
    runtime, and each parser's own declared purposes.
-6. Select invocations only when every check passes.
-7. Return an accepted or rejected auditable plan.
+7. Select invocations only when every check passes.
+8. Return an accepted or rejected auditable plan with the trusted profile.
 
 Malformed provider records are quarantined from the persisted rejected proposal.
 The validation result still records why the proposal failed. T04 never repairs
@@ -226,8 +264,9 @@ that proposal into an accepted plan.
 ## LLM-Directed Algorithm
 
 LLM-directed routing binds planning to the validated registry version and calls
-one provider. Provider invocation order is preserved as an audit decision, but
-every invocation remains subject to deterministic checks. Invented parser IDs,
+one provider only after the same trusted-profile preflight used by hybrid mode.
+Provider invocation order is preserved as an audit decision, but every invocation
+remains subject to deterministic checks. Invented parser IDs,
 unsupported scopes, invalid stop conditions, unavailable adapters, excess runs,
 or security violations produce a rejected plan with no executable selections.
 
@@ -281,6 +320,12 @@ Every proposal is checked against:
 - bounded provider metadata;
 - approved stop-condition vocabulary.
 
+Provider authorization happens earlier than proposal validation. External-service
+permission and required security tags are checked against the trusted provider
+profile before `propose()` can run. Proposal claims remain useful audit metadata,
+but cannot prove security compliance because the proposer is outside the trusted
+decision boundary.
+
 Routing records store no API key, credential, local path, source text,
 parser-native bytes, prompt containing document content, vector, or embedding.
 
@@ -299,11 +344,12 @@ Existing execution policy names do not change:
 There is no legacy alias for `llm-directed`, and
 `ExtractionPolicy(mode="deterministic")` remains invalid.
 
-`RoutingPlan.to_extraction_policy()` is intentionally narrow. One accepted,
-purpose-free document invocation can map to `fixed`; several can map to the
-existing `compare` policy. Rejected plans, page scopes, stop conditions,
-purposes, or security tags raise `ParserRoutingCompatibilityError`. The adapter
-does not execute or fuse parsers.
+`RoutingPlan.to_extraction_policy(registry=...)` is intentionally narrow. It first
+runs registry-bound executable verification. One verified, accepted, purpose-free
+document invocation can map to `fixed`; several can map to the existing `compare`
+policy. Compact, mismatched, rejected, page-scoped, stopped, purposeful, or tagged
+plans raise `ParserRoutingCompatibilityError`. The adapter does not execute or
+fuse parsers.
 
 ## Normal CI Boundary
 

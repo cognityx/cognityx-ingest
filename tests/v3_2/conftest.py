@@ -32,6 +32,7 @@ from cognityx_ingest import (
     ParserDiscoveredCapabilities,
     ParserRuntimeProbe,
     RoutingBoundary,
+    RoutingProviderProfile,
     SourceSelector,
 )
 
@@ -133,6 +134,23 @@ def routing_boundary() -> RoutingBoundary:
         allowlist=("docling", "pymupdf"),
         max_parser_runs=2,
         external_services_allowed=False,
+    )
+
+
+@pytest.fixture(scope="session")
+def routing_provider_profile() -> RoutingProviderProfile:
+    """Return trusted local provider facts for proposal-backed T04 tests.
+
+    Application composition, not a proposal or fake LLM, owns this immutable
+    profile. It declares that the deterministic test provider is local and needs
+    no governed security tags, allowing focused tests to isolate routing behavior.
+    """
+    return RoutingProviderProfile(
+        provider_id="fixture-provider",
+        uses_external_services=False,
+        security_tags=(),
+        provider_kind="deterministic-test-double",
+        deployment_id="normal-ci",
     )
 
 

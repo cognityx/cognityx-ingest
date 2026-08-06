@@ -62,7 +62,7 @@ def _proposal(
 
 
 def test_llm_directed_calls_provider_once_and_accepts_frozen_plan(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Accept the frozen document plus native-link-page proposal after validation."""
     proposal = _proposal(
@@ -83,11 +83,13 @@ def test_llm_directed_calls_provider_once_and_accepts_frozen_plan(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=provider,
+        provider_profile=routing_provider_profile,
     )
     assert provider.calls == 1
     assert plan.validation_result.accepted is True
     assert plan.registry_version == available_routing_registry.registry_version
     assert plan.proposal == proposal
+    assert plan.provider_profile == routing_provider_profile
     assert plan.llm_used is True
     encoded = plan.to_json_bytes()
     reloaded = RoutingPlan.from_json_bytes(encoded)
@@ -99,7 +101,7 @@ def test_llm_directed_calls_provider_once_and_accepts_frozen_plan(
 
 
 def test_llm_directed_preserves_provider_invocation_order(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Retain an LLM-directed order while still validating every selected parser."""
     proposal = _proposal(
@@ -119,13 +121,14 @@ def test_llm_directed_preserves_provider_invocation_order(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_CountingProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is True
     assert plan.selected_invocations == proposal.invocations
 
 
 def test_llm_directed_rejects_invented_parser_id(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Keep model-invented parser identities outside the registry authority."""
     proposal = _proposal(
@@ -141,6 +144,7 @@ def test_llm_directed_rejects_invented_parser_id(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_CountingProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.registry_valid is False
@@ -149,7 +153,7 @@ def test_llm_directed_rejects_invented_parser_id(
 
 
 def test_llm_directed_rejects_unsupported_scope(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Reject and safely quarantine a provider-invented execution scope."""
     proposal = _proposal(
@@ -158,6 +162,7 @@ def test_llm_directed_rejects_unsupported_scope(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_CountingProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.schema_valid is False
@@ -166,7 +171,7 @@ def test_llm_directed_rejects_unsupported_scope(
 
 
 def test_llm_directed_rejects_invalid_stop_condition(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Record rejection without executing or accepting an invented stop rule."""
     proposal = _proposal(
@@ -187,6 +192,7 @@ def test_llm_directed_rejects_invalid_stop_condition(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_CountingProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.schema_valid is False
@@ -206,7 +212,7 @@ def test_llm_directed_without_provider_fails_explicitly(
 
 
 def test_llm_proposal_receives_no_source_content_or_paths(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Limit provider input to immutable facts, registry evidence, and policy."""
     class InspectingProvider:
@@ -237,5 +243,6 @@ def test_llm_proposal_receives_no_source_content_or_paths(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=InspectingProvider(),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is True

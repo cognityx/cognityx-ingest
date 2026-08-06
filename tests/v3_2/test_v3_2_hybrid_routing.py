@@ -16,6 +16,7 @@ from cognityx_ingest import (
     RoutingInputFacts,
     RoutingPlan,
     RoutingProposal,
+    RoutingProviderProfile,
 )
 
 
@@ -78,13 +79,14 @@ def _proposal(*parser_ids: str, external: bool = False) -> RoutingProposal:
 
 
 def test_hybrid_calls_provider_once_and_accepts_frozen_bounded_proposal(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Accept Docling plus PyMuPDF only after one deterministic provider call."""
     provider = _FrozenProvider(_proposal("docling", "pymupdf"))
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=provider,
+        provider_profile=routing_provider_profile,
     )
     assert provider.calls == 1
     assert plan.validation_result.accepted is True
@@ -93,6 +95,7 @@ def test_hybrid_calls_provider_once_and_accepts_frozen_bounded_proposal(
         "pymupdf",
     )
     assert plan.llm_used is True
+    assert plan.provider_profile == routing_provider_profile
     encoded = plan.to_json_bytes()
     reloaded = RoutingPlan.from_json_bytes(encoded)
     assert reloaded.to_json_bytes() == encoded
@@ -100,13 +103,14 @@ def test_hybrid_calls_provider_once_and_accepts_frozen_bounded_proposal(
 
 
 def test_hybrid_rejects_parser_outside_allowlist(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Keep an invented parser proposal visible but select nothing executable."""
     provider = _FrozenProvider(_proposal("docling", "invented-parser"))
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=provider,
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.allowlist_valid is False
@@ -115,13 +119,14 @@ def test_hybrid_rejects_parser_outside_allowlist(
 
 
 def test_hybrid_rejects_parser_run_budget_overflow(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Reject two proposed runs when the deterministic budget permits only one."""
     boundary = replace(routing_boundary, max_parser_runs=1)
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, boundary),
         proposal_provider=_FrozenProvider(_proposal("docling", "pymupdf")),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.budget_valid is False
@@ -129,7 +134,7 @@ def test_hybrid_rejects_parser_run_budget_overflow(
 
 
 def test_hybrid_rejects_unavailable_parser(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Preserve false runtime evidence and reject the proposed executable plan."""
     docling = available_routing_registry.get("docling")
@@ -164,6 +169,7 @@ def test_hybrid_rejects_unavailable_parser(
     plan = ParserRoutingService().plan(
         _request(registry, routing_boundary),
         proposal_provider=_FrozenProvider(_proposal("docling", "pymupdf")),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.runtime_valid is False
@@ -171,30 +177,47 @@ def test_hybrid_rejects_unavailable_parser(
     assert registry.get("docling").conflicts == before_conflicts
 
 
-def test_hybrid_rejects_external_service_use_when_forbidden(
+def test_hybrid_rejects_external_provider_before_call_when_forbidden(
     available_routing_registry, routing_boundary
 ) -> None:
-    """Keep provider recommendations inside the deterministic security boundary."""
+    """Block an external trusted profile before an untrusted false claim is read."""
+    provider = _FrozenProvider(_proposal("docling", "pymupdf", external=False))
+    profile = RoutingProviderProfile(
+        provider_id="external-provider",
+        uses_external_services=True,
+        security_tags=(),
+    )
+    with pytest.raises(ParserRoutingProposalError, match="external-service"):
+        ParserRoutingService().plan(
+            _request(available_routing_registry, routing_boundary),
+            proposal_provider=provider,
+            provider_profile=profile,
+        )
+    assert provider.calls == 0
+
+
+def test_untrusted_external_claim_does_not_override_trusted_local_profile(
+    available_routing_registry, routing_boundary, routing_provider_profile
+) -> None:
+    """Use trusted composition for authorization while retaining proposal audit data."""
+    proposal = _proposal("docling", "pymupdf", external=True)
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
-        proposal_provider=_FrozenProvider(
-            _proposal("docling", "pymupdf", external=True)
-        ),
+        proposal_provider=_FrozenProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
-    assert plan.validation_result.accepted is False
-    assert plan.validation_result.security_valid is False
-    assert "security-boundary-violated" in (
-        plan.validation_result.rejection_reasons
-    )
+    assert plan.validation_result.accepted is True
+    assert plan.proposal.external_services_used is True
 
 
 def test_hybrid_rejects_noncanonical_boundary_ordered_proposal(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Reject a provider order that attempts to replace deterministic boundary order."""
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_FrozenProvider(_proposal("pymupdf", "docling")),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is False
     assert plan.validation_result.schema_valid is False
@@ -204,7 +227,7 @@ def test_hybrid_rejects_noncanonical_boundary_ordered_proposal(
 
 
 def test_hybrid_provider_failure_and_absence_raise_typed_error(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Never leak provider exceptions or silently become deterministic routing."""
     request = _request(available_routing_registry, routing_boundary)
@@ -212,28 +235,51 @@ def test_hybrid_provider_failure_and_absence_raise_typed_error(
         ParserRoutingService().plan(
             request,
             proposal_provider=_FailingProvider(),
+            provider_profile=routing_provider_profile,
         )
     assert "private provider detail" not in str(caught.value)
     with pytest.raises(ParserRoutingProposalError, match="requires a proposal"):
         ParserRoutingService().plan(request)
 
 
+def test_hybrid_missing_trusted_profile_fails_before_provider_call(
+    available_routing_registry, routing_boundary
+) -> None:
+    """Require trusted composition facts before reading any proposal metadata."""
+    provider = _FrozenProvider(_proposal("docling", "pymupdf"))
+    with pytest.raises(ParserRoutingProposalError, match="trusted provider profile"):
+        ParserRoutingService().plan(
+            _request(available_routing_registry, routing_boundary),
+            proposal_provider=provider,
+        )
+    assert provider.calls == 0
+
+
 def test_hybrid_security_tags_must_satisfy_boundary(
     available_routing_registry, routing_boundary
 ) -> None:
-    """Reject proposals that omit a governed security classification tag."""
+    """Reject before call when proposal tags try to replace missing trusted tags."""
     boundary = RoutingBoundary(
         allowlist=routing_boundary.allowlist,
         max_parser_runs=2,
         external_services_allowed=False,
         required_security_tags=("internal",),
     )
-    plan = ParserRoutingService().plan(
-        _request(available_routing_registry, boundary),
-        proposal_provider=_FrozenProvider(_proposal("docling", "pymupdf")),
+    proposal = _proposal("docling", "pymupdf")
+    proposal = replace(proposal, security_tags=("internal",))
+    provider = _FrozenProvider(proposal)
+    profile = RoutingProviderProfile(
+        provider_id="untagged-local-provider",
+        uses_external_services=False,
+        security_tags=(),
     )
-    assert plan.validation_result.accepted is False
-    assert plan.validation_result.security_valid is False
+    with pytest.raises(ParserRoutingProposalError, match="security tags"):
+        ParserRoutingService().plan(
+            _request(available_routing_registry, boundary),
+            proposal_provider=provider,
+            provider_profile=profile,
+        )
+    assert provider.calls == 0
 
 
 @pytest.mark.parametrize(
@@ -278,13 +324,17 @@ def test_hybrid_security_tags_must_satisfy_boundary(
     ),
 )
 def test_hybrid_rejects_parser_incapable_or_swapped_purposes(
-    invocations, available_routing_registry, routing_boundary
+    invocations,
+    available_routing_registry,
+    routing_boundary,
+    routing_provider_profile,
 ) -> None:
     """Refuse attribution that another selected parser could otherwise conceal."""
     proposal = RoutingProposal(invocations=invocations)
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_FrozenProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.selected_invocations == ()
     assert plan.validation_result.capability_valid is False
@@ -294,7 +344,7 @@ def test_hybrid_rejects_parser_incapable_or_swapped_purposes(
 
 
 def test_hybrid_rejects_empty_purposes_for_nonempty_request(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Require live proposals to attribute every requested capability explicitly."""
     proposal = RoutingProposal(
@@ -306,6 +356,7 @@ def test_hybrid_rejects_empty_purposes_for_nonempty_request(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_FrozenProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.selected_invocations == ()
     assert "required-purpose-unresolved" in (
@@ -314,7 +365,7 @@ def test_hybrid_rejects_empty_purposes_for_nonempty_request(
 
 
 def test_hybrid_accepts_parser_specific_required_and_complementary_purposes(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Keep genuine Docling and PyMuPDF purpose ownership in an accepted plan."""
     proposal = RoutingProposal(
@@ -334,13 +385,14 @@ def test_hybrid_accepts_parser_specific_required_and_complementary_purposes(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_FrozenProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.validation_result.accepted is True
     assert plan.selected_invocations == proposal.invocations
 
 
 def test_hybrid_rejects_unsupported_extra_complementary_purpose(
-    available_routing_registry, routing_boundary
+    available_routing_registry, routing_boundary, routing_provider_profile
 ) -> None:
     """Reject an extra purpose unless that invocation's parser actually supports it."""
     proposal = RoutingProposal(
@@ -360,6 +412,7 @@ def test_hybrid_rejects_unsupported_extra_complementary_purpose(
     plan = ParserRoutingService().plan(
         _request(available_routing_registry, routing_boundary),
         proposal_provider=_FrozenProvider(proposal),
+        provider_profile=routing_provider_profile,
     )
     assert plan.selected_invocations == ()
     assert "invocation-purpose-unsupported" in (
