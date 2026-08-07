@@ -25,7 +25,7 @@ are relative to the supplied artifact storage scope.
 | `parser/fusion-decisions.json` | Additive v3.2 alignment evidence, retained policies, and adjudication decisions |
 | `ingest/native-artifacts/{artifact-id}.json` | Small descriptor used to verify and reload one raw parser output |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
-| `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
+| `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, timestamps, and additive DataForge source-reference bundles |
 
 `document.json` includes `schema: "cognityx.ingest.document"` and uses
 `cognityx.ingest.document/v2`. Every newly written evidence row uses
@@ -45,7 +45,13 @@ than the repository as a whole. See [Canonical Content](canonical-content.md).
 
 Run manifests use `cognityx.ingest.run/v2` and are never overwritten. A folder
 run has one run ID, one job ID, and one run manifest even when individual PDFs
-fail.
+fail. The additive `dataforge_source_refs` array contains exactly one reference
+bundle per successful T08-capable document, in result order. Each bundle points
+to provenance v2, canonical content, the Source Graph, and provenance addresses
+through logical `storage://` locations. These values exactly match the document's
+provenance `artifact_uris`; failed documents get no placeholder. Existing
+`document_manifest_refs`, `evidence_refs`, and `provenance_refs` are unchanged.
+No source text or parser-native payload location appears in the new bundle.
 
 The parser-native payload is the exact output returned by a parser. Ingest keeps
 that output at its existing `parser/{backend}.json` path and stores a separate

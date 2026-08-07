@@ -10,7 +10,9 @@ content, and T05 parser observations plus fusion decisions gain separate identit
 callers, CLI composition, DataForge handoff, operations, and audit tooling use
 the service. T08 additionally publishes a deterministic, text-free Source Graph
 and generated strong provenance addresses from canonical facts; logical business
-addresses and evidence-set intent remain explicit downstream composition.
+addresses and evidence-set intent remain explicit downstream composition. T09 adds
+run-level ``dataforge_source_refs`` so DataForge can discover those T08 artifacts
+without loading parser-native payloads or copying source content.
 """
 
 from __future__ import annotations
@@ -286,7 +288,30 @@ class IngestService:
         job_id_override: str | None = None,
         raise_on_failure: bool = False,
     ) -> IngestRunResult:
-        """Coordinate one durable run over already registered SourceAssets."""
+        """Coordinate one durable run over already registered SourceAssets.
+
+        Responsibility:
+            Execute each requested asset independently, retain partial successes,
+            and publish one immutable run manifest that points to all successful
+            document artifacts, including the compact T09 DataForge source refs.
+        Main algorithm and ordering:
+            Process ``asset_ids`` in caller order, append successful results in
+            that same order, omit failed items from success projections, and write
+            the manifest only after document-local persistence has completed.
+        Design principle and consumers:
+            The CLI, Python composition root, Jobs observers, and DataForge use an
+            additive manifest; existing v2 fields remain unchanged while T09 gets
+            logical Storage URIs instead of source text or parser-native payloads.
+        Lifecycle, idempotency, and side effects:
+            Parsing, registry reads, Jobs events, and immutable Storage writes are
+            explicit side effects. Equal retries must match existing bytes; no
+            artifact is overwritten or repaired.
+        Trust boundary and failures:
+            Registry/parser/Storage/control errors are either raised or recorded
+            as typed per-file failures according to ``raise_on_failure``. The
+            service holds no run-local mutable state after return; concurrent use
+            depends on the injected collaborators' thread-safety guarantees.
+        """
         owner_id = context.principal_id or "local"
         created_at = _now()
         job_id = job_id_override or self._start_job(
@@ -376,6 +401,9 @@ class IngestService:
                 self._artifact_uri(item.provenance_key)
                 for item in results
                 if item.provenance_key
+            ],
+            "dataforge_source_refs": [
+                self._dataforge_source_ref(item) for item in results
             ],
             "successful_files": [
                 {
@@ -1362,8 +1390,44 @@ class IngestService:
             )
 
     def _artifact_uri(self, storage_key: str) -> str:
+        """Convert one owned logical key to its configured Storage URI.
+
+        Ingest persistence and manifest projection call this pure adapter after a
+        key has been selected. It delegates URI construction to the configured
+        Storage client when available and otherwise emits the compatibility
+        ``storage://`` form. It never resolves a physical path, reads payloads, or
+        mutates state. Equal keys return equal URIs; Storage owns namespace trust
+        and callers must share the service only when that client is thread-safe.
+        """
         uri = getattr(self._storage, "uri", None)
         return uri(storage_key) if uri is not None else f"storage://{storage_key}"
+
+    def _dataforge_source_ref(self, result: IngestResult) -> dict[str, str]:
+        """Project one successful T08 result into a text-free DataForge bundle.
+
+        ``ingest_assets`` calls this only after canonical content, Source Graph,
+        provenance addresses, and provenance have been persisted successfully.
+        The algorithm preserves result order and derives every value from the same
+        document-local keys used by ``provenance.json`` so the two projections
+        agree exactly. The returned closed mapping contains logical Storage URIs
+        and immutable identity only: no local path, parser-native URI, source text,
+        evidence, question, answer, claim, or Knowledge Unit can enter the field.
+        It performs no I/O, is deterministic and idempotent, and raises normal
+        attribute/type failures only for an internally incomplete successful
+        result. The mapping is newly allocated per call; sharing the service has
+        the same thread-safety assumptions as ``_artifact_uri``.
+        """
+        return {
+            "document_id": result.document.document_id,
+            "provenance_uri": self._artifact_uri(result.provenance_key),
+            "canonical_content_uri": self._artifact_uri(
+                result.canonical_content_key
+            ),
+            "source_graph_uri": self._artifact_uri(result.source_graph_key),
+            "provenance_addresses_uri": self._artifact_uri(
+                result.provenance_addresses_key
+            ),
+        }
 
     @staticmethod
     def _stored_uri(stored: object) -> str:
