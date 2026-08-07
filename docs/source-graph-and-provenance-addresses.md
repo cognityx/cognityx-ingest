@@ -272,10 +272,10 @@ because current canonical facts are sufficient for them. Ingest does not generat
 logical addresses without explicit family/version metadata, and it does not
 generate evidence sets without explicit claim/member intent.
 
-T09 will consume these records for paragraph Q/A and cross-section or
+T09 consumes these records for paragraph Q/A and cross-section or
 cross-document Knowledge Unit handoff. T10 may add SDK and CLI read surfaces.
-T08 does not change current CLI commands, the Python composition root, or the
-meaning of the existing `provenance.json` artifact.
+T09 does not change current CLI commands, the Python composition root, parsing
+behavior, or the meaning of the existing `provenance.json` artifact.
 
 T09's consumer trust boundary begins only after Source Graph validation and
 address-result validation succeed. DataForge may trust an `exact` ordered closure
@@ -283,5 +283,30 @@ as support, but it must never promote an `ambiguous`, `obsolete`, `forbidden`, o
 `unresolved` explanation to gold evidence. T08 supplies that validated evidence
 boundary. Because strict validation re-proves the production content fingerprint,
 T09 inherits a trustworthy graph revision rather than a human-selected label.
-T08 still does not implement the T09 handoff itself, and T10 remains responsible
-for any future SDK or CLI read surfaces.
+DataForge owns the generated question, answer, claim, and Knowledge Unit records
+built from it. T10 remains responsible for any future SDK or CLI read surfaces.
+
+## Run-level DataForge source references
+
+The run manifest now includes one compact `dataforge_source_refs` entry for each
+successful T08-capable document. Think of this as a packing list: it tells
+DataForge which already-stored objects belong together, but it contains none of
+their source content.
+
+Each entry contains only:
+
+- `document_id`;
+- `provenance_uri`;
+- `canonical_content_uri`;
+- `source_graph_uri`; and
+- `provenance_addresses_uri`.
+
+All locations are logical `storage://` addresses. The same canonical, graph, and
+address locations also appear in that document's provenance v2 `artifact_uris`,
+and the values must agree exactly. Entries remain in successful result order. A
+failed document receives no invented reference bundle.
+
+The field is additive. Existing `document_manifest_refs`, `evidence_refs`, and
+`provenance_refs` keep their current meaning. The new field does not include a
+local path, parser-native payload, original PDF, copied evidence, question,
+answer, claim, or Knowledge Unit.
