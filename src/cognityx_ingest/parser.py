@@ -1,4 +1,18 @@
-"""Backend-neutral PDF extraction plugins and selection policies."""
+"""Execute backend-neutral PDF parsers and preserve compatibility result shapes.
+
+This module owns parser adapters, existing selection policies, and the stable
+``ExtractionResult`` consumed by ingest callers. T05 alignment, fusion, and
+adjudication live in ``parser_fusion`` rather than expanding this execution
+module. Compare mode delegates completed parser results to that service, then
+receives a compatibility projection plus additive observation and decision
+artifacts. Compatibility fact sources retain exact parser-local page, block,
+object, and relation identities before T05 enriches them with observation and
+decision IDs. Repeated source values are therefore traced to their actual parser
+occurrence instead of an arbitrary value-hash match. Canonical builders, audit
+tools, and later T06 and T08 work consume those references; this module still
+does not adjudicate evidence or create future segmentation and graph APIs. The
+separation keeps routing and parser execution distinct from evidence decisions.
+"""
 
 from __future__ import annotations
 
@@ -106,7 +120,18 @@ class ExtractedPage:
 
 @dataclass(frozen=True, slots=True)
 class ExtractionResult:
-    """Normalized parser output without backend-specific public classes."""
+    """Carry normalized parser output without backend-private public classes.
+
+    Parser adapters construct this record and ``ParserRouter`` returns it to
+    ``IngestService`` and direct Python callers. Its fields preserve the existing
+    normalized page model, native raw artifacts, selection diagnostics, and
+    considered backends. T05 adds exact observation and fusion artifacts as
+    optional bytes so every old constructor remains valid. The observation bytes
+    preserve parser evidence; the fusion bytes preserve decisions that reference
+    that evidence. The record is frozen, retains no open parser resources,
+    performs no work itself, and is safe for concurrent reads when nested
+    caller-supplied mappings are treated as immutable.
+    """
 
     pages: tuple[ExtractedPage, ...]
     backend: str
@@ -117,6 +142,8 @@ class ExtractionResult:
     considered_backends: tuple[str, ...] = ()
     selected_reason: str = "configured"
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    observation_artifact: bytes | None = None
+    fusion_artifact: bytes | None = None
 
 
 class PdfExtractor(Protocol):
@@ -524,6 +551,14 @@ def normalize_extraction(extractor: Any, path: Path) -> ExtractionResult:
 def _with_selection(
     result: ExtractionResult, candidates: tuple[str, ...], reason: str
 ) -> ExtractionResult:
+    """Copy selection metadata while preserving every parser and T05 artifact.
+
+    Fixed, rule, fallback, and agent execution paths call this pure helper after
+    a parser returns. It changes only the considered candidates and reason,
+    performs no parser or external call, and retains both optional observation
+    and fusion bytes so composition wrappers cannot accidentally break their
+    integrity binding.
+    """
     return ExtractionResult(
         pages=result.pages,
         backend=result.backend,
@@ -534,12 +569,42 @@ def _with_selection(
         considered_backends=candidates,
         selected_reason=reason,
         diagnostics=result.diagnostics,
+        observation_artifact=result.observation_artifact,
+        fusion_artifact=result.fusion_artifact,
     )
 
 
 def _fuse_results(
     results: Sequence[ExtractionResult], candidates: tuple[str, ...]
 ) -> ExtractionResult:
+    """Delegate completed compare results to the explicit T05 production service.
+
+    ``ParserRouter(mode="compare")`` is the only production caller. The local
+    import avoids a module cycle because ``parser_fusion`` consumes immutable
+    extraction records from this module. T05 performs no parser execution,
+    provider, network, or LLM call; it returns a deterministic compatibility
+    result carrying the authoritative v3.2 artifact. Typed T05 failures propagate
+    unchanged and no persistence occurs here.
+    """
+    from cognityx_ingest.parser_fusion import ParserFusionService
+
+    return ParserFusionService().fuse_extraction_results(
+        results, candidates
+    ).extraction_result
+
+
+def _legacy_compatibility_projection(
+    results: Sequence[ExtractionResult], candidates: tuple[str, ...]
+) -> ExtractionResult:
+    """Project T05 inputs into the established one-value extraction field shape.
+
+    ``ParserFusionService`` calls this only after it has created explicit
+    observation and adjudication records. The historical deterministic logic is
+    retained so existing compare-mode consumers do not change shape or selected
+    values. Its choices are compatibility projections, not evidence acceptance;
+    the T05 artifact and diagnostics remain authoritative. The pure algorithm is
+    order-independent and performs no parser, network, provider, or LLM call.
+    """
     ordered = tuple(sorted(results, key=lambda item: item.backend))
     pages_by_index: dict[int, list[tuple[str, ExtractedPage]]] = {}
     for result in ordered:
@@ -595,6 +660,14 @@ def _fuse_page(
     observed: tuple[tuple[str, ExtractedPage], ...],
     conflicts: list[dict[str, Any]],
 ) -> ExtractedPage:
+    """Project one physical page while retaining exact parser source identity.
+
+    The legacy compare projection calls this after parser execution. It applies
+    existing value selection unchanged, composes deterministic blocks, objects,
+    and relations, and adds page-region identity to each selected fact source.
+    T05 enrichment and canonical audit consumers use those additive locators;
+    no persistence, parser execution, or source-text duplication occurs here.
+    """
     source_backends = tuple(sorted(backend for backend, _page in observed))
     selected: dict[str, Any] = {}
     fact_sources: dict[str, tuple[Mapping[str, Any], ...]] = {}
@@ -615,6 +688,8 @@ def _fuse_page(
                     "backend": backend,
                     "method": "parser_page_fact",
                     "confidence": 1.0,
+                    "source_region_id": f"page:{page_index}",
+                    "occurrence_index": 1,
                 }
                 for backend in sources
             )
@@ -674,10 +749,21 @@ def _fuse_blocks(
     observed: tuple[tuple[str, ExtractedPage], ...],
     conflicts: list[dict[str, Any]],
 ) -> tuple[ExtractedBlock, ...]:
+    """Project legacy blocks with deterministic duplicate-occurrence provenance.
+
+    Compare mode calls this for one page. Blocks are normalized into stable
+    parser-local order before duplicate text occurrences are grouped, then the
+    established text, type, geometry, and reading-order choices are preserved.
+    Each fact source carries its original block anchor and T05 region ID so
+    enrichment can bind exactly. The pure result serves existing callers and
+    later canonical audit references without creating T06 segmentation views.
+    """
     grouped: dict[tuple[str, int], list[tuple[str, ExtractedBlock]]] = {}
     occurrences: Counter[tuple[str, str]] = Counter()
     for backend, page in observed:
-        for block in page.blocks:
+        for block in sorted(
+            page.blocks, key=lambda item: (item.block_id, item.reading_order)
+        ):
             normalized_text = _normalized_fact_text(block.text)
             occurrences[(backend, normalized_text)] += 1
             grouped.setdefault(
@@ -742,11 +828,15 @@ def _fuse_blocks(
                 confidence=max(confidence_values) if confidence_values else None,
                 source_backends=source_backends,
                 fact_sources={
-                    "text": _block_fact_sources(values, "text", text),
-                    "block_type": _block_fact_sources(
-                        values, "block_type", block_type
+                    "text": _block_fact_sources(
+                        values, "text", text, page_index, occurrence
                     ),
-                    "bbox": _block_fact_sources(values, "bbox", bbox),
+                    "block_type": _block_fact_sources(
+                        values, "block_type", block_type, page_index, occurrence
+                    ),
+                    "bbox": _block_fact_sources(
+                        values, "bbox", bbox, page_index, occurrence
+                    ),
                 },
             )
         )
@@ -767,10 +857,18 @@ def _fuse_objects(
     observed: tuple[tuple[str, ExtractedPage], ...],
     conflicts: list[dict[str, Any]],
 ) -> tuple[ExtractedObject, ...]:
+    """Project legacy objects and retain each parser-local object occurrence.
+
+    The compatibility page builder calls this after parser execution. It sorts
+    parser objects by stable IDs, applies the existing object and geometry
+    choices, and records bounded region, anchor, and occurrence metadata for
+    every source. T05 and audit consumers use those identities; object text and
+    captions are not copied into provenance metadata and no T08 graph is built.
+    """
     grouped: dict[tuple[str, str, int], list[tuple[str, ExtractedObject]]] = {}
     occurrences: Counter[tuple[str, str, str]] = Counter()
     for backend, page in observed:
-        for item in page.objects:
+        for item in sorted(page.objects, key=lambda value: value.object_id):
             identity_text = _normalized_fact_text(item.caption or item.text or "")
             occurrence_key = (backend, item.object_type, identity_text)
             occurrences[occurrence_key] += 1
@@ -819,9 +917,22 @@ def _fuse_objects(
                 ),
                 source_backends=source_backends,
                 fact_sources={
-                    "identity": _object_fact_sources(values),
+                    "identity": _object_fact_sources(
+                        values, page_index, occurrence
+                    ),
                     "selected": (
-                        _source_detail(preferred_backend, preferred),
+                        _source_detail(
+                            preferred_backend,
+                            preferred,
+                            source_region_id=_parser_source_region_id(
+                                "object",
+                                preferred_backend,
+                                page_index,
+                                preferred.object_id,
+                            ),
+                            source_anchor=preferred.object_id,
+                            occurrence_index=occurrence,
+                        ),
                     ),
                 },
             )
@@ -834,12 +945,21 @@ def _fuse_relations(
     observed: tuple[tuple[str, ExtractedPage], ...],
     conflicts: list[dict[str, Any]],
 ) -> tuple[ExtractedRelation, ...]:
+    """Project legacy relations with exact record and endpoint provenance.
+
+    The compatibility page builder calls this for completed parser relations.
+    Stable relation-ID ordering makes duplicate occurrence assignment independent
+    of input order, while established relation field choices remain unchanged.
+    Additive metadata distinguishes the parser relation record from its source
+    endpoint anchor for T05 audit consumers; T08 target resolution remains out of
+    scope and target text is never copied into fact-source metadata.
+    """
     grouped: dict[
         tuple[str, str, str, int], list[tuple[str, ExtractedRelation]]
     ] = {}
     occurrences: Counter[tuple[str, str, str, str]] = Counter()
     for backend, page in observed:
-        for item in page.relations:
+        for item in sorted(page.relations, key=lambda value: value.relation_id):
             identity = (
                 item.relation_type,
                 item.target_anchor or "",
@@ -852,6 +972,7 @@ def _fuse_relations(
             )
     result: list[ExtractedRelation] = []
     for key, values in sorted(grouped.items()):
+        occurrence = key[-1]
         preferred_backend, preferred = min(
             values,
             key=lambda item: (_backend_rank(item[0], "relation"), item[1].relation_id),
@@ -890,9 +1011,21 @@ def _fuse_relations(
                 ),
                 source_backends=source_backends,
                 fact_sources={
-                    "identity": _relation_fact_sources(values),
+                    "identity": _relation_fact_sources(
+                        values, page_index, occurrence
+                    ),
                     "selected": (
-                        _source_detail(preferred_backend, preferred),
+                        _source_detail(
+                            preferred_backend,
+                            preferred,
+                            source_region_id=(
+                                f"relation:{preferred_backend}:"
+                                f"{preferred.relation_id}"
+                            ),
+                            source_anchor=preferred.source_anchor,
+                            occurrence_index=occurrence,
+                            parser_relation_id=preferred.relation_id,
+                        ),
                     ),
                 },
             )
@@ -960,19 +1093,77 @@ def _normalized_fact_text(value: str) -> str:
     return " ".join(value.split()).casefold()
 
 
-def _source_detail(backend: str, item: Any) -> Mapping[str, Any]:
-    return {
+def _source_detail(
+    backend: str,
+    item: Any,
+    *,
+    source_region_id: str,
+    source_anchor: str,
+    occurrence_index: int,
+    parser_relation_id: str | None = None,
+) -> Mapping[str, Any]:
+    """Describe one exact parser-local occurrence for T05 compatibility.
+
+    The legacy projection helpers call this after choosing a parser item. The
+    metadata preserves the old backend, method, and confidence values while
+    adding the region, anchor, and occurrence needed to bind that choice to one
+    observation. Relation IDs are retained separately because a relation's
+    source anchor identifies its endpoint rather than the relation record.
+    Canonical-content and audit consumers use the later enriched observation and
+    decision IDs; no parser source text is copied here.
+    """
+    detail = {
         "backend": backend,
         "method": item.method,
         "confidence": item.confidence,
+        "source_region_id": source_region_id,
+        "source_anchor": source_anchor,
+        "occurrence_index": occurrence_index,
     }
+    if parser_relation_id is not None:
+        detail["parser_relation_id"] = parser_relation_id
+    return detail
+
+
+def _parser_source_region_id(
+    kind: str, backend: str, page_index: int, parser_anchor: str
+) -> str:
+    """Return the stable T05 region ID for one parser-local block or object.
+
+    Compatibility projection and observation adaptation share this hashing
+    algorithm so a projected fact can name the exact region that produced it.
+    Hashing bounds parser-owned identifiers without treating them as paths. The
+    helper is deterministic, performs no I/O, and is consumed only inside the
+    parser-to-T05 boundary; relation regions retain their established format.
+    """
+    digest = hashlib.sha256(parser_anchor.encode("utf-8")).hexdigest()[:16]
+    return f"{kind}:{backend}:{page_index}:{digest}"
 
 
 def _block_fact_sources(
-    values: list[tuple[str, ExtractedBlock]], field_name: str, selected: Any
+    values: list[tuple[str, ExtractedBlock]],
+    field_name: str,
+    selected: Any,
+    page_index: int,
+    occurrence_index: int,
 ) -> tuple[Mapping[str, Any], ...]:
+    """Retain exact parser block identities supporting one projected fact.
+
+    The legacy block fuser calls this for text, type, and geometry. It filters
+    only items equal to the selected legacy value, then records the parser block
+    anchor, its shared T05 source-region ID, and deterministic duplicate-text
+    occurrence. Existing compatibility values are not reselected or copied.
+    """
     return tuple(
-        _source_detail(backend, block)
+        _source_detail(
+            backend,
+            block,
+            source_region_id=_parser_source_region_id(
+                "block", backend, page_index, block.block_id
+            ),
+            source_anchor=block.block_id,
+            occurrence_index=occurrence_index,
+        )
         for backend, block in sorted(values, key=lambda item: item[0])
         if getattr(block, field_name) == selected
     )
@@ -980,18 +1171,51 @@ def _block_fact_sources(
 
 def _object_fact_sources(
     values: list[tuple[str, ExtractedObject]],
+    page_index: int,
+    occurrence_index: int,
 ) -> tuple[Mapping[str, Any], ...]:
+    """Retain every parser-local object identity in one compatibility group.
+
+    Object fusion calls this for its identity projection. Each additive source
+    names the exact parser object region and occurrence while preserving the old
+    source metadata. T05 enrichment and canonical audit consumers use these
+    locators without embedding captions, object text, or other source values.
+    """
     return tuple(
-        _source_detail(backend, item)
+        _source_detail(
+            backend,
+            item,
+            source_region_id=_parser_source_region_id(
+                "object", backend, page_index, item.object_id
+            ),
+            source_anchor=item.object_id,
+            occurrence_index=occurrence_index,
+        )
         for backend, item in sorted(values, key=lambda value: value[0])
     )
 
 
 def _relation_fact_sources(
     values: list[tuple[str, ExtractedRelation]],
+    page_index: int,
+    occurrence_index: int,
 ) -> tuple[Mapping[str, Any], ...]:
+    """Retain exact parser relation records and their endpoint anchors.
+
+    Relation fusion calls this for its compatibility identity group. The stable
+    source-region ID binds the relation observation, while ``source_anchor``
+    continues to identify the relation endpoint and ``parser_relation_id``
+    distinguishes parser-local relation records. No target text is duplicated.
+    """
     return tuple(
-        _source_detail(backend, item)
+        _source_detail(
+            backend,
+            item,
+            source_region_id=f"relation:{backend}:{item.relation_id}",
+            source_anchor=item.source_anchor,
+            occurrence_index=occurrence_index,
+            parser_relation_id=item.relation_id,
+        )
         for backend, item in sorted(values, key=lambda value: value[0])
     )
 

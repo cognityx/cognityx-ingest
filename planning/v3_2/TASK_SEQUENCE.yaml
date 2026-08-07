@@ -45,6 +45,13 @@ tasks:
     target_tests:
       - tests/v3_2/test_v3_2_fusion_adjudication.py::test_fusion_cases_preserve_agreement_conflict_and_unresolved_states
       - tests/v3_2/test_v3_2_fusion_adjudication.py::test_ambiguous_and_unresolved_relations_are_never_gold_support
+      - tests/v3_2/test_v3_2_parser_observations.py
+      - tests/v3_2/test_v3_2_observation_alignment.py
+      - tests/v3_2/test_v3_2_fact_fusion.py
+      - tests/v3_2/test_v3_2_adjudication_policies.py
+      - tests/v3_2/test_v3_2_fusion_persistence.py
+      - tests/v3_2/test_v3_2_fusion_compatibility.py
+      - tests/v3_2/test_v3_2_fusion_validation.py
     one_pr_stop_condition: Alignment, fusion, and adjudication preserve fixture states and current single-parser behavior.
   - id: T06
     title: Non-copying segmentation views

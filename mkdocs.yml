@@ -17,6 +17,7 @@ nav:
   - Canonical Content: canonical-content.md
   - Parser Capability Registry: parser-capability-registry.md
   - Adaptive Parser Routing: adaptive-parser-routing.md
+  - Parser Alignment Fusion Adjudication: parser-alignment-fusion-adjudication.md
   - Provenance Capabilities: provenance-capabilities.md
   - Provenance Gap Report: provenance-gap-report.md
   - API: api.md

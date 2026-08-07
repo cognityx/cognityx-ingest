@@ -10,6 +10,8 @@ are relative to the supplied artifact storage scope.
 | `canonical-content.json` | Additive v3.2 parser-neutral resources, structure, text nodes, selectors and bindings |
 | `provenance.json` | Complete DataForge handoff without reopening the PDF |
 | `parser/{backend}.json` | Optional raw parser output for audit and comparison |
+| `parser/observations.json` | Additive v3.2 exact parser observations and source-region locations |
+| `parser/fusion-decisions.json` | Additive v3.2 alignment evidence, retained policies, and adjudication decisions |
 | `ingest/native-artifacts/{artifact-id}.json` | Small descriptor used to verify and reload one raw parser output |
 | `manifest.json` | Stable artifact pointers for downstream consumers |
 | `ingest/runs/{run_id}/manifest.json` | Whole-run inputs, outputs, failures, parser, and timestamps |
@@ -53,8 +55,24 @@ The separate routing-plan schema is
 LLM-directed parser invocations plus the hard validation result. A routing plan
 does not execute a parser and does not combine parser outputs. T03 registry facts
 remain unchanged, existing `ExtractionPolicy` values remain the execution
-compatibility boundary, and later T05 work owns alignment and fusion. See
+compatibility boundary, and T05 owns alignment and fusion. See
 [Adaptive Parser Routing](adaptive-parser-routing.md).
+
+After compare-mode parser execution, T05 records each parser fact separately,
+groups facts by their parser-native source region, aligns those regions using
+source-location evidence, classifies agreement,
+complementary facts, conflict, and unresolved evidence, then applies explicit
+fact-specific or bounded-family policies. Confidence alone never selects a
+winner, and missing page confidence remains absent.
+
+The existing `cognityx.ingest.parser-fusion/v1` raw artifact remains readable.
+The additive observation set is stored at `parser/observations.json`; its exact
+bytes are bound into `parser/fusion-decisions.json` by set ID and SHA-256. The
+fusion artifact retains complete data-only policies so strict reload validation
+can replay every decision. Compatibility `ExtractionResult` values remain
+available, but conflict or unresolved projections are not accepted gold evidence.
+See [Parser Alignment, Fusion, and
+Adjudication](parser-alignment-fusion-adjudication.md).
 
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff

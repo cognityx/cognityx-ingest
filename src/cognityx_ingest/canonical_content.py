@@ -335,6 +335,48 @@ class CanonicalText:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalFactSource:
+    """Reference one T05 observation supporting a canonical text-node fact.
+
+    Responsibility:
+        Carry parser, method, observation, adjudication, acceptance, and gold
+        status without copying the observation value into canonical metadata.
+    Constructed by:
+        ``CanonicalContentBuilder`` from T05-enriched compatibility fact sources,
+        or by strict artifact deserialization.
+    Used by:
+        Audit, T06, T08, DataForge filtering, and canonical-content readers.
+    Main algorithm:
+        Convert bounded compatibility metadata into one immutable typed reference.
+    Invariants:
+        Observation identity is present; unresolved or ambiguous support is never
+        gold eligible; parser source values are not embedded.
+    Lifecycle/persistence:
+        The optional record lives with a content node while its fusion artifact is
+        retained; T07 owns future retention behavior.
+    Side effects:
+        None.
+    Typed failures:
+        Invalid values raise ``CanonicalContentValidationError``.
+    Trust boundary:
+        Compatibility metadata is untrusted until canonical validation succeeds.
+    Thread-safety assumptions:
+        Frozen scalars are safe for concurrent reads.
+    """
+
+    fact: str
+    parser_id: str
+    method: str
+    observation_id: str
+    decision_id: str
+    adjudication_state: str
+    accepted: bool
+    rejected: bool
+    gold_eligible: bool
+    confidence: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class SourceSelector:
     """Identify a real source location without quoting the selected text.
 
@@ -394,6 +436,7 @@ class ContentNode:
     content: CanonicalText
     source_selectors: tuple[SourceSelector, ...]
     sequence_number: int
+    fact_sources: tuple[CanonicalFactSource, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1021,7 +1064,7 @@ def _selector_to_dict(item: SourceSelector) -> dict[str, object]:
 
 def _content_node_to_dict(item: ContentNode) -> dict[str, object]:
     """Serialize the artifact's sole source-text-bearing record shape."""
-    return {
+    value: dict[str, object] = {
         "node_id": item.node_id,
         "resource_id": item.resource_id,
         "owner_division_id": item.owner_division_id,
@@ -1035,6 +1078,23 @@ def _content_node_to_dict(item: ContentNode) -> dict[str, object]:
         ],
         "sequence_number": item.sequence_number,
     }
+    if item.fact_sources:
+        value["fact_sources"] = [
+            {
+                "fact": source.fact,
+                "parser_id": source.parser_id,
+                "method": source.method,
+                "observation_id": source.observation_id,
+                "decision_id": source.decision_id,
+                "adjudication_state": source.adjudication_state,
+                "accepted": source.accepted,
+                "rejected": source.rejected,
+                "gold_eligible": source.gold_eligible,
+                "confidence": source.confidence,
+            }
+            for source in item.fact_sources
+        ]
+    return value
 
 
 def _representation_to_dict(item: Representation) -> dict[str, object]:
@@ -1280,19 +1340,23 @@ def _parse_selector(value: Mapping[str, object]) -> SourceSelector:
 
 def _parse_content_node(value: Mapping[str, object]) -> ContentNode:
     """Parse the sole source-text-bearing record and its location selectors."""
-    _require_exact_fields(
-        value,
-        {
-            "node_id",
-            "resource_id",
-            "owner_division_id",
-            "node_kind",
-            "content",
-            "source_selectors",
-            "sequence_number",
-        },
-        "content node",
-    )
+    required_fields = {
+        "node_id",
+        "resource_id",
+        "owner_division_id",
+        "node_kind",
+        "content",
+        "source_selectors",
+        "sequence_number",
+    }
+    actual_fields = set(value)
+    if (
+        actual_fields != required_fields
+        and actual_fields != required_fields | {"fact_sources"}
+    ):
+        raise CanonicalContentValidationError(
+            "content node fields do not match the required schema"
+        )
     content = _mapping(value["content"], "content")
     return ContentNode(
         node_id=_required_text(value["node_id"], "node_id"),
@@ -1311,6 +1375,50 @@ def _parse_content_node(value: Mapping[str, object]) -> ContentNode:
         sequence_number=_nonnegative_int(
             value["sequence_number"], "sequence_number"
         ),
+        fact_sources=tuple(
+            _parse_canonical_fact_source(item)
+            for item in _mapping_items(value.get("fact_sources", []), "fact_sources")
+        ),
+    )
+
+
+def _parse_canonical_fact_source(value: Mapping[str, object]) -> CanonicalFactSource:
+    """Parse bounded T05 metadata without accepting copied observation values."""
+    _require_exact_fields(
+        value,
+        {
+            "fact",
+            "parser_id",
+            "method",
+            "observation_id",
+            "decision_id",
+            "adjudication_state",
+            "accepted",
+            "rejected",
+            "gold_eligible",
+            "confidence",
+        },
+        "canonical fact source",
+    )
+    confidence_value = value["confidence"]
+    confidence = (
+        None
+        if confidence_value is None
+        else _number(confidence_value, "confidence")
+    )
+    return CanonicalFactSource(
+        fact=_required_text(value["fact"], "fact"),
+        parser_id=_required_text(value["parser_id"], "parser_id"),
+        method=_required_text(value["method"], "method"),
+        observation_id=_required_text(value["observation_id"], "observation_id"),
+        decision_id=_required_text(value["decision_id"], "decision_id"),
+        adjudication_state=_required_text(
+            value["adjudication_state"], "adjudication_state"
+        ),
+        accepted=_boolean(value["accepted"], "accepted"),
+        rejected=_boolean(value["rejected"], "rejected"),
+        gold_eligible=_boolean(value["gold_eligible"], "gold_eligible"),
+        confidence=confidence,
     )
 
 
@@ -1857,6 +1965,34 @@ def _validate_content_nodes(
             )
         for selector in node.source_selectors:
             _validate_selector(selector, node.resource_id, indexes)
+        expected_fact_sources = tuple(
+            sorted(
+                node.fact_sources,
+                key=lambda item: (item.fact, item.parser_id, item.observation_id),
+            )
+        )
+        if node.fact_sources != expected_fact_sources:
+            raise CanonicalContentValidationError(
+                f"Content fact sources are not deterministically ordered: {node.node_id}"
+            )
+        identities = [item.observation_id for item in node.fact_sources]
+        if len(identities) != len(set(identities)):
+            raise CanonicalContentValidationError(
+                f"Content fact sources repeat an observation: {node.node_id}"
+            )
+        for source in node.fact_sources:
+            if source.accepted and source.rejected:
+                raise CanonicalContentValidationError(
+                    f"Content fact source is both accepted and rejected: {node.node_id}"
+                )
+            if source.gold_eligible and source.adjudication_state in {
+                "ambiguous",
+                "conflict",
+                "unresolved",
+            }:
+                raise CanonicalContentValidationError(
+                    f"Unsafe content fact source is gold eligible: {node.node_id}"
+                )
 
 
 def _validate_selector(
@@ -2400,9 +2536,62 @@ def _build_content_nodes(
                 ),
                 source_selectors=(selector,),
                 sequence_number=sequence_number,
+                fact_sources=_canonical_fact_sources(block.fact_sources),
             )
         )
     return tuple(sorted(nodes, key=lambda item: (item.sequence_number, item.node_id)))
+
+
+def _canonical_fact_sources(
+    fact_sources: Mapping[str, tuple[Mapping[str, Any], ...]],
+) -> tuple[CanonicalFactSource, ...]:
+    """Retain only complete T05 references and never copy an observation value."""
+    result: list[CanonicalFactSource] = []
+    for fact, sources in fact_sources.items():
+        for source in sources:
+            observation_id = source.get("observation_id")
+            decision_id = source.get("decision_id")
+            state = source.get("adjudication_state")
+            parser_id = source.get("backend") or source.get("parser_id")
+            method = source.get("method")
+            if not all(
+                isinstance(item, str) and item
+                for item in (
+                    observation_id,
+                    decision_id,
+                    state,
+                    parser_id,
+                    method,
+                )
+            ):
+                continue
+            confidence_value = source.get("confidence")
+            confidence = (
+                float(confidence_value)
+                if isinstance(confidence_value, (int, float))
+                and not isinstance(confidence_value, bool)
+                else None
+            )
+            result.append(
+                CanonicalFactSource(
+                    fact=fact,
+                    parser_id=parser_id,  # type: ignore[arg-type]
+                    method=method,  # type: ignore[arg-type]
+                    observation_id=observation_id,  # type: ignore[arg-type]
+                    decision_id=decision_id,  # type: ignore[arg-type]
+                    adjudication_state=state,  # type: ignore[arg-type]
+                    accepted=source.get("accepted") is True,
+                    rejected=source.get("rejected") is True,
+                    gold_eligible=source.get("gold_eligible") is True,
+                    confidence=confidence,
+                )
+            )
+    return tuple(
+        sorted(
+            result,
+            key=lambda item: (item.fact, item.parser_id, item.observation_id),
+        )
+    )
 
 
 def _build_representations(
@@ -2799,6 +2988,13 @@ def _number(value: object, field_name: str) -> float:
     return converted
 
 
+def _boolean(value: object, field_name: str) -> bool:
+    """Require a real JSON boolean without truthiness coercion."""
+    if not isinstance(value, bool):
+        raise CanonicalContentValidationError(f"{field_name} must be boolean")
+    return value
+
+
 def _optional_nonnegative_float(value: object, field_name: str) -> float | None:
     """Accept absent geometry and reject negative observed dimensions."""
     if value is None:
@@ -2856,6 +3052,7 @@ __all__ = [
     "CanonicalContentBuilder",
     "CanonicalContentError",
     "CanonicalContentValidationError",
+    "CanonicalFactSource",
     "CanonicalOwnershipError",
     "CanonicalReferenceError",
     "CanonicalRelation",
