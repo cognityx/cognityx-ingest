@@ -62,8 +62,33 @@ It is not a stored field. JSON output does not contain `"text": null`; the field
 absent entirely.
 
 This is stricter than merely promising not to use the field. Strict readers reject
-text-like fields, and a service bound to canonical content also checks that complete
-canonical passages do not appear inside any serialized view value.
+text-like fields, arbitrary payload fields, and unknown fields. This is
+**structural no-copy**: the record shape has nowhere to put source text. It is not a lexical
+substring rule. A bounded ID or profile value may legitimately be `A`, `1`, or
+`Policy` even when a short canonical node happens to contain the same characters.
+Long distinctive-canary tests still prove that real source passages are absent from
+serialized view bytes.
+
+## Immutable binding and two validation levels
+
+Every production view carries the SHA-256 of the exact canonical-content bytes it
+references. That digest is an **immutable binding**. A consumer may not overwrite it
+to make a view appear to belong to a different document, even if both documents use
+the same node IDs. `from_canonical(..., views=...)` and `build_view_set(...)` reject a
+foreign digest instead of repairing, normalizing, or rebinding it.
+
+There are two deliberately different checks:
+
+- `SegmentationViewSet.validate()` checks internal schema consistency. For example,
+  it proves that the aggregate and its views agree with each other.
+- `SegmentationViewService.validate_view_set(...)` performs canonical-bound
+  validation. It proves that a production set matches this service's exact
+  canonical bytes and that every reference is meaningful in this canonical
+  catalog.
+
+The second check is a trust boundary. It returns the same immutable object after
+validation and performs no persistence, parser execution, network request, provider
+call, or language-model call.
 
 ## The six strategies
 
@@ -121,7 +146,9 @@ The pointer is evidence of the parser/chunker observation. It does not become a
 canonical boundary. T06 requires a real retained artifact identity but does not
 pretend that a chunker pointer is necessarily a JSON pointer inside the opaque
 parser payload. It does not import Docling private classes, reopen the PDF, rerun
-Docling, or copy native chunk text.
+Docling, or copy native chunk text. Production composition also enforces
+**descriptor mapping identity**: the mapping key must exactly equal the enclosed
+T01 descriptor's `artifact_id`. An alias cannot rename retained native evidence.
 
 ## Sentence-safe fixed-size boundary
 
@@ -167,6 +194,22 @@ return scope:   div-policy-4.2
 The child remains a `NodeSpan`. The return scope remains a canonical division ID.
 When requested, the service reconstructs the division through canonical subtree
 APIs. It does not store a duplicate parent chunk.
+
+## Strategy semantic validation
+
+A record can have valid JSON fields and still misstate what its strategy means.
+Canonical-bound validation therefore checks strategy semantics as well as shape:
+
+- paragraph segments contain one unique, whole paragraph node;
+- direct-division segments exactly follow the division's direct nodes and order;
+- parser-native segments use a real descriptor identity and bounded chunk pointer;
+- fixed-size spans stay on ordered, non-overlapping paragraph ranges;
+- sentence-window seeds and context are whole neighbouring paragraphs with separate
+  roles;
+- parent-child retrieval paragraphs belong to their declared return division.
+
+These checks read reference facts from the canonical catalog. They do not rebuild
+text, choose a winning view, call a tokenizer while loading, or create a new chunk.
 
 ## Read-time reconstruction
 
@@ -228,7 +271,9 @@ observation and fusion artifacts.
 T06 creates deterministic serializable values and cache identities. It does not
 create an always-written artifact, database, cache store, retention scheduler, or
 purge operation. T07 owns whether a physical extraction or view is reused, held,
-retained, or safely removed.
+retained, or safely removed. T07 may reuse a persisted view set only after the
+canonical-bound validation seam proves the set belongs to the exact canonical
+artifact; internal JSON consistency alone is not sufficient.
 
 ## Retrieval and DataForge boundary
 

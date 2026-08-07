@@ -80,6 +80,19 @@ def test_unknown_native_artifact_identity_fails_typed(frozen_canonical_artifact)
         )
 
 
+def test_native_descriptor_mapping_rejects_aliased_artifact_identity(
+    frozen_canonical_artifact,
+):
+    """Reject a descriptor stored under a key other than its immutable artifact ID."""
+    descriptor = _descriptor()
+
+    with pytest.raises(SegmentationViewReferenceError, match="mapping identity"):
+        SegmentationViewService.from_canonical(
+            frozen_canonical_artifact,
+            native_descriptors={"artifact-alias": descriptor},
+        )
+
+
 @pytest.mark.parametrize("pointer", ("chunks/0", "#/chunks/~2bad", "#/" + "x" * 1025))
 def test_native_chunk_pointer_syntax_is_bounded(
     frozen_canonical_artifact, pointer

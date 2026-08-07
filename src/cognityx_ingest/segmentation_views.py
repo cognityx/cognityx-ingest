@@ -21,13 +21,18 @@ canonical chunk collection.
 
 The closed value model is a second line of protection. Readers accept only the
 known identity, span, scope, pointer, and profile fields for one strategy. A
-recursive no-copy check rejects text-like fields, while a service bound to
-canonical content also rejects any complete canonical sentence found in a
-serialized metadata value. This protects against hiding copied text under an
-innocent-looking field name or creating another source text owner. Strict
-persisted readers reject duplicate JSON
-names and noncanonical array order rather than repairing input, so one logical
-view has one deterministic byte representation.
+recursive no-copy check rejects text-like fields and arbitrary payload fields.
+No-copy is structural, not lexical: an ID or bounded profile value may
+coincidentally equal short source text such as ``"A"`` or ``"Policy"`` without
+becoming a copied text field. Strict persisted readers reject duplicate JSON names
+and noncanonical array order rather than repairing input, so one logical view has
+one deterministic byte representation.
+
+The canonical digest is an immutable identity binding, not metadata a consumer
+may rewrite. Value-level ``SegmentationViewSet.validate`` proves internal schema
+consistency. ``SegmentationViewService.validate_view_set`` performs the stronger
+proof that a production set belongs to the service's exact canonical bytes and
+that every declared strategy is semantically valid against that canonical catalog.
 
 The six strategies stay visibly different. Paragraph views preserve individual
 paragraph nodes. Direct division views use only a division's directly owned
@@ -80,8 +85,8 @@ source-text store.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -343,6 +348,47 @@ class SegmentationProfile:
     """
 
     values: tuple[tuple[str, JSONScalar], ...]
+
+    def __post_init__(self) -> None:
+        """Enforce canonical profile identity for every construction path.
+
+        Direct Python callers and ``from_dict`` both converge here. The algorithm
+        requires an immutable tuple of two-item tuples, checks the bounded field
+        vocabulary, rejects duplicate or non-lexical keys, and validates each
+        finite JSON scalar without converting it. This makes ``to_dict`` and cache
+        identity injective for supported profiles: two distinct in-memory inputs
+        cannot silently collapse to one mapping. The check is deterministic,
+        performs no parser/network/provider/LLM call, retains no source payload,
+        mutates nothing, and raises ``SegmentationViewValidationError`` at the
+        untrusted construction boundary. Frozen tuple state remains thread-safe.
+        """
+        if not isinstance(self.values, tuple):
+            raise SegmentationViewValidationError(
+                "Segmentation profile values must be an immutable tuple"
+            )
+        seen: set[str] = set()
+        previous: str | None = None
+        for pair in self.values:
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise SegmentationViewValidationError(
+                    "Segmentation profile entries must be immutable key-value pairs"
+                )
+            key, value = pair
+            if not isinstance(key, str) or key not in _PROFILE_FIELDS:
+                raise SegmentationViewValidationError(
+                    "Segmentation profile contains an unsupported field"
+                )
+            if key in seen:
+                raise SegmentationViewValidationError(
+                    "Segmentation profile contains a duplicate field"
+                )
+            if previous is not None and key < previous:
+                raise SegmentationViewValidationError(
+                    "Segmentation profile fields are not in canonical order"
+                )
+            _json_scalar(value, f"profile.{key}")
+            seen.add(key)
+            previous = key
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "SegmentationProfile":
@@ -978,13 +1024,17 @@ class SegmentationViewSet:
         return _canonical_json_bytes(self.to_dict())
 
     def validate(self) -> None:
-        """Validate schema, binding form, view order, and cross-view identity.
+        """Validate internal schema, binding form, order, and cross-view identity.
 
-        Readers and builders call this before use or serialization. It enforces
-        the exact schema, one canonical digest, complete compact metadata or a
-        complete production form, strategy-order sorting, and unique view IDs.
-        The operation is deterministic, idempotent, side-effect free, makes no
-        external call, retains no source text, and raises typed validation errors.
+        Readers and serializers call this value-level check before use. It proves
+        the exact schema, one internally consistent digest, complete compact or
+        production shape, strategy-order sorting, and unique view IDs. It does not
+        prove that the digest or references belong to any available canonical
+        artifact; production consumers use
+        ``SegmentationViewService.validate_view_set`` for that stronger trust
+        boundary. The operation is deterministic, idempotent, side-effect free,
+        thread-safe, makes no external call, retains no source text, and raises
+        typed validation errors.
         """
         if self.schema != SEGMENTATION_VIEWS_SCHEMA:
             raise SegmentationViewValidationError(
@@ -1151,7 +1201,7 @@ class SegmentationViewService:
                     fixture_native_artifacts
                 ),
             )
-            service._validate_view_set(view_set)
+            service._validate_bound_view_set(view_set, require_production=False)
             return service
         except SegmentationViewError:
             raise
@@ -1174,14 +1224,15 @@ class SegmentationViewService:
         Ingest application composition and tests call this with a T02 artifact,
         optional already-verified T01 descriptors, optional existing views, and a
         local token counter. The algorithm serializes/validates canonical content,
-        hashes those exact bytes, creates immutable lookup indexes, rebinds and
-        validates supplied views, and creates a production view set. It does not
+        hashes those exact bytes, creates immutable lookup indexes, requires every
+        supplied view to carry that same immutable digest, and creates a production
+        view set without rewriting any view identity. It does not
         mutate canonical content, open source files, run parsers, call a network,
         provider, or LLM, or retain canonical text in returned views. Repeated
         calls over equal inputs are deterministic. Typed canonical validation may
         propagate; malformed views raise typed segmentation failures.
         """
-        descriptor_map = dict(native_descriptors or {})
+        descriptor_map = _validated_native_descriptor_map(native_descriptors)
         canonical_bytes = canonical_content.to_json_bytes(
             native_descriptors=descriptor_map or None
         )
@@ -1189,19 +1240,16 @@ class SegmentationViewService:
         catalog = _catalog_from_canonical(
             canonical_content, native_descriptors=descriptor_map or None
         )
-        rebound = tuple(
-            replace(view, canonical_content_sha256=digest) for view in views
-        )
-        rebound = tuple(
+        ordered_views = tuple(
             sorted(
-                rebound,
+                views,
                 key=lambda item: (_STRATEGY_ORDER.get(item.strategy, 999), item.view_id),
             )
         )
         view_set = SegmentationViewSet(
             schema=SEGMENTATION_VIEWS_SCHEMA,
             canonical_content_sha256=digest,
-            views=rebound,
+            views=ordered_views,
         )
         service = cls(
             _catalog=catalog,
@@ -1210,7 +1258,7 @@ class SegmentationViewService:
             _fixture_native_artifacts=MappingProxyType({}),
             _token_counter=token_counter,
         )
-        service._validate_view_set(view_set)
+        service.validate_view_set(view_set)
         return service
 
     @property
@@ -1245,33 +1293,47 @@ class SegmentationViewService:
         """Create a deterministic production aggregate from alternative views.
 
         Application composition calls this after invoking one or more strategy
-        builders. The method rebinds every view to this service's canonical digest,
-        sorts by frozen strategy order and ID, validates references and no-copy
-        rules, and returns an immutable production set. It creates no cache or
-        persistent artifact, performs no parser/network/provider/LLM call, mutates
-        no input, retains no source text in records, and raises typed failures.
+        builders. The method requires every view's existing immutable canonical
+        digest to equal this service, sorts only the input tuple by frozen strategy
+        order and ID, validates references and strategy semantics, and returns an
+        immutable production set. It never repairs or rewrites a digest, strategy,
+        profile, or segment reference. It creates no cache or persistent artifact,
+        performs no parser/network/provider/LLM call, mutates no input, retains no
+        source text in records, and raises typed reference or validation failures.
         """
-        rebound = tuple(
+        ordered_views = tuple(
             sorted(
-                (
-                    replace(
-                        view,
-                        canonical_content_sha256=(
-                            self._view_set.canonical_content_sha256
-                        ),
-                    )
-                    for view in views
-                ),
+                views,
                 key=lambda item: (_STRATEGY_ORDER.get(item.strategy, 999), item.view_id),
             )
         )
         aggregate = SegmentationViewSet(
             schema=SEGMENTATION_VIEWS_SCHEMA,
             canonical_content_sha256=self._view_set.canonical_content_sha256,
-            views=rebound,
+            views=ordered_views,
         )
-        self._validate_view_set(aggregate)
-        return aggregate
+        return self.validate_view_set(aggregate)
+
+    def validate_view_set(
+        self, view_set: SegmentationViewSet
+    ) -> SegmentationViewSet:
+        """Prove a production view set belongs to this exact canonical artifact.
+
+        T07 reuse logic, production readers, audit tools, and application
+        composition call this after ``SegmentationViewSet.validate`` has established
+        internal schema consistency. This stronger trust-boundary operation
+        requires the complete production shape, compares the immutable aggregate
+        and every view digest with this service's exact canonical bytes, validates
+        node/division/native references, and enforces declared strategy semantics.
+        It returns the same immutable object after proof; it never repairs,
+        normalizes, rebinds, persists, parses, or calls a network/provider/LLM.
+        Repeated validation is deterministic and side-effect free. Shape failures
+        raise ``SegmentationViewValidationError`` and foreign canonical bindings
+        raise ``SegmentationViewReferenceError`` without exposing source text.
+        Frozen inputs and read-only service indexes are thread-safe.
+        """
+        self._validate_bound_view_set(view_set, require_production=True)
+        return view_set
 
     def build_paragraph(
         self,
@@ -1630,12 +1692,13 @@ class SegmentationViewService:
         profile: Mapping[str, object] | None,
         segments: tuple[SegmentationSegment, ...],
     ) -> SegmentationView:
-        """Construct one bound view and enforce references plus no-copy canaries.
+        """Construct one bound view and enforce structural reference invariants.
 
         Strategy builders share this deterministic finalization step so no builder
         can bypass validation. It freezes profile metadata, binds the canonical
-        digest, validates all references and rejects exact canonical text in any
-        serialized value. It performs no I/O or external call and mutates nothing.
+        digest, and validates all references and strategy semantics through the
+        service's exact catalog. The closed value schema, not lexical comparison,
+        enforces no-copy. It performs no I/O or external call and mutates nothing.
         """
         view = SegmentationView(
             view_id=_required_id(view_id, "view_id"),
@@ -1647,14 +1710,30 @@ class SegmentationViewService:
         self._validate_view(view)
         return view
 
-    def _validate_view_set(self, aggregate: SegmentationViewSet) -> None:
+    def _validate_bound_view_set(
+        self,
+        aggregate: SegmentationViewSet,
+        *,
+        require_production: bool,
+    ) -> None:
         """Validate every view against this service's exact canonical binding.
 
-        Constructors and ``build_view_set`` use the helper after aggregate shape
-        validation. It checks each view and canonical canary without changing
-        records, calling parsers/networks/providers/LLMs, or persisting text.
+        Fixture construction and the public production validator share this
+        algorithm after aggregate schema validation. ``require_production`` keeps
+        the compact frozen adapter private while ensuring reusable production sets
+        carry their digest in the production shape. The helper compares immutable
+        digests and checks references/semantics without changing records, calling
+        parsers/networks/providers/LLMs, or persisting text. Typed shape or
+        reference failures cross the trust boundary; concurrent reads are safe.
         """
         aggregate.validate()
+        if require_production and (
+            aggregate.canonical_content_artifact is not None
+            or aggregate.invariant is not None
+        ):
+            raise SegmentationViewValidationError(
+                "Canonical-bound reuse requires a production segmentation view set"
+            )
         if aggregate.canonical_content_sha256 != self._view_set.canonical_content_sha256:
             raise SegmentationViewReferenceError(
                 "Segmentation set does not match bound canonical content"
@@ -1663,12 +1742,15 @@ class SegmentationViewService:
             self._validate_view(view)
 
     def _validate_view(self, view: SegmentationView) -> None:
-        """Enforce canonical, strategy, native, and recursive no-copy invariants.
+        """Enforce canonical references and declared strategy semantics.
 
         All loading and builder paths converge here. It validates every span and
-        division, strategy-specific direct ownership and native pointers, then
-        proves no exact canonical source sentence occurs in serialized values.
-        It is deterministic, read-only, and makes no external call.
+        division, then dispatches to the declared strategy's canonical semantic
+        checks. No-copy is structural: the closed segment/profile schemas and
+        recursive prohibited-field check admit references and bounded metadata,
+        not arbitrary source payloads. The helper is deterministic, read-only,
+        thread-safe for immutable inputs, makes no external call, and raises typed
+        reference or strategy failures without exposing canonical text.
         """
         view.validate()
         if view.canonical_content_sha256 != self._view_set.canonical_content_sha256:
@@ -1694,19 +1776,18 @@ class SegmentationViewService:
                 self._validate_division(segment.division_id)
             if segment.return_scope is not None:
                 self._validate_division(segment.return_scope.division_id)
-        if view.strategy == "direct-division":
-            for segment in view.segments:
-                expected = self._catalog.direct_node_ids[segment.division_id]
-                actual = tuple(span.node_id for span in segment.node_spans)
-                if actual != expected or any(
-                    span.char_start is not None for span in segment.node_spans
-                ):
-                    raise SegmentationStrategyError(
-                        f"Direct-division segment does not match direct ownership: {segment.segment_id}"
-                    )
-        if view.strategy == "parser-native-structure":
+        if view.strategy == "paragraph":
+            self._validate_paragraph_view(view)
+        elif view.strategy == "direct-division":
+            self._validate_direct_division_view(view)
+        elif view.strategy == "parser-native-structure":
             self._validate_native_view(view)
-        _reject_canonical_text(view.to_unvalidated_dict(), self._catalog.texts.values())
+        elif view.strategy == "sentence-safe-fixed-size":
+            self._validate_fixed_size_view(view)
+        elif view.strategy == "sentence-window":
+            self._validate_sentence_window_view(view)
+        elif view.strategy == "parent-child":
+            self._validate_parent_child_view(view)
 
     def _validate_span(self, span: NodeSpan) -> None:
         """Resolve a NodeSpan identity and prove its range fits canonical text.
@@ -1749,30 +1830,204 @@ class SegmentationViewService:
         if len(set(identities)) != len(identities):
             raise SegmentationViewValidationError("Duplicate node span")
         expected = tuple(
-            sorted(
-                spans,
-                key=lambda span: (
-                    self._catalog.node_order[span.node_id],
-                    -1 if span.char_start is None else span.char_start,
-                    -1 if span.char_end is None else span.char_end,
-                    span.node_id,
-                ),
-            )
+            sorted(spans, key=self._span_sort_key)
         )
         if spans != expected:
             raise SegmentationViewValidationError(
                 "Node spans are not in canonical order"
             )
 
+    def _validate_paragraph_view(self, view: SegmentationView) -> None:
+        """Require unique whole canonical paragraph nodes in a paragraph view.
+
+        Canonical-bound loading and paragraph builders call this semantic check
+        after generic shape/reference validation. Each segment must contain one
+        whole-node span whose bound node kind is ``paragraph``; subsets are valid,
+        but the same paragraph cannot appear twice. The algorithm reads only the
+        immutable catalog, performs no external call or persistence, retains no
+        source text, is deterministic and thread-safe, and raises typed strategy
+        failures without exposing canonical values.
+        """
+        seen: set[str] = set()
+        for segment in view.segments:
+            if len(segment.node_spans) != 1:
+                raise SegmentationStrategyError(
+                    "Paragraph segments require exactly one node span"
+                )
+            span = segment.node_spans[0]
+            if span.char_start is not None:
+                raise SegmentationStrategyError(
+                    "Paragraph segments require whole-node spans"
+                )
+            if self._catalog.node_kinds[span.node_id] != "paragraph":
+                raise SegmentationStrategyError(
+                    "Paragraph view references a non-paragraph node"
+                )
+            if span.node_id in seen:
+                raise SegmentationStrategyError(
+                    "Paragraph view repeats a canonical paragraph"
+                )
+            seen.add(span.node_id)
+
+    def _validate_direct_division_view(self, view: SegmentationView) -> None:
+        """Require exact whole-node direct ownership and canonical direct order.
+
+        Canonical-bound readers and builders call this to distinguish direct
+        division content from subtree content. Every segment's node IDs must equal
+        the bound division's complete ``direct_nodes`` projection in exact order,
+        with no character ranges. The check is deterministic, read-only,
+        thread-safe, performs no parser/network/provider/LLM call, stores no text,
+        and raises a typed strategy failure for tampering.
+        """
+        for segment in view.segments:
+            expected = self._catalog.direct_node_ids[segment.division_id]
+            actual = tuple(span.node_id for span in segment.node_spans)
+            if actual != expected or any(
+                span.char_start is not None for span in segment.node_spans
+            ):
+                raise SegmentationStrategyError(
+                    "Direct-division segment does not match canonical direct ownership"
+                )
+
+    def _validate_fixed_size_view(self, view: SegmentationView) -> None:
+        """Require ordered non-overlapping spans over canonical paragraphs only.
+
+        Reloaded sentence-safe views and the fixed-size builder use this semantic
+        proof without requiring a ``TokenCounter``. The algorithm flattens spans in
+        persisted segment order, verifies every bound node kind is ``paragraph``,
+        requires global canonical span order, and rejects overlapping ranges for
+        the same node. Whole-node references cover ``[0, len(text))`` for overlap
+        calculation only; text is never serialized or emitted in failures. The
+        read-only check is deterministic, thread-safe, has no external side effects,
+        and raises typed strategy/validation failures.
+        """
+        spans = tuple(
+            span for segment in view.segments for span in segment.node_spans
+        )
+        if spans != tuple(sorted(spans, key=self._span_sort_key)):
+            raise SegmentationViewValidationError(
+                "Fixed-size spans are not in canonical order"
+            )
+        previous_end: dict[str, int] = {}
+        for span in spans:
+            if self._catalog.node_kinds[span.node_id] != "paragraph":
+                raise SegmentationStrategyError(
+                    "Fixed-size view references a non-paragraph node"
+                )
+            start = 0 if span.char_start is None else span.char_start
+            end = (
+                len(self._catalog.texts[span.node_id])
+                if span.char_end is None
+                else span.char_end
+            )
+            if start < previous_end.get(span.node_id, -1):
+                raise SegmentationStrategyError(
+                    "Fixed-size view contains overlapping canonical ranges"
+                )
+            previous_end[span.node_id] = end
+
+    def _validate_sentence_window_view(self, view: SegmentationView) -> None:
+        """Require whole paragraph seed/context roles and optional exact neighbours.
+
+        Canonical-bound readers and sentence-window builders call this proof. Seeds
+        and context must be whole canonical paragraph spans, the seed cannot recur
+        in context, and generic span validation already requires unique canonical
+        context order. When a profile is present, its before/after widths must
+        reproduce the exact neighbouring paragraphs around each seed. The compact
+        frozen profile-less view remains valid. The algorithm is read-only,
+        deterministic, thread-safe, performs no external call or persistence,
+        retains no text in records, and raises typed strategy failures.
+        """
+        paragraphs = self._ordered_nodes(kind="paragraph")
+        positions = {node_id: index for index, node_id in enumerate(paragraphs)}
+        before = view.profile.get("context_before") if view.profile else None
+        after = view.profile.get("context_after") if view.profile else None
+        for segment in view.segments:
+            seed = segment.seed
+            if seed.char_start is not None or self._catalog.node_kinds[seed.node_id] != "paragraph":
+                raise SegmentationStrategyError(
+                    "Sentence-window seed must be a whole paragraph"
+                )
+            if any(
+                span.char_start is not None
+                or self._catalog.node_kinds[span.node_id] != "paragraph"
+                for span in segment.context
+            ):
+                raise SegmentationStrategyError(
+                    "Sentence-window context must contain whole paragraphs"
+                )
+            if any(span.node_id == seed.node_id for span in segment.context):
+                raise SegmentationStrategyError(
+                    "Sentence-window seed cannot also be context"
+                )
+            if view.profile is not None:
+                position = positions[seed.node_id]
+                expected = (
+                    paragraphs[max(0, position - before) : position]
+                    + paragraphs[position + 1 : position + after + 1]
+                )
+                actual = tuple(span.node_id for span in segment.context)
+                if actual != expected:
+                    raise SegmentationStrategyError(
+                        "Sentence-window context does not match its canonical profile"
+                    )
+
+    def _validate_parent_child_view(self, view: SegmentationView) -> None:
+        """Require paragraph retrieval spans to belong to their return division.
+
+        Canonical-bound readers and parent-child builders call this semantic check.
+        Every retrieval span must reference a paragraph in the canonical subtree
+        of the declared return division, covering both direct ownership and a
+        documented ancestor relationship. The algorithm materializes no parent
+        text, performs no parser/network/provider/LLM call or persistence, is
+        deterministic and thread-safe, and raises typed strategy failures without
+        exposing source values.
+        """
+        for segment in view.segments:
+            return_nodes = set(
+                self._catalog.subtree_node_ids[segment.return_scope.division_id]
+            )
+            for span in segment.retrieval_node_spans:
+                if self._catalog.node_kinds[span.node_id] != "paragraph":
+                    raise SegmentationStrategyError(
+                        "Parent-child retrieval span must reference a paragraph"
+                    )
+                if span.node_id not in return_nodes:
+                    raise SegmentationStrategyError(
+                        "Parent-child retrieval span is unrelated to its return division"
+                    )
+
+    def _span_sort_key(self, span: NodeSpan) -> tuple[int, int, int, str]:
+        """Return the canonical node/range order used by semantic validators.
+
+        Fixed-size validation shares this pure key with the bound catalog so
+        persisted segment boundaries cannot reorder source spans. Whole nodes sort
+        before ranged spans in their node. The helper exposes no text, performs no
+        external call or mutation, is deterministic/thread-safe, and relies on
+        prior typed reference validation for node existence.
+        """
+        return (
+            self._catalog.node_order[span.node_id],
+            -1 if span.char_start is None else span.char_start,
+            -1 if span.char_end is None else span.char_end,
+            span.node_id,
+        )
+
     def _validate_native_view(self, view: SegmentationView) -> None:
         """Bind parser-native pointers to a real retained T01 artifact identity.
 
-        Parser-native loading and builders call this after shape validation. The
-        fixture and production paths require a real retained artifact identity
-        and bounded pointer syntax. A chunker pointer is not falsely interpreted
-        as a JSON pointer into the parser-native payload: T01 native pointers and
-        T06 chunker pointers have related identity but distinct meaning. The
-        helper never reparses source content or copies native payload values.
+        Parser-native loading, builders, and future verified reuse call this after
+        shape validation. The algorithm resolves the profile artifact ID through
+        either the frozen fixture marker or supplied T01 descriptor, proves a
+        descriptor has not been aliased under another key, and checks every bounded
+        chunk pointer. A chunker pointer is not falsely interpreted as a JSON
+        pointer into the opaque parser-native payload: T01 native pointers and T06
+        chunker pointers have related identity but distinct meaning. This read-only
+        trust-boundary check never opens Storage, reparses source content, persists
+        data, or calls a network/provider/LLM; it copies no native payload values.
+        Immutable catalogs make concurrent reads safe. Missing identities raise
+        ``SegmentationViewReferenceError`` and malformed pointers raise
+        ``SegmentationStrategyError`` without exposing source or native text.
         """
         artifact_value = view.profile.get("native_artifact_id") if view.profile else None
         artifact_id = _required_id(artifact_value, "native_artifact_id")
@@ -1781,6 +2036,10 @@ class SegmentationViewService:
         if fixture_artifact is None and descriptor is None:
             raise SegmentationViewReferenceError(
                 f"Unknown native artifact: {artifact_id}"
+            )
+        if descriptor is not None and descriptor.artifact_id != artifact_id:
+            raise SegmentationViewReferenceError(
+                "Native descriptor mapping identity does not match its key"
             )
         for segment in view.segments:
             pointer = segment.native_chunk_pointer
@@ -1943,10 +2202,15 @@ def _validate_profile(
 ) -> None:
     """Require frozen metadata where semantics depend on it and reject extras.
 
-    Profile validation is deliberately narrow: parser-native and fixed-size views
-    have exact required fields, sentence-window may retain only window widths,
-    paragraph/direct views may retain implementation identity, and parent-child
-    carries no profile in the focused contract.
+    Strict readers and service builders use this strategy trust boundary after the
+    profile value object has frozen scalar identity. The algorithm applies a closed
+    per-strategy field set, requires complete parser-native, fixed-size, and present
+    sentence-window profiles, and validates IDs and numeric bounds. Paragraph and
+    direct views may retain implementation identity; parent-child carries no
+    profile. The pure check mutates and persists nothing, retains no source text,
+    performs no parser/network/provider/LLM call, and is deterministic and safe for
+    concurrent immutable inputs. Violations raise ``SegmentationStrategyError``
+    without echoing untrusted values.
     """
     keys = set(dict(profile.values)) if profile is not None else set()
     allowed_by_strategy = {
@@ -1986,8 +2250,46 @@ def _validate_profile(
             raise SegmentationStrategyError("max_tokens must be a positive integer")
         _required_id(profile.get("tokenizer"), "tokenizer")
     elif strategy == "sentence-window" and profile is not None:
+        if keys != {"context_before", "context_after"}:
+            raise SegmentationStrategyError(
+                "Sentence-window profile requires both context widths"
+            )
         for key in keys:
             _non_negative_int(profile.get(key), key)
+
+
+def _validated_native_descriptor_map(
+    value: Mapping[str, NativeArtifactDescriptor] | None,
+) -> dict[str, NativeArtifactDescriptor]:
+    """Copy and validate trusted T01 descriptor composition by exact identity.
+
+    ``from_canonical`` calls this before canonical serialization or native view
+    validation. Every mapping key must be a valid ID exactly equal to the enclosed
+    immutable descriptor's ``artifact_id``; aliases are rejected rather than
+    becoming another name for native evidence. The returned ordinary dictionary
+    is a local snapshot used only for read validation. The algorithm performs no
+    Storage access, parser/network/provider/LLM call, persistence, or mutation,
+    retains no native payload, is deterministic/thread-safe after freezing in the
+    service, and raises ``SegmentationViewReferenceError`` at this trust boundary
+    without exposing source text.
+    """
+    if value is not None and not isinstance(value, Mapping):
+        raise SegmentationViewReferenceError(
+            "Native descriptor composition must be a mapping"
+        )
+    result: dict[str, NativeArtifactDescriptor] = {}
+    for key, descriptor in (value or {}).items():
+        if (
+            not isinstance(key, str)
+            or not isinstance(descriptor, NativeArtifactDescriptor)
+            or key != descriptor.artifact_id
+        ):
+            raise SegmentationViewReferenceError(
+                "Native descriptor mapping identity does not match its key"
+            )
+        _required_id(key, "native artifact ID")
+        result[key] = descriptor
+    return result
 
 
 def _catalog_from_canonical(
@@ -2286,28 +2588,6 @@ def _reject_copy_fields(value: object) -> None:
     elif isinstance(value, (list, tuple)):
         for item in value:
             _reject_copy_fields(item)
-
-
-def _reject_canonical_text(value: object, canonical_texts: Iterable[str]) -> None:
-    """Prove no exact canonical canary text appears in serialized view values.
-
-    Bound service validation adds this value-level defense beyond field-name
-    blocking. Every string in the closed reference model is compared with complete
-    canonical text values; a match or embedded full canary fails without placing
-    that text in the error message.
-    """
-    texts = tuple(text for text in canonical_texts if text)
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, Mapping):
-            pending.extend(item.values())
-        elif isinstance(item, (list, tuple)):
-            pending.extend(item)
-        elif isinstance(item, str) and any(text in item for text in texts):
-            raise SegmentationViewValidationError(
-                "Segmentation record contains canonical source text"
-            )
 
 
 def _validate_native_pointer(value: object) -> str:

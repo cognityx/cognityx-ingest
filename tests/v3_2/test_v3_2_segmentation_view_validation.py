@@ -9,8 +9,10 @@ import json
 import pytest
 
 from cognityx_ingest import (
+    CanonicalText,
     NodeSpan,
     SegmentReturnScope,
+    SegmentationProfile,
     SegmentationSegment,
     SegmentationStrategyError,
     SegmentationViewReferenceError,
@@ -19,6 +21,41 @@ from cognityx_ingest import (
     SegmentationViewValidationError,
     SegmentationFixtureError,
 )
+
+
+def _with_node_texts(artifact, replacements: dict[str, str]):
+    """Return a valid canonical artifact with selected IDs bound to new text bytes."""
+    nodes = tuple(
+        replace(
+            node,
+            content=CanonicalText(
+                text=replacements[node.node_id],
+                sha256=hashlib.sha256(
+                    replacements[node.node_id].encode("utf-8")
+                ).hexdigest(),
+            ),
+        )
+        if node.node_id in replacements
+        else node
+        for node in artifact.content_nodes
+    )
+    changed = replace(artifact, content_nodes=nodes)
+    changed.validate()
+    return changed
+
+
+def _all_mapping_keys(value: object) -> set[str]:
+    """Collect serialized object keys for structural no-copy assertions."""
+    keys: set[str] = set()
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, dict):
+            keys.update(item)
+            pending.extend(item.values())
+        elif isinstance(item, list):
+            pending.extend(item)
+    return keys
 
 
 def _compact_digest(v3_2_fixture_root) -> str:
@@ -244,6 +281,143 @@ def test_reversed_builder_input_produces_identical_production_bytes(
     reverse = service.build_view_set((direct, paragraph)).to_json_bytes()
 
     assert forward == reverse
+
+
+def test_foreign_canonical_views_are_rejected_without_rebinding(
+    frozen_canonical_artifact,
+):
+    """Reject an A-bound view in B even when both artifacts use the same node IDs."""
+    canonical_a = frozen_canonical_artifact
+    canonical_b = _with_node_texts(
+        canonical_a,
+        {"pol-p1": "This is different canonical text for document B."},
+    )
+    service_a = SegmentationViewService.from_canonical(canonical_a)
+    service_b = SegmentationViewService.from_canonical(canonical_b)
+    view_a = service_a.build_paragraph("paragraph-a")
+    original_digest = view_a.canonical_content_sha256
+
+    with pytest.raises(SegmentationViewReferenceError, match="canonical"):
+        SegmentationViewService.from_canonical(canonical_b, views=(view_a,))
+    with pytest.raises(SegmentationViewReferenceError, match="canonical"):
+        service_b.build_view_set((view_a,))
+
+    assert view_a.canonical_content_sha256 == original_digest
+    assert original_digest != service_b.view_set.canonical_content_sha256
+
+
+def test_persisted_production_view_set_requires_its_exact_canonical_artifact(
+    frozen_canonical_artifact,
+):
+    """Reload internally valid bytes, then prove A accepts and B rejects them."""
+    canonical_a = frozen_canonical_artifact
+    canonical_b = _with_node_texts(canonical_a, {"pol-p2": "B owns new bytes."})
+    service_a = SegmentationViewService.from_canonical(canonical_a)
+    service_b = SegmentationViewService.from_canonical(canonical_b)
+    view_a = service_a.build_paragraph("paragraph-a")
+    persisted_a = service_a.build_view_set((view_a,))
+    reloaded = SegmentationViewSet.from_json_bytes(persisted_a.to_json_bytes())
+
+    assert service_a.validate_view_set(reloaded) is reloaded
+    with pytest.raises(SegmentationViewReferenceError, match="canonical"):
+        service_b.validate_view_set(reloaded)
+
+    renamed = replace(
+        reloaded.views[0], view_id="paragraph-renamed-but-still-a-bound"
+    )
+    internally_consistent = SegmentationViewSet(
+        schema=reloaded.schema,
+        canonical_content_sha256=reloaded.canonical_content_sha256,
+        views=(renamed,),
+    )
+    internally_consistent.validate()
+    with pytest.raises(SegmentationViewReferenceError, match="canonical"):
+        service_b.validate_view_set(internally_consistent)
+
+
+def test_build_view_set_sorts_but_preserves_supplied_view_identity(
+    frozen_canonical_artifact,
+):
+    """Canonicalize tuple order without replacing any immutable view field."""
+    service = SegmentationViewService.from_canonical(frozen_canonical_artifact)
+    paragraph = service.build_paragraph("paragraph-production")
+    direct = service.build_direct_division("direct-production")
+
+    aggregate = service.build_view_set((direct, paragraph))
+
+    assert aggregate.views == (paragraph, direct)
+    assert aggregate.views[0] is paragraph
+    assert aggregate.views[1] is direct
+
+
+def test_public_bound_validator_rejects_compact_fixture_shape(v3_2_fixture_root):
+    """Reserve the public reuse seam for digest-bearing production view sets."""
+    service = SegmentationViewService.from_fixture(v3_2_fixture_root)
+
+    with pytest.raises(SegmentationViewValidationError, match="production"):
+        service.validate_view_set(service.view_set)
+
+
+def test_short_canonical_text_can_coincide_with_bounded_metadata(
+    frozen_canonical_artifact,
+):
+    """Treat no-copy structurally so A, 1, and Policy do not cause false positives."""
+    canonical = _with_node_texts(
+        frozen_canonical_artifact,
+        {"pol-p1": "A", "pol-p2": "1", "pol-p3": "Policy"},
+    )
+    service = SegmentationViewService.from_canonical(canonical)
+    view = service.build_paragraph(
+        "A", profile={"implementation": "Policy", "version": "1"}
+    )
+    aggregate = service.build_view_set((view,))
+    serialized = json.loads(aggregate.to_json_bytes())
+    forbidden = {
+        "text",
+        "content",
+        "excerpt",
+        "quote",
+        "body",
+        "source_text",
+        "normalized_text",
+        "embedding",
+    }
+
+    assert view.profile.to_dict() == {"implementation": "Policy", "version": "1"}
+    assert forbidden.isdisjoint(_all_mapping_keys(serialized))
+    assert all(segment.text is None for segment in view.segments)
+
+
+@pytest.mark.parametrize(
+    "values",
+    (
+        (("implementation", "one"), ("implementation", "two")),
+        (("version", "1"), ("implementation", "cognityx")),
+        (("unsupported", "value"),),
+        (("max_tokens", float("nan")),),
+        (("implementation", ["mutable"]),),
+        (("implementation", {"mutable": True}),),
+    ),
+)
+def test_direct_profile_construction_rejects_noncanonical_identity(values):
+    """Prevent duplicates, disorder, unsupported keys, and mutable/non-finite values."""
+    with pytest.raises(SegmentationViewValidationError):
+        SegmentationProfile(values=values)
+
+
+def test_direct_profile_and_mapping_construction_round_trip_identically():
+    """Give direct and strict-reader construction one canonical representation."""
+    direct = SegmentationProfile(
+        values=(("implementation", "cognityx"), ("version", "1"))
+    )
+
+    restored = SegmentationProfile.from_dict(direct.to_dict())
+
+    assert restored == direct
+    assert restored.to_dict() == {
+        "implementation": "cognityx",
+        "version": "1",
+    }
 
 
 def test_segment_compatibility_text_property_is_read_only_none():

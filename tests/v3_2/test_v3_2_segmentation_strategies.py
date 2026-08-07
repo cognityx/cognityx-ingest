@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 import urllib.request
 
 import cognityx_ingest
 import cognityx_ingest.segmentation_views as segmentation_views
-from cognityx_ingest import SegmentationViewService
+import pytest
+
+from cognityx_ingest import (
+    NodeSpan,
+    SegmentReturnScope,
+    SegmentationStrategyError,
+    SegmentationViewService,
+)
 from cognityx_ingest.parser import ParserRouter
 
 
@@ -62,6 +70,60 @@ def test_production_direct_division_uses_direct_nodes_not_subtree(
     )
 
 
+def test_paragraph_semantics_reject_heading_partial_and_duplicate_nodes(
+    frozen_canonical_artifact,
+):
+    """Enforce one unique whole canonical paragraph span per segment."""
+    service = SegmentationViewService.from_canonical(frozen_canonical_artifact)
+    view = service.build_paragraph("paragraph-semantic")
+
+    heading_segment = replace(
+        view.segments[0], node_spans=(NodeSpan("pol-heading-42"),)
+    )
+    with pytest.raises(SegmentationStrategyError, match="non-paragraph"):
+        service.build_view_set(
+            (replace(view, segments=(heading_segment,) + view.segments[1:]),)
+        )
+
+    partial_segment = replace(
+        view.segments[0], node_spans=(NodeSpan("pol-p1", 0, 1),)
+    )
+    with pytest.raises(SegmentationStrategyError, match="whole-node"):
+        service.build_view_set(
+            (replace(view, segments=(partial_segment,) + view.segments[1:]),)
+        )
+
+    duplicate_segment = replace(
+        view.segments[1], node_spans=view.segments[0].node_spans
+    )
+    with pytest.raises(SegmentationStrategyError, match="repeats"):
+        service.build_view_set(
+            (
+                replace(
+                    view,
+                    segments=(view.segments[0], duplicate_segment)
+                    + view.segments[2:],
+                ),
+            )
+        )
+
+
+def test_direct_division_semantics_reject_incomplete_direct_nodes(
+    frozen_canonical_artifact,
+):
+    """Reject a self-consistent segment that omits one canonically direct node."""
+    service = SegmentationViewService.from_canonical(frozen_canonical_artifact)
+    view = service.build_direct_division(
+        "direct-semantic", division_ids=("div-policy-4.2",)
+    )
+    tampered_segment = replace(
+        view.segments[0], node_spans=view.segments[0].node_spans[1:]
+    )
+
+    with pytest.raises(SegmentationStrategyError, match="direct ownership"):
+        service.build_view_set((replace(view, segments=(tampered_segment,)),))
+
+
 def test_sentence_safe_fixed_size_uses_only_injected_counter_and_spans(
     frozen_canonical_artifact,
 ):
@@ -85,6 +147,34 @@ def test_sentence_safe_fixed_size_uses_only_injected_counter_and_spans(
     assert all("text" not in segment.to_dict() for segment in view.segments)
 
 
+def test_fixed_size_semantics_reject_heading_and_overlapping_ranges(
+    frozen_canonical_artifact,
+):
+    """Keep fixed-size spans on ordered non-overlapping paragraph ranges."""
+    counter = CharacterTokenCounter()
+    service = SegmentationViewService.from_canonical(
+        frozen_canonical_artifact, token_counter=counter
+    )
+    view = service.build_sentence_safe_fixed_size(
+        "fixed-semantic", max_tokens=90, tokenizer="local-test-counter"
+    )
+
+    heading_segment = replace(
+        view.segments[0], node_spans=(NodeSpan("pol-heading-42"),)
+    )
+    with pytest.raises(SegmentationStrategyError, match="non-paragraph"):
+        service.build_view_set((replace(view, segments=(heading_segment,)),))
+
+    first = replace(
+        view.segments[0], node_spans=(NodeSpan("pol-p1", 0, 30),)
+    )
+    second = replace(
+        view.segments[1], node_spans=(NodeSpan("pol-p1", 20, 40),)
+    )
+    with pytest.raises(SegmentationStrategyError, match="overlapping"):
+        service.build_view_set((replace(view, segments=(first, second)),))
+
+
 def test_sentence_window_keeps_seed_and_context_roles_explicit(
     frozen_canonical_artifact,
 ):
@@ -106,6 +196,30 @@ def test_sentence_window_keeps_seed_and_context_roles_explicit(
     assert "context" in segment.to_dict()
 
 
+def test_sentence_window_semantics_reject_heading_seed_and_seed_context_overlap(
+    frozen_canonical_artifact,
+):
+    """Require whole paragraph roles and keep the seed out of context."""
+    service = SegmentationViewService.from_canonical(frozen_canonical_artifact)
+    view = service.build_sentence_window(
+        "window-semantic",
+        seed_node_ids=("pol-p2",),
+        context_before=1,
+        context_after=1,
+    )
+
+    heading_seed = replace(view.segments[0], seed=NodeSpan("pol-heading-42"))
+    with pytest.raises(SegmentationStrategyError, match="whole paragraph"):
+        service.build_view_set((replace(view, segments=(heading_seed,)),))
+
+    seed_in_context = replace(
+        view.segments[0],
+        context=(NodeSpan("pol-p1"), NodeSpan("pol-p2"), NodeSpan("pol-p3")),
+    )
+    with pytest.raises(SegmentationStrategyError, match="also be context"):
+        service.build_view_set((replace(view, segments=(seed_in_context,)),))
+
+
 def test_parent_child_keeps_retrieval_span_and_return_division_separate(
     frozen_canonical_artifact,
 ):
@@ -124,6 +238,22 @@ def test_parent_child_keeps_retrieval_span_and_return_division_separate(
     assert "retrieval_node_spans" in segment.to_dict()
     assert "return_scope" in segment.to_dict()
     assert "node_spans" not in segment.to_dict()
+
+
+def test_parent_child_semantics_reject_unrelated_return_division(
+    frozen_canonical_artifact,
+):
+    """Reject a valid division that has no canonical ownership path to the child."""
+    service = SegmentationViewService.from_canonical(frozen_canonical_artifact)
+    view = service.build_parent_child(
+        "parent-semantic", retrieval_node_ids=("pol-p2",)
+    )
+    unrelated = replace(
+        view.segments[0], return_scope=SegmentReturnScope("div-policy-7.1")
+    )
+
+    with pytest.raises(SegmentationStrategyError, match="unrelated"):
+        service.build_view_set((replace(view, segments=(unrelated,)),))
 
 
 def test_multiple_overlapping_views_coexist_without_a_canonical_winner(
