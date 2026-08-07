@@ -1,4 +1,17 @@
-"""Lifecycle and artifact management at the ingest application boundary."""
+"""Enforce lifecycle and artifact authorization at the Ingest boundary.
+
+``IngestManager`` exists so SDKs and CLIs do not open protected Ingest results
+without component-owned policy context.  It combines a caller execution context,
+the narrow ``ControlClient`` authorization seam, durable Jobs state, and the
+configured artifact-role store.  Artifact reads accept only a closed public name,
+authorize the exact document-plus-artifact resource before opening Storage, and
+map that name to a fixed logical filename.  No caller URI, path, or parser-native
+filename becomes executable input.
+
+The manager is constructed by application composition roots.  It keeps shared
+dependency references but no per-request mutable state; concurrency and durable
+ordering remain owned by the injected Jobs and Storage implementations.
+"""
 
 from __future__ import annotations
 
@@ -24,12 +37,28 @@ _ARTIFACT_KEYS = {
     "evidence": "evidence.jsonl",
     "provenance": "provenance.json",
     "manifest": "manifest.json",
+    "canonical-content": "canonical-content.json",
+    "source-graph": "source-graph.json",
+    "provenance-addresses": "provenance-addresses.json",
+    "parser-observations": "parser/observations.json",
+    "parser-fusion-decisions": "parser/fusion-decisions.json",
 }
+# Compatibility CLIs consume the mapping order without gaining filename access.
+ARTIFACT_READ_NAMES = tuple(_ARTIFACT_KEYS)
 _TERMINAL_JOB_STATES = {"completed", "failed", "cancelled", "interrupted"}
 
 
 class IngestManager:
-    """Manage ingest-owned jobs and artifacts without exposing storage paths."""
+    """Manage owner-scoped work and protected results through component policy.
+
+    Application composition roots construct this class with an artifact store,
+    Jobs repository, and optional centralized ``ControlClient``.  Public methods
+    authorize their exact resource before reading, cancelling, or deleting and
+    return JSON-ready records or exact artifact bytes without physical paths.
+    The manager persists no duplicate policy state, performs deterministic fixed
+    key construction, propagates typed component failures, and may be shared when
+    its injected dependencies support concurrent access.
+    """
 
     def __init__(
         self,
@@ -98,6 +127,22 @@ class IngestManager:
         }
 
     def read_artifact(self, context: ExecutionContext, document_id: str, name: str) -> bytes:
+        """Authorize and read one exact settled artifact from a closed vocabulary.
+
+        SDK and compatibility CLI callers provide a canonical document ID and one
+        hyphenated name from ``ARTIFACT_READ_NAMES``.  The method first asks the
+        Ingest control boundary to authorize ``INGEST_RESULT_READ`` with the exact
+        ``{"document_id": document_id, "artifact": name}`` resource.  A denial
+        raises ``IngestAuthorizationError`` before any Storage open.  After an
+        allow decision, the closed mapping selects a fixed relative filename and
+        ``_document_prefix`` validates/builds the logical key; unknown names raise
+        ``ValueError`` and Storage failures propagate unchanged.
+
+        No URI, traversal, underscore alias, parser backend name, or caller-chosen
+        filename is interpreted.  The operation is read-only and deterministic
+        for immutable artifacts, retains no request state, and follows the
+        thread-safety guarantees of the injected ControlClient and Storage store.
+        """
         self._authorize(context, INGEST_RESULT_READ, {"document_id": document_id, "artifact": name})
         try:
             filename = _ARTIFACT_KEYS[name]

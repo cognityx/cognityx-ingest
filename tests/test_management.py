@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 import json
 from pathlib import Path
 
@@ -7,7 +8,12 @@ import pytest
 from pypdf import PdfWriter
 
 from cognityx_ingest.cli import main
-from cognityx_ingest.management import IngestManager
+from cognityx_ingest.control import (
+    INGEST_RESULT_READ,
+    ControlDecision,
+    IngestAuthorizationError,
+)
+from cognityx_ingest.management import ARTIFACT_READ_NAMES, IngestManager
 from cognityx_ingest.models import ExecutionContext
 from cognityx_jobs import JobRepository
 from cognityx_storage import LocalStorageBackend, StorageClient
@@ -22,6 +28,145 @@ def _write_pdf(path: Path) -> None:
     writer.add_blank_page(width=72, height=72)
     with path.open("wb") as stream:
         writer.write(stream)
+
+
+class _RecordingStorage:
+    """Return fixture bytes while recording every attempted logical-key open."""
+
+    def __init__(self, payloads: dict[str, bytes]) -> None:
+        self.payloads = payloads
+        self.opened: list[str] = []
+
+    def open(self, key: str) -> BytesIO:
+        self.opened.append(key)
+        return BytesIO(self.payloads[key])
+
+
+class _ArtifactAwareControl:
+    """Allow metadata and ordinary artifacts but deny source-graph bytes."""
+
+    def __init__(self, *, deny_source_graph: bool = True) -> None:
+        self.deny_source_graph = deny_source_graph
+        self.calls: list[tuple[str, object | None]] = []
+
+    def authorize(
+        self,
+        context: ExecutionContext,
+        action: str,
+        resource: object | None = None,
+        request: object | None = None,
+    ) -> ControlDecision:
+        self.calls.append((action, resource))
+        denied = (
+            self.deny_source_graph
+            and isinstance(resource, dict)
+            and resource.get("artifact") == "source-graph"
+        )
+        return ControlDecision(
+            allowed=not denied,
+            reason="source graph denied" if denied else None,
+        )
+
+    def report_usage(self, context: ExecutionContext, usage: object) -> None:
+        return None
+
+
+def _manager_fixture(
+    *, deny_source_graph: bool = False
+) -> tuple[IngestManager, _RecordingStorage, _ArtifactAwareControl, str]:
+    document_id = "pdf-authorization-fixture"
+    prefix = f"ingest/documents/{document_id}"
+    payloads = {
+        f"{prefix}/manifest.json": b'{"artifacts":{}}',
+        f"{prefix}/document.json": b'{"document_id":"pdf-authorization-fixture"}',
+        f"{prefix}/evidence.jsonl": b'{"evidence":true}\n',
+        f"{prefix}/provenance.json": b'{"provenance":true}',
+        f"{prefix}/canonical-content.json": b'{"canonical":true}',
+        f"{prefix}/source-graph.json": b'{"graph":true}',
+        f"{prefix}/provenance-addresses.json": b'{"addresses":true}',
+        f"{prefix}/parser/observations.json": b'{"observations":true}',
+        f"{prefix}/parser/fusion-decisions.json": b'{"fusion":true}',
+    }
+    storage = _RecordingStorage(payloads)
+    control = _ArtifactAwareControl(deny_source_graph=deny_source_graph)
+    manager = IngestManager(storage, JobRepository(), control=control)
+    return manager, storage, control, document_id
+
+
+def test_artifact_specific_denial_precedes_storage_open() -> None:
+    manager, storage, control, document_id = _manager_fixture(
+        deny_source_graph=True
+    )
+    context = ExecutionContext(
+        run_id="run-authorization",
+        correlation_id="correlation-authorization",
+        principal_id="alice",
+    )
+
+    shown = manager.show_document(context, document_id)
+    opened_for_metadata = tuple(storage.opened)
+
+    assert shown["document"]["document_id"] == document_id
+    with pytest.raises(IngestAuthorizationError, match="source graph denied"):
+        manager.read_artifact(context, document_id, "source-graph")
+
+    assert tuple(storage.opened) == opened_for_metadata
+    assert control.calls[-1] == (
+        INGEST_RESULT_READ,
+        {"document_id": document_id, "artifact": "source-graph"},
+    )
+
+
+def test_manager_reads_only_the_closed_settled_artifact_vocabulary() -> None:
+    manager, storage, control, document_id = _manager_fixture()
+    context = ExecutionContext(
+        run_id="run-allowed",
+        correlation_id="correlation-allowed",
+        principal_id="alice",
+    )
+    expected = {
+        "document": "document.json",
+        "evidence": "evidence.jsonl",
+        "provenance": "provenance.json",
+        "manifest": "manifest.json",
+        "canonical-content": "canonical-content.json",
+        "source-graph": "source-graph.json",
+        "provenance-addresses": "provenance-addresses.json",
+        "parser-observations": "parser/observations.json",
+        "parser-fusion-decisions": "parser/fusion-decisions.json",
+    }
+    assert ARTIFACT_READ_NAMES == tuple(expected)
+
+    for name, filename in expected.items():
+        assert manager.read_artifact(context, document_id, name)
+        assert storage.opened[-1] == f"ingest/documents/{document_id}/{filename}"
+        assert control.calls[-1] == (
+            INGEST_RESULT_READ,
+            {"document_id": document_id, "artifact": name},
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "parser/pymupdf",
+        "../../source-graph",
+        "storage://local-main/artifacts/source-graph.json",
+        "source_graph",
+    ),
+)
+def test_manager_rejects_raw_parser_traversal_uri_and_underscore_names(
+    name: str,
+) -> None:
+    manager, storage, _control, document_id = _manager_fixture()
+    context = ExecutionContext(
+        run_id="run-rejected",
+        correlation_id="correlation-rejected",
+    )
+
+    with pytest.raises(ValueError, match="Unknown artifact"):
+        manager.read_artifact(context, document_id, name)
+    assert storage.opened == []
 
 
 def test_cli_end_to_end_manages_job_and_generated_artifacts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -43,8 +188,17 @@ def test_cli_end_to_end_manages_job_and_generated_artifacts(tmp_path: Path, caps
     assert _json_output(capsys)[0]["document_id"] == document_id
     assert main(["documents", "show", document_id, "--storage-root", str(storage_root)]) == 0
     assert _json_output(capsys)["document"]["document_id"] == document_id
-    assert main(["artifacts", "read", document_id, "manifest", "--storage-root", str(storage_root)]) == 0
-    assert "manifest.json" not in _json_output(capsys)["content"]
+    for name in (
+        "manifest",
+        "provenance",
+        "canonical-content",
+        "source-graph",
+        "provenance-addresses",
+    ):
+        assert main(
+            ["artifacts", "read", document_id, name, "--storage-root", str(storage_root)]
+        ) == 0
+        assert _json_output(capsys)["artifact"] == name
 
     assert main(["documents", "delete", document_id, "--yes", "--storage-root", str(storage_root)]) == 0
     assert _json_output(capsys) == {"deleted_document_id": document_id}
@@ -101,14 +255,26 @@ def test_cli_lists_shows_and_deletes_run_metadata_without_deleting_documents(
     assert _json_output(capsys)["document"]["document_id"] == document_id
 
 
-def test_source_pdf_is_not_a_generated_document_artifact(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "name",
+    (
+        "source",
+        "parser/pymupdf",
+        "../../source-graph",
+        "storage://local-main/artifacts/source-graph.json",
+        "source_graph",
+    ),
+)
+def test_unsafe_names_are_not_generated_document_artifacts(
+    tmp_path: Path, name: str
+) -> None:
     with pytest.raises(SystemExit):
         main(
             [
                 "artifacts",
                 "read",
                 "pdf-0123456789abcdef",
-                "source",
+                name,
                 "--storage-root",
                 str(tmp_path / "storage"),
             ]
