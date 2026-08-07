@@ -8,8 +8,8 @@ contexts, bundles, source files, and T07 parser-extraction retention records.
 Design principles and processing flow
 -------------------------------------
 Existing SourceAsset tables and behavior remain authoritative. T07 adds normalized
-metadata tables only: one immutable extraction row plus deduplicated active
-reference rows. Context-scoped operations authorize first. Registrations,
+metadata tables only: one immutable extraction row, deduplicated active reference
+rows, and append-only changed-state events. Context-scoped operations authorize first. Registrations,
 reference changes, legal hold, retention expiry, reuse acquisition, and purge
 finalization use explicit transactions; race-sensitive writes use
 ``BEGIN IMMEDIATE``. Returned records contain hashes and logical Storage keys,
@@ -76,11 +76,14 @@ from cognityx_ingest.models import (
     DocBundleDeletionResult,
     ExecutionContext,
     ExtractionIdentity,
+    ExtractionPayloadAbsenceProof,
     ExtractionPurgeBlockedError,
     ExtractionPurgeCandidate,
     ExtractionPurgeFinalizationError,
     ExtractionRetentionConflictError,
     ExtractionRetentionError,
+    ExtractionRetentionEvent,
+    ExtractionRetentionEventType,
     ExtractionRetentionRecord,
     ExtractionRetentionReferenceError,
     ExtractionRetentionState,
@@ -1026,8 +1029,10 @@ class SourceAssetRegistry:
         ``ExtractionRetentionService`` calls this after verifying a complete
         identity against a T01 descriptor. The algorithm resolves and authorizes
         the execution context, then uses one immediate transaction to insert the
-        immutable record and deduplicated reference rows. An equivalent retry is
-        idempotent; changed immutable facts, a duplicate live identity, or a purged
+        immutable record, initial references, and one registered event. An
+        equivalent retry returns the live record without replaying references or
+        changing lifecycle, audit fields, or event history. Changed immutable
+        facts, a duplicate live identity, or a purged
         artifact ID raises ``ExtractionRetentionConflictError``. No payload bytes
         enter SQLite, no Storage operation occurs, and concurrent registrations are
         serialized by SQLite's write lock.
@@ -1085,6 +1090,27 @@ class SourceAssetRegistry:
                             record.updated_run_id,
                         ),
                     )
+                    for reference_id in record.reference_ids:
+                        db.execute(
+                            "INSERT INTO extraction_references("
+                            "context_id,artifact_id,reference_id,created_at,created_by,"
+                            "created_run_id) VALUES (?,?,?,?,?,?)",
+                            (
+                                context.context_id,
+                                record.artifact_id,
+                                reference_id,
+                                record.updated_at,
+                                execution.principal_id,
+                                execution.run_id,
+                            ),
+                        )
+                    self._append_retention_event(
+                        db,
+                        execution,
+                        record.artifact_id,
+                        ExtractionRetentionEventType.REGISTERED,
+                        timestamp=record.created_at,
+                    )
                 else:
                     current = self._retention_record_from_row(db, row)
                     if current.state is ExtractionRetentionState.PURGED:
@@ -1097,24 +1123,7 @@ class SourceAssetRegistry:
                         raise ExtractionRetentionConflictError(
                             "artifact ID conflicts with immutable extraction metadata"
                         )
-                references_added = False
-                for reference_id in record.reference_ids:
-                    cursor = db.execute(
-                        "INSERT OR IGNORE INTO extraction_references("
-                        "context_id,artifact_id,reference_id,created_at,created_by,"
-                        "created_run_id) VALUES (?,?,?,?,?,?)",
-                        (
-                            context.context_id,
-                            record.artifact_id,
-                            reference_id,
-                            record.updated_at,
-                            execution.principal_id,
-                            execution.run_id,
-                        ),
-                    )
-                    references_added = references_added or cursor.rowcount == 1
-                if references_added:
-                    self._touch_retention_row(db, execution, record.artifact_id)
+                    return current
                 stored = self._retention_record_from_row(
                     db,
                     self._required_retention_row(
@@ -1260,6 +1269,14 @@ class SourceAssetRegistry:
                 token = acquired_at if cursor.rowcount == 1 else None
                 if token is not None:
                     self._touch_retention_row(db, execution, row["artifact_id"])
+                    self._append_retention_event(
+                        db,
+                        execution,
+                        row["artifact_id"],
+                        ExtractionRetentionEventType.REFERENCE_ADDED,
+                        reference_id=reference_id,
+                        timestamp=acquired_at,
+                    )
                     row = self._required_retention_row(
                         db, context.context_id, row["artifact_id"]
                     )
@@ -1324,16 +1341,22 @@ class SourceAssetRegistry:
         if not isinstance(enabled, bool):
             raise ExtractionRetentionConflictError("legal hold value must be boolean")
 
-        def set_hold(db: sqlite3.Connection, row: sqlite3.Row) -> bool:
-            """Write legal hold only when the requested durable value differs."""
-            if bool(row["legal_hold"]) == enabled:
-                return False
+        def set_hold(
+            db: sqlite3.Connection, row: sqlite3.Row
+        ) -> ExtractionRetentionEventType | None:
+            """Write legal hold and name its event only when the value differs."""
+            if _stored_legal_hold(row["legal_hold"]) == enabled:
+                return None
             db.execute(
                 "UPDATE extraction_retention_records SET legal_hold=? "
                 "WHERE context_id=? AND artifact_id=?",
                 (int(enabled), row["context_id"], row["artifact_id"]),
             )
-            return True
+            return (
+                ExtractionRetentionEventType.LEGAL_HOLD_ENABLED
+                if enabled
+                else ExtractionRetentionEventType.LEGAL_HOLD_RELEASED
+            )
 
         return self._update_retention_policy(
             execution,
@@ -1356,7 +1379,9 @@ class SourceAssetRegistry:
         and continue to block purge. The transaction performs metadata writes only.
         """
 
-        def expire(db: sqlite3.Connection, row: sqlite3.Row) -> bool:
+        def expire(
+            db: sqlite3.Connection, row: sqlite3.Row
+        ) -> ExtractionRetentionEventType | None:
             """Apply only the allowed first state transition inside the caller lock."""
             if row["state"] == ExtractionRetentionState.VALIDATED.value:
                 db.execute(
@@ -1368,8 +1393,8 @@ class SourceAssetRegistry:
                         row["artifact_id"],
                     ),
                 )
-                return True
-            return False
+                return ExtractionRetentionEventType.RETENTION_EXPIRED
+            return None
 
         return self._update_retention_policy(
             execution,
@@ -1405,6 +1430,56 @@ class SourceAssetRegistry:
         except sqlite3.DatabaseError as error:
             raise ExtractionRetentionError(
                 "could not list extraction retention metadata"
+            ) from error
+
+    def list_extraction_retention_events(
+        self,
+        execution: ExecutionContext,
+        *,
+        artifact_id: str | None = None,
+    ) -> tuple[ExtractionRetentionEvent, ...]:
+        """List append-only lifecycle facts in database sequence order.
+
+        Audit and operations callers use this context-scoped read to explain how
+        one extraction reached its current state. An optional artifact ID narrows
+        the history without revealing records in another context. The algorithm
+        authorizes once, selects immutable payload-free rows by increasing event
+        sequence, and validates each row through the public event model. It does
+        not infer events from mutable current state, perform Storage I/O, or alter
+        history; malformed catalog rows raise a bounded T07 error.
+        """
+        context = self.resolve_context(execution)
+        if artifact_id is not None:
+            artifact_id = _retention_identifier(artifact_id, "artifact_id")
+        self._authorize(
+            execution,
+            _EXTRACTION_READ,
+            {
+                "context_id": context.context_id,
+                **({"artifact_id": artifact_id} if artifact_id is not None else {}),
+            },
+        )
+        try:
+            with self._connection() as db:
+                if artifact_id is None:
+                    rows = db.execute(
+                        "SELECT * FROM extraction_retention_events "
+                        "WHERE context_id=? ORDER BY event_sequence",
+                        (context.context_id,),
+                    ).fetchall()
+                else:
+                    rows = db.execute(
+                        "SELECT * FROM extraction_retention_events "
+                        "WHERE context_id=? AND artifact_id=? "
+                        "ORDER BY event_sequence",
+                        (context.context_id, artifact_id),
+                    ).fetchall()
+                return tuple(self._retention_event_from_row(row) for row in rows)
+        except ExtractionRetentionError:
+            raise
+        except sqlite3.DatabaseError as error:
+            raise ExtractionRetentionError(
+                "could not list extraction retention events"
             ) from error
 
     def list_extraction_purge_candidates(
@@ -1447,22 +1522,23 @@ class SourceAssetRegistry:
         artifact_id: str,
         deletion_reason: str,
         *,
-        payload_exists: Callable[[str], bool],
+        absence_proof: ExtractionPayloadAbsenceProof,
     ) -> ExtractionRetentionRecord:
-        """Finalize a tombstone only after live policy and Storage absence checks.
+        """Finalize a tombstone from an exact T01 payload-absence proof.
 
-        ``ExtractionRetentionService.finalize_purge`` supplies a read-only
-        ``StorageClient.exists`` callback after proving the immutable descriptor
-        still exists. Inside one immediate transaction this method reloads state,
-        rejects hold/references/unexpired/purged records, invokes the callback on
-        the logical payload key, and writes ``purged`` plus the compact tombstone
-        only when Storage reports absence. It never calls delete/unlink/rmtree,
-        never changes the T01 descriptor, and rolls back every typed or Storage
-        failure. Concurrent metadata writers are serialized by the transaction.
+        ``ExtractionRetentionService.finalize_purge`` supplies the bounded proof
+        after verifying one surviving descriptor around a missing-payload reload.
+        Inside one immediate transaction this method reloads live state, rejects
+        hold/references/unexpired/purged records, and requires proof identity,
+        artifact hash, and logical key to equal that record before writing
+        ``purged`` and its event atomically. It executes no callback, Storage call,
+        delete, parser, or network action, so a different backend cannot be
+        consulted while the catalog lock is held. Stale or forged proofs fail and
+        leave state and history unchanged.
         """
-        if not callable(payload_exists):
+        if not isinstance(absence_proof, ExtractionPayloadAbsenceProof):
             raise ExtractionPurgeFinalizationError(
-                "payload absence verifier must be callable"
+                "payload absence proof must use the bounded production contract"
             )
         context = self.resolve_context(execution)
         self._authorize(
@@ -1480,19 +1556,16 @@ class SourceAssetRegistry:
                     raise ExtractionPurgeBlockedError(
                         current.purge_reason or "purge is blocked"
                     )
-                try:
-                    still_exists = payload_exists(current.artifact_storage_key)
-                except Exception as error:
+                if (
+                    absence_proof.artifact_id != current.artifact_id
+                    or absence_proof.extraction_identity
+                    != current.extraction_identity
+                    or absence_proof.artifact_sha256 != current.artifact_sha256
+                    or absence_proof.artifact_storage_key
+                    != current.artifact_storage_key
+                ):
                     raise ExtractionPurgeFinalizationError(
-                        "Storage could not verify parser payload absence"
-                    ) from error
-                if not isinstance(still_exists, bool):
-                    raise ExtractionPurgeFinalizationError(
-                        "Storage payload verifier returned an invalid result"
-                    )
-                if still_exists:
-                    raise ExtractionPurgeFinalizationError(
-                        "parser payload still exists in Storage"
+                        "payload absence proof does not match live extraction metadata"
                     )
                 tombstone = RetentionTombstone(
                     parser_id=current.identity.parser_id,
@@ -1519,6 +1592,14 @@ class SourceAssetRegistry:
                         context.context_id,
                         artifact_id,
                     ),
+                )
+                self._append_retention_event(
+                    db,
+                    execution,
+                    artifact_id,
+                    ExtractionRetentionEventType.PURGED,
+                    reason=deletion_reason,
+                    timestamp=now,
                 )
                 return self._retention_record_from_row(
                     db,
@@ -1567,6 +1648,13 @@ class SourceAssetRegistry:
                 )
                 if cursor.rowcount == 1:
                     self._touch_retention_row(db, execution, artifact_id)
+                    self._append_retention_event(
+                        db,
+                        execution,
+                        artifact_id,
+                        ExtractionRetentionEventType.REFERENCE_REMOVED,
+                        reference_id=reference_id,
+                    )
         except sqlite3.DatabaseError as error:
             raise ExtractionRetentionError(
                 "could not release failed reuse acquisition reference"
@@ -1622,6 +1710,17 @@ class SourceAssetRegistry:
                     )
                 if cursor.rowcount == 1:
                     self._touch_retention_row(db, execution, artifact_id)
+                    self._append_retention_event(
+                        db,
+                        execution,
+                        artifact_id,
+                        (
+                            ExtractionRetentionEventType.REFERENCE_ADDED
+                            if add
+                            else ExtractionRetentionEventType.REFERENCE_REMOVED
+                        ),
+                        reference_id=reference_id,
+                    )
                 return self._retention_record_from_row(
                     db,
                     self._required_retention_row(db, context.context_id, artifact_id),
@@ -1640,9 +1739,19 @@ class SourceAssetRegistry:
         *,
         action: str,
         operation: str,
-        update: Callable[[sqlite3.Connection, sqlite3.Row], bool],
+        update: Callable[
+            [sqlite3.Connection, sqlite3.Row],
+            ExtractionRetentionEventType | None,
+        ],
     ) -> ExtractionRetentionRecord:
-        """Run one authorized non-purge policy mutation with resurrection blocked."""
+        """Apply one policy mutation and append its event in the same transaction.
+
+        Legal-hold and expiry methods share this authorized race boundary. Their
+        bounded callback may only mutate the caller-owned row and return a frozen
+        event type when state changed; ``None`` makes retries side-effect free.
+        This helper then updates audit metadata and appends history atomically.
+        Purge, payload I/O, parser calls, and physical deletion are outside it.
+        """
         artifact_id = _retention_identifier(artifact_id, "artifact_id")
         context = self.resolve_context(execution)
         self._authorize(
@@ -1657,9 +1766,12 @@ class SourceAssetRegistry:
                     raise ExtractionRetentionConflictError(
                         f"purged extraction cannot change {operation}"
                     )
-                changed = update(db, row)
-                if changed:
+                event_type = update(db, row)
+                if event_type is not None:
                     self._touch_retention_row(db, execution, artifact_id)
+                    self._append_retention_event(
+                        db, execution, artifact_id, event_type
+                    )
                 return self._retention_record_from_row(
                     db,
                     self._required_retention_row(db, context.context_id, artifact_id),
@@ -1714,6 +1826,69 @@ class SourceAssetRegistry:
         )
 
     @staticmethod
+    def _append_retention_event(
+        db: sqlite3.Connection,
+        execution: ExecutionContext,
+        artifact_id: str,
+        event_type: ExtractionRetentionEventType,
+        *,
+        reference_id: str | None = None,
+        reason: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        """Append one changed-state fact inside the caller's write transaction.
+
+        All retention writers use this helper only after a real mutation. SQLite
+        assigns the monotonic sequence while the supplied execution context fixes
+        tenant, principal, and run ownership. The insert shares commit/rollback
+        fate with current-state metadata, stores no payload or source text, and
+        cannot update or delete an earlier event.
+        """
+        db.execute(
+            "INSERT INTO extraction_retention_events("
+            "context_id,artifact_id,event_type,timestamp,principal_id,run_id,"
+            "reference_id,reason) VALUES (?,?,?,?,?,?,?,?)",
+            (
+                execution.context_id,
+                artifact_id,
+                event_type.value,
+                timestamp or _now(),
+                execution.principal_id,
+                execution.run_id,
+                reference_id,
+                reason,
+            ),
+        )
+
+    @staticmethod
+    def _retention_event_from_row(row: sqlite3.Row) -> ExtractionRetentionEvent:
+        """Project one untrusted event row into the strict immutable contract.
+
+        Event-list readers call this trust boundary after context filtering. It
+        validates sequence, vocabulary, identifiers, and event-specific fields;
+        malformed SQL values become bounded retention errors rather than silently
+        entering audit history. The projection is pure and has no side effects.
+        """
+        try:
+            return ExtractionRetentionEvent(
+                sequence=row["event_sequence"],
+                context_id=row["context_id"],
+                artifact_id=row["artifact_id"],
+                event_type=ExtractionRetentionEventType(row["event_type"]),
+                timestamp=row["timestamp"],
+                principal_id=row["principal_id"],
+                run_id=row["run_id"],
+                reference_id=row["reference_id"],
+                reason=row["reason"],
+            )
+        except ExtractionRetentionError:
+            raise
+        except (TypeError, ValueError) as error:
+            raise ExtractionRetentionError(
+                "retention catalog contains an invalid lifecycle event"
+            ) from error
+
+    @staticmethod
     def _retention_record_from_row(
         db: sqlite3.Connection, row: sqlite3.Row
     ) -> ExtractionRetentionRecord:
@@ -1764,7 +1939,7 @@ class SourceAssetRegistry:
                 artifact_media_type=row["artifact_media_type"],
                 state=ExtractionRetentionState(row["state"]),
                 reference_ids=references,
-                legal_hold=bool(row["legal_hold"]),
+                legal_hold=_stored_legal_hold(row["legal_hold"]),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 updated_by=row["updated_by"],
@@ -2356,6 +2531,45 @@ class SourceAssetRegistry:
                         REFERENCES extraction_retention_records(context_id,artifact_id)
                         ON DELETE RESTRICT
                 );
+                CREATE TABLE IF NOT EXISTS extraction_retention_events (
+                    event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    context_id TEXT NOT NULL,
+                    artifact_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL CHECK(event_type IN (
+                        'registered',
+                        'reference-added',
+                        'reference-removed',
+                        'legal-hold-enabled',
+                        'legal-hold-released',
+                        'retention-expired',
+                        'purged'
+                    )),
+                    timestamp TEXT NOT NULL,
+                    principal_id TEXT,
+                    run_id TEXT NOT NULL,
+                    reference_id TEXT,
+                    reason TEXT,
+                    FOREIGN KEY(context_id,artifact_id)
+                        REFERENCES extraction_retention_records(context_id,artifact_id)
+                        ON DELETE RESTRICT
+                );
+                CREATE INDEX IF NOT EXISTS
+                    extraction_retention_events_context_artifact_sequence
+                    ON extraction_retention_events(
+                        context_id,artifact_id,event_sequence
+                    );
+                CREATE TRIGGER IF NOT EXISTS
+                    extraction_retention_events_no_update
+                    BEFORE UPDATE ON extraction_retention_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'retention events are append-only');
+                    END;
+                CREATE TRIGGER IF NOT EXISTS
+                    extraction_retention_events_no_delete
+                    BEFORE DELETE ON extraction_retention_events
+                    BEGIN
+                        SELECT RAISE(ABORT, 'retention events are append-only');
+                    END;
                 """
             )
             columns = {
@@ -2424,6 +2638,22 @@ def _immutable_retention_facts(record: ExtractionRetentionRecord) -> tuple[objec
         record.artifact_storage_key,
         record.artifact_media_type,
     )
+
+
+def _stored_legal_hold(value: object) -> bool:
+    """Decode only SQLite's exact zero-or-one legal-hold representation.
+
+    Registry readers and hold writers share this untrusted-catalog boundary.
+    Accepting Python truthiness would convert values such as ``2`` or ``"false"``
+    into policy state, so this helper requires an actual SQLite integer equal to
+    zero or one. It performs no mutation and raises a bounded conflict before an
+    invalid row can influence purge eligibility.
+    """
+    if type(value) is not int or value not in {0, 1}:
+        raise ExtractionRetentionConflictError(
+            "retention catalog legal_hold must be exact integer 0 or 1"
+        )
+    return value == 1
 
 
 def _retention_identifier(value: object, field_name: str) -> str:

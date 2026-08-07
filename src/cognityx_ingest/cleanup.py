@@ -13,8 +13,9 @@ Ingest owns metadata decisions and Storage owns bytes. Exact extraction identity
 selects a validated record, the registry atomically acquires a reference, and
 ``NativeArtifactStore.reload`` verifies retained bytes before reuse succeeds.
 Purge planning reads metadata only. After an external Storage-owned process has
-removed a payload, finalization rechecks live policy and ``StorageClient.exists``
-before recording ``purged``. Canonical content, selectors, native bindings,
+removed a payload, finalization proves descriptor survival and payload absence
+through the same T01 store before recording ``purged``. Canonical content,
+selectors, native bindings,
 segmentation views, observations, and immutable native descriptors are untouched.
 
 Consumers and boundaries
@@ -39,10 +40,12 @@ from cognityx_ingest.control import ControlClient
 from cognityx_ingest.models import (
     ExecutionContext,
     ExtractionIdentity,
+    ExtractionPayloadAbsenceProof,
     ExtractionPurgeCandidate,
     ExtractionPurgeFinalizationError,
     ExtractionPurgePlan,
     ExtractionRetentionConflictError,
+    ExtractionRetentionEvent,
     ExtractionRetentionRecord,
     ExtractionRetentionState,
     ExtractionReuseIntegrityError,
@@ -52,9 +55,11 @@ from cognityx_ingest.models import (
 from cognityx_ingest.native_artifacts import (
     NativeArtifactDescriptor,
     NativeArtifactError,
+    NativeArtifactNotFoundError,
     NativeArtifactStore,
 )
 from cognityx_ingest.segmentation_views import (
+    SegmentationView,
     SegmentationViewService,
     SegmentationViewSet,
 )
@@ -62,7 +67,6 @@ from cognityx_ingest.source_assets import SourceAssetRegistry
 from cognityx_storage import (
     BlobGcPlan,
     BlobGcResult,
-    StorageClient,
     StorageRuntime,
 )
 
@@ -196,12 +200,13 @@ class SourceAssetCleanupService:
 class ExtractionRetentionService:
     """Coordinate exact extraction reuse and metadata-only retention policy.
 
-    Application composition constructs this service from the existing catalog,
-    one context-bound T01 native store, and its matching Storage client. Retention
+    Application composition constructs this service from the existing catalog
+    and one context-bound T01 native store. Retention
     operators and complete-identity callers use it. Registration and reuse verify
     descriptors and payloads through ``NativeArtifactStore``; policy mutations
     delegate to transactional registry APIs; purge planning is advisory; and
-    finalization records a tombstone only after Storage reports payload absence.
+    finalization records a tombstone only after the same T01 store proves payload
+    absence while its descriptor survives.
     The service never selects or executes a parser, calls a provider/LLM/network,
     copies payload bytes into metadata, deletes Storage objects, or modifies
     canonical/T05/T06 records. Calls are idempotent where the registry contract is
@@ -214,19 +219,19 @@ class ExtractionRetentionService:
         *,
         registry: SourceAssetRegistry,
         native_artifacts: NativeArtifactStore,
-        artifact_storage: StorageClient,
     ) -> None:
-        """Bind T07 policy to one catalog and matching native artifact scope.
+        """Bind T07 policy to one catalog and one authoritative T01 store.
 
-        The composition root constructs this without I/O. The caller is trusted to
-        provide the same scoped ``StorageClient`` used by ``native_artifacts``;
-        registration and finalization prove descriptor URI/key agreement before
-        accepting that boundary. No optional parser or deletion collaborator is
-        accepted, keeping prohibited side effects structurally unavailable.
+        The composition root constructs this without I/O. Registration, reuse, and
+        finalization all traverse the same ``NativeArtifactStore`` instance, which
+        makes selecting a different payload backend structurally impossible. No
+        separate Storage client, parser, or deletion collaborator is accepted.
+        The immutable references are safe to share when their implementations are,
+        and operational methods expose typed T07/T01 failures rather than backend
+        details.
         """
         self._registry = registry
         self._native_artifacts = native_artifacts
-        self._artifact_storage = artifact_storage
 
     def register_extraction(
         self,
@@ -424,6 +429,25 @@ class ExtractionRetentionService:
             protected=protected,
         )
 
+    def list_events(
+        self,
+        execution: ExecutionContext,
+        *,
+        artifact_id: str | None = None,
+    ) -> tuple[ExtractionRetentionEvent, ...]:
+        """Return ordered context-scoped retention history without payload I/O.
+
+        Audit and operations composition call this read-only service method for all
+        artifacts in a context or one bounded artifact ID. It delegates authority,
+        ordering, strict row validation, and tenant isolation to the registry and
+        returns immutable payload-free events. It does not reconstruct history
+        from current state, call Storage, execute a parser, or mutate audit rows;
+        registry authorization and typed T07 failures pass through unchanged.
+        """
+        return self._registry.list_extraction_retention_events(
+            execution, artifact_id=artifact_id
+        )
+
     def finalize_purge(
         self,
         execution: ExecutionContext,
@@ -433,25 +457,68 @@ class ExtractionRetentionService:
         """Record purged only after descriptor survival and payload absence.
 
         Storage coordination calls this after an external owner removed the payload.
-        The method reads the immutable descriptor, proves it still agrees with
-        catalog facts, then asks the registry to reacquire its write lock, recheck
-        expiry/references/hold, call read-only ``StorageClient.exists``, and write
-        the compact tombstone. Stale plans fail safely. This method never invokes
-        delete, unlink, rmtree, parser, provider, LLM, or network operations.
+        The method reads the immutable descriptor, proves it agrees with catalog
+        facts, attempts a T01 reload, and accepts only the precise case where the
+        payload is absent but the same descriptor can still be read afterward.
+        It then sends a field-bound immutable proof to the registry, which rechecks
+        current expiry/references/hold before writing the compact tombstone and
+        event atomically. A present payload, absent descriptor, corrupt bytes,
+        invalid pointer, stale proof, or backend failure leaves metadata unchanged.
+        This method never invokes delete, unlink, rmtree, parser, provider, LLM,
+        network, or a second Storage client.
         """
         record = self._registry.get_extraction_record(execution, artifact_id)
+        absence_proof = self._prove_payload_absent(record)
+        return self._registry.finalize_extraction_purge(
+            execution,
+            artifact_id,
+            deletion_reason,
+            absence_proof=absence_proof,
+        )
+
+    def _prove_payload_absent(
+        self, record: ExtractionRetentionRecord
+    ) -> ExtractionPayloadAbsenceProof:
+        """Prove missing payload and surviving descriptor through one T01 store.
+
+        Finalization calls this read-only gate before acquiring the catalog write
+        lock. It first validates the descriptor against the retention record, then
+        asks ``reload`` for verified bytes. A successful reload proves the payload
+        remains and therefore fails. Only ``NativeArtifactNotFoundError`` advances
+        to a second descriptor read; that read must still succeed and match every
+        immutable fact before the method returns a bounded proof. Missing or
+        corrupt descriptors, hash/pointer failures, and Storage errors become
+        typed finalization failures. No payload or descriptor is changed.
+        """
         try:
-            descriptor = self._native_artifacts.read(artifact_id)
+            descriptor = self._native_artifacts.read(record.artifact_id)
             self._assert_record_descriptor(record, descriptor)
         except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
             raise ExtractionPurgeFinalizationError(
                 "native artifact descriptor failed finalization verification"
             ) from error
-        return self._registry.finalize_extraction_purge(
-            execution,
-            artifact_id,
-            deletion_reason,
-            payload_exists=self._artifact_storage.exists,
+        try:
+            self._native_artifacts.reload(record.artifact_id)
+        except NativeArtifactNotFoundError:
+            try:
+                surviving = self._native_artifacts.read(record.artifact_id)
+                self._assert_record_descriptor(record, surviving)
+            except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
+                raise ExtractionPurgeFinalizationError(
+                    "native artifact descriptor did not survive payload removal"
+                ) from error
+            return ExtractionPayloadAbsenceProof(
+                artifact_id=record.artifact_id,
+                extraction_identity=record.extraction_identity,
+                artifact_sha256=record.artifact_sha256,
+                artifact_storage_key=record.artifact_storage_key,
+            )
+        except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
+            raise ExtractionPurgeFinalizationError(
+                "native artifact payload absence could not be proven"
+            ) from error
+        raise ExtractionPurgeFinalizationError(
+            "parser payload still exists in Storage"
         )
 
     def _verified_descriptor(
@@ -468,9 +535,7 @@ class ExtractionRetentionService:
             raise ExtractionReuseIntegrityError(
                 "native artifact failed registration integrity verification"
             ) from error
-        if verified != descriptor or self._artifact_storage.uri(
-            descriptor.storage_key
-        ) != descriptor.uri:
+        if verified != descriptor:
             raise ExtractionRetentionConflictError(
                 "native artifact descriptor does not match retained Storage metadata"
             )
@@ -512,7 +577,8 @@ def collect_reference_ids(
     descriptors before matching ``NativeBinding.artifact_id``. Every supplied T06
     pair is verified through its bound service's ``validate_view_set`` method, not
     merely value-level validation, before parser-native views with a matching
-    ``native_artifact_id`` contribute their stable ``view_id``. Explicit external
+    ``native_artifact_id`` contribute a ``segview-`` SHA-256 reference over exact
+    canonical digest, view ID, and cache identity. Explicit external
     consumer IDs are included, then results are deduplicated and sorted.
 
     The helper never interprets T05 observations as payload references, removes a
@@ -534,7 +600,7 @@ def collect_reference_ids(
     for service, view_set in segmentation_view_sets:
         verified = service.validate_view_set(view_set)
         references.update(
-            view.view_id
+            _segmentation_reference_id(view)
             for view in verified.views
             if view.strategy == "parser-native-structure"
             and view.profile is not None
@@ -546,6 +612,27 @@ def collect_reference_ids(
             "reference IDs must be nonempty strings"
         )
     return result
+
+
+def _segmentation_reference_id(view: SegmentationView) -> str:
+    """Derive a collision-safe text-free reference for one validated T06 view.
+
+    ``collect_reference_ids`` calls this only after the owning T06 service has
+    validated its view set. The algorithm hashes compact sorted-key JSON over the
+    exact canonical-content SHA-256, unchanged view ID, and T06 cache identity,
+    then prefixes the digest with ``segview-``. Separate canonical artifacts or
+    separately configured views can therefore reuse a human view ID without
+    sharing a retention reference. The helper copies no source text, performs no
+    I/O, and is deterministic and thread-safe.
+    """
+    material = {
+        "canonical_content_sha256": view.canonical_content_sha256,
+        "view_id": view.view_id,
+        "cache_identity": view.cache_identity,
+    }
+    return "segview-" + hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def _candidate_dict(candidate: ExtractionPurgeCandidate) -> dict[str, object]:

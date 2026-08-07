@@ -95,8 +95,21 @@ def test_malformed_sha_is_rejected(field: str) -> None:
     "configuration",
     (
         {"api_key": "secret"},
+        {"apiKey": "secret"},
+        {"APIKey": "secret"},
+        {"apikey": "secret"},
+        {"openai_api_key": "secret"},
+        {"client-secret": "secret"},
+        {"accessToken": "secret"},
         {"nested": {"run_id": "run-1"}},
+        {"nested": {"correlationId": "cor-1"}},
         {"path": "/tmp/parser"},
+        {"cache_dir": "/tmp/cache"},
+        {"cache_dir": "tmp/parser-cache"},
+        {"model_path": "/home/user/model"},
+        {"outputPath": "C:\\temp\\x"},
+        {"localPath": "C:\\models\\parser"},
+        {"cache-directory": "../parser-cache"},
         {"score": float("nan")},
         {"unsupported": object()},
     ),
@@ -114,6 +127,34 @@ def test_configuration_rejects_secret_operational_or_non_json_values(
             model_version="none",
             scope="tenant-a/policy",
         )
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    (
+        {"tokenizer": "cl100k_base"},
+        {"tokenizer": "Qwen/Qwen3-8B"},
+        {"model": "Qwen/Qwen3-8B"},
+        {"model_id": "Qwen/Qwen3-8B"},
+        {"model_path": "Qwen/Qwen3-8B"},
+        {"parser_id": "docling"},
+        {"adapter": "canonical-v3-2"},
+        {"pipeline": "standard", "table_mode": "accurate"},
+    ),
+)
+def test_configuration_allows_semantic_parser_settings(
+    configuration: dict[str, object],
+) -> None:
+    """Keep real tokenizer and registry model identifiers in exact identity."""
+    identity = ExtractionIdentity.from_configuration(
+        source_sha256="1" * 64,
+        parser_id="docling",
+        parser_version="2.5.0",
+        parser_configuration=configuration,
+        model_version="Qwen/Qwen3-8B",
+        scope="tenant-a/policy",
+    )
+    assert len(identity.parser_configuration_hash) == 64
 
 
 @pytest.mark.parametrize(

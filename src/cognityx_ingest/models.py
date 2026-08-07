@@ -49,30 +49,65 @@ EXTRACTION_RETENTION_STATES = (
     "retention-expired",
     "purged",
 )
+EXTRACTION_RETENTION_EVENT_TYPES = (
+    "registered",
+    "reference-added",
+    "reference-removed",
+    "legal-hold-enabled",
+    "legal-hold-released",
+    "retention-expired",
+    "purged",
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
-_FORBIDDEN_CONFIGURATION_KEYS = {
-    "api-key",
-    "api_key",
-    "apikey",
+_CAMEL_CASE_BOUNDARY_RE = re.compile(
+    r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])"
+)
+_NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+_FORBIDDEN_CONFIGURATION_KEY_PHRASES = {
+    ("access", "token"),
+    ("api", "key"),
+    ("bearer", "token"),
+    ("client", "secret"),
+    ("correlation", "id"),
+    ("execution", "id"),
+    ("private", "key"),
+    ("request", "id"),
+    ("run", "id"),
+    ("trace", "id"),
+}
+_FORBIDDEN_CONFIGURATION_KEY_WORDS = {
     "authorization",
-    "correlation-id",
-    "correlation_id",
+    "accesstoken",
+    "apikey",
+    "bearertoken",
+    "clientsecret",
+    "correlationid",
     "credential",
     "credentials",
-    "local-path",
-    "local_path",
+    "executionid",
+    "invocationid",
+    "jobid",
+    "operationid",
     "password",
-    "path",
-    "run-id",
-    "run_id",
+    "privatekey",
+    "requestid",
+    "runid",
     "secret",
-    "temp-path",
-    "temp_path",
-    "temporary-path",
-    "temporary_path",
+    "traceid",
     "token",
+}
+_LOCAL_PATH_KEY_WORDS = {
+    "cache",
+    "dir",
+    "directory",
+    "file",
+    "local",
+    "output",
+    "path",
+    "temp",
+    "temporary",
 }
 _MAX_CONFIGURATION_DEPTH = 32
 _MAX_CONFIGURATION_ITEMS = 4_096
@@ -165,6 +200,24 @@ class ExtractionRetentionState(StrEnum):
     """
 
     VALIDATED = "validated"
+    RETENTION_EXPIRED = "retention-expired"
+    PURGED = "purged"
+
+
+class ExtractionRetentionEventType(StrEnum):
+    """Name each durable T07 lifecycle fact in one closed vocabulary.
+
+    The retention registry writes these values to its append-only event table and
+    audit callers consume them in sequence order. The enum prevents producers from
+    inventing near-duplicate labels while keeping persisted values stable. It is
+    immutable, performs no I/O, and has no parser, payload, or deletion authority.
+    """
+
+    REGISTERED = "registered"
+    REFERENCE_ADDED = "reference-added"
+    REFERENCE_REMOVED = "reference-removed"
+    LEGAL_HOLD_ENABLED = "legal-hold-enabled"
+    LEGAL_HOLD_RELEASED = "legal-hold-released"
     RETENTION_EXPIRED = "retention-expired"
     PURGED = "purged"
 
@@ -365,6 +418,15 @@ class ExtractionRetentionRecord:
                 raise ExtractionRetentionConflictError(
                     "purged records require a tombstone and no hold or references"
                 )
+            if (
+                self.tombstone.parser_id != self.identity.parser_id
+                or self.tombstone.parser_version != self.identity.parser_version
+                or self.tombstone.source_sha256 != self.identity.source_sha256
+                or self.tombstone.artifact_sha256 != self.artifact_sha256
+            ):
+                raise ExtractionRetentionConflictError(
+                    "purged tombstone must match immutable extraction metadata"
+                )
         elif self.tombstone is not None:
             raise ExtractionRetentionConflictError(
                 "only purged records may contain a tombstone"
@@ -395,6 +457,85 @@ class ExtractionRetentionRecord:
     def purge_eligible(self) -> bool:
         """Derive purge eligibility from current state rather than persisted input."""
         return self.purge_reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionPayloadAbsenceProof:
+    """Bind one T01-verified missing payload to exact retention metadata.
+
+    ``ExtractionRetentionService`` constructs this only after reading a surviving
+    descriptor, observing payload absence through ``NativeArtifactStore.reload``,
+    and reading the same descriptor again. The registry consumes the proof inside
+    its final transaction and compares every field with the live record. This
+    bounded immutable value replaces an arbitrary callback, so the catalog cannot
+    accidentally query a different Storage backend or execute caller code while
+    holding its write lock. It contains no bytes, secrets, physical paths, or
+    deletion capability and is safe for concurrent readers.
+    """
+
+    artifact_id: str
+    extraction_identity: str
+    artifact_sha256: str
+    artifact_storage_key: str
+
+    def __post_init__(self) -> None:
+        """Validate exact logical identity before a proof reaches persistence."""
+        _require_identifier(self.artifact_id, "artifact_id")
+        _require_sha256(self.extraction_identity, "extraction_identity")
+        _require_sha256(self.artifact_sha256, "artifact_sha256")
+        _require_storage_key(self.artifact_storage_key)
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionRetentionEvent:
+    """Expose one append-only context-scoped extraction lifecycle fact.
+
+    Registry mutations create these records in the same SQLite transaction as the
+    state change; audit, operations, and future API composition list them by the
+    database-assigned sequence. Reference events identify the exact consumer and
+    purge events retain only a bounded reason. The record is immutable and
+    payload-free, and validation rejects ambiguous event shapes before callers can
+    treat malformed catalog data as history.
+    """
+
+    sequence: int
+    context_id: str
+    artifact_id: str
+    event_type: ExtractionRetentionEventType
+    timestamp: str
+    principal_id: str | None
+    run_id: str
+    reference_id: str | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        """Require a positive sequence and event-specific reference/reason shape."""
+        if type(self.sequence) is not int or self.sequence < 1:
+            raise ExtractionRetentionError("retention event sequence must be positive")
+        _require_identifier(self.context_id, "context_id")
+        _require_identifier(self.artifact_id, "artifact_id")
+        if not isinstance(self.event_type, ExtractionRetentionEventType):
+            raise ExtractionRetentionError(
+                "retention event type must use the frozen vocabulary"
+            )
+        _require_text(self.timestamp, "timestamp")
+        if self.principal_id is not None:
+            _require_text(self.principal_id, "principal_id")
+        _require_text(self.run_id, "run_id")
+        reference_event = self.event_type in {
+            ExtractionRetentionEventType.REFERENCE_ADDED,
+            ExtractionRetentionEventType.REFERENCE_REMOVED,
+        }
+        if reference_event:
+            _require_identifier(self.reference_id, "reference_id")
+        elif self.reference_id is not None:
+            raise ExtractionRetentionError(
+                "only reference events may contain a reference_id"
+            )
+        if self.reason is not None:
+            _require_text(self.reason, "reason")
+        if self.event_type is ExtractionRetentionEventType.PURGED and self.reason is None:
+            raise ExtractionRetentionError("purged events require a reason")
 
 
 @dataclass(frozen=True, slots=True)
@@ -604,7 +745,12 @@ def _identity_configuration(value: Mapping[str, object]) -> dict[str, object]:
                     raise ExtractionIdentityError(
                         "parser configuration keys must be bounded strings"
                     )
-                if key.casefold() in _FORBIDDEN_CONFIGURATION_KEYS:
+                key_words = _configuration_key_words(key)
+                if _configuration_key_is_forbidden(key_words) or (
+                    isinstance(nested, str)
+                    and any(word in _LOCAL_PATH_KEY_WORDS for word in key_words)
+                    and _looks_like_local_path(nested)
+                ):
                     raise ExtractionIdentityError(
                         "parser configuration contains forbidden operational data"
                     )
@@ -623,6 +769,58 @@ def _identity_configuration(value: Mapping[str, object]) -> dict[str, object]:
     normalized = normalize(value, ())
     assert isinstance(normalized, dict)
     return normalized
+
+
+def _configuration_key_words(key: str) -> tuple[str, ...]:
+    """Normalize camel, snake, kebab, and spaced keys into semantic words.
+
+    The configuration trust boundary calls this before hashing. Splitting names
+    such as ``apiKey``, ``api_key``, and ``api-key`` identically prevents casing
+    or punctuation from bypassing secret checks without rejecting harmless
+    substrings such as ``tokenizer``. The helper is pure and value-free.
+    """
+    split_camel = _CAMEL_CASE_BOUNDARY_RE.sub(" ", key).casefold()
+    return tuple(word for word in _NON_WORD_RE.split(split_camel) if word)
+
+
+def _configuration_key_is_forbidden(words: tuple[str, ...]) -> bool:
+    """Reject secret and run-local identity keys after semantic normalization.
+
+    ``_identity_configuration`` uses the closed phrases and exact secret words;
+    exact-word comparison deliberately allows technical names like ``tokenizer``
+    and ``model_id`` while rejecting credentials and per-run identifiers. The
+    decision is deterministic and never inspects or reports a secret value.
+    """
+    contains_phrase = any(
+        words[index : index + len(phrase)] == phrase
+        for phrase in _FORBIDDEN_CONFIGURATION_KEY_PHRASES
+        for index in range(len(words) - len(phrase) + 1)
+    )
+    return contains_phrase or any(
+        word in _FORBIDDEN_CONFIGURATION_KEY_WORDS for word in words
+    )
+
+
+def _looks_like_local_path(value: str) -> bool:
+    """Recognize filesystem-shaped values without rejecting model identifiers.
+
+    Path-labelled configuration values are checked with this helper. Absolute,
+    home-relative, dot-relative, traversal, file-URI, Windows-drive, and backslash
+    forms are local operational state. A portable registry identifier such as
+    ``Qwen/Qwen3-8B`` is intentionally not path-shaped. The check is pure and does
+    not resolve or access the supplied value.
+    """
+    folded = value.casefold()
+    return (
+        value.startswith(("/", "\\", "~/", "./", "../"))
+        or "\\" in value
+        or folded.startswith("file://")
+        or folded.startswith(
+            ("tmp/", "temp/", "var/tmp/", "home/", "users/", ".cache/", "cache/")
+        )
+        or (len(value) >= 2 and value[0].isalpha() and value[1] == ":")
+        or any(part in {".", ".."} for part in value.split("/"))
+    )
 
 
 def _require_sha256(value: object, field_name: str) -> str:
