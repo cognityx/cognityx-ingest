@@ -77,6 +77,7 @@ PROVENANCE_RESOLUTION_STATUSES = (
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_PRODUCTION_GRAPH_REVISION = re.compile(r"^sg-[0-9a-f]{64}$")
 _UNSAFE_GOLD_STATES = frozenset(
     {"ambiguous", "unresolved", "contradicted", "rejected"}
 )
@@ -154,24 +155,29 @@ class SourceGraphReferenceError(SourceGraphValidationError):
 
 
 class SourceGraphRevisionError(SourceGraphError):
-    """Report missing or conflicting immutable graph revisions.
+    """Report missing, forged, stale, or conflicting immutable graph revisions.
 
     Responsibility:
-        Prevent one revision label from identifying two different graph contents.
+        Require production revision fingerprints to identify exactly one graph
+        fact projection and prevent one revision from naming different contents.
     Constructed by:
-        ``SourceGraphRepository`` registration and lookup.
+        Complete graph validation, strict readers, repository registration, and
+        exact repository lookup.
     Used by:
-        Ingest composition and provenance resolution.
+        Ingest composition, provenance resolution, audit tools, and T09 handoff.
     Main algorithm:
-        Compare deterministic serializer bytes for duplicate revision labels.
+        Recompute the SHA-256 revision from deterministic graph facts and compare
+        canonical bytes for duplicate repository revisions.
     Invariants:
-        One repository revision always has one immutable byte representation.
+        A production revision has exact lowercase shape, matches all persisted
+        facts excluding itself, and has one immutable byte representation.
     Lifecycle and side effects:
-        Failed registration changes no repository state.
+        Validation is pure; failed validation or registration changes no state.
     Typed failures and trust boundary:
-        Missing and conflicting revisions do not leak filesystem details.
+        Malformed, stale, forged, missing, and conflicting revisions fail without
+        source content, parser payloads, or filesystem details.
     Thread-safety assumptions:
-        Repository state is frozen after construction.
+        Hashing uses immutable values and local bytes; repository state is frozen.
     """
 
 
@@ -1304,91 +1310,39 @@ class SourceGraph:
     compact_fixture: bool = field(default=False, repr=False, compare=False)
 
     def validate(self) -> None:
-        """Validate schema, records, hierarchy, ownership, and relation safety.
+        """Validate all graph facts and re-prove the complete revision identity.
 
         Builders, readers, traversal, and resolver composition call this before
-        use. The algorithm validates scalar shapes, builds unique local indexes,
-        proves parent/child reciprocity and acyclicity, assigns every direct node
-        once, validates complete production references and acyclic representation
-        subjects, and checks edge targets and epistemic/gold consistency. It is
-        pure/idempotent and raises bounded validation/reference errors without
-        source text or unbounded recursive traversal.
+        use. The algorithm delegates schema, record, hierarchy, ownership,
+        reference, relation-safety, compact/production-shape, and deterministic
+        ordering checks to the private fact validator. A compact frozen fixture
+        then keeps its bounded compatibility revision. A complete production
+        graph must instead carry the exact lowercase SHA-256 recomputed from the
+        same deterministic persisted fact projection with only ``graph_revision``
+        omitted. The optional catalog is validated last. The method is pure,
+        idempotent, side-effect free, and thread-safe for frozen records; typed
+        validation/reference/revision failures expose no source text or payload.
         """
-        if self.schema != SOURCE_GRAPH_SCHEMA:
-            raise SourceGraphValidationError(
-                f"Unsupported source graph schema: {self.schema}"
-            )
-        _require_text(self.graph_revision, "graph_revision")
-        indexes = _validate_graph_records(self)
-        _validate_graph_hierarchy(self, indexes)
-        _validate_graph_production_facts(self, indexes)
-        _validate_graph_relations(self, indexes)
-        if not self.compact_fixture:
-            _validate_production_ordering(self)
-        if self.compact_fixture and any(
-            (
-                self.content_nodes,
-                self.selectors,
-                self.representations,
-                self.native_bindings,
-                self.processing_activities,
-                self.artifact_descriptors,
-            )
-        ):
-            raise SourceGraphValidationError(
-                "Compact Source Graph cannot contain production-only fields"
-            )
+        _validate_source_graph_facts(self)
+        if self.compact_fixture:
+            _require_text(self.graph_revision, "graph_revision")
+        else:
+            _validate_production_graph_revision(self)
         if self.address_catalog is not None:
             self.address_catalog.validate()
 
     def to_dict(self, *, include_revision: bool = True) -> dict[str, object]:
         """Return compact or production JSON data without copied canonical text.
 
-        Revision hashing and persistence call this after validation. The compact
-        fixture emits exactly six top-level fields; production emits the complete
-        closed text-free form. ``include_revision=False`` removes the self-field
-        from hash input. The method is deterministic, read-only, and raises typed
-        validation failures before returning data.
+        Persistence and audit callers use this after complete validation. The
+        compact fixture emits exactly six top-level fields; production emits the
+        complete closed text-free form. ``include_revision=False`` removes only
+        the self-field and uses the same private projection as revision hashing.
+        The method is deterministic, idempotent, read-only, and raises typed
+        validation or revision failures before returning untrusted data.
         """
         self.validate()
-        value: dict[str, object] = {
-            "schema": self.schema,
-            "resources": [_graph_resource_to_dict(item) for item in self.resources],
-            "presentation_units": [
-                _graph_presentation_to_dict(item) for item in self.presentation_units
-            ],
-            "divisions": [_graph_division_to_dict(item) for item in self.divisions],
-            "relations": [_graph_relation_to_dict(item) for item in self.relations],
-        }
-        if include_revision:
-            value["graph_revision"] = self.graph_revision
-        if not self.compact_fixture:
-            value.update(
-                {
-                    "content_nodes": [
-                        _graph_node_to_dict(item) for item in self.content_nodes
-                    ],
-                    "selectors": [
-                        _graph_selector_to_dict(item) for item in self.selectors
-                    ],
-                    "representations": [
-                        _graph_representation_to_dict(item)
-                        for item in self.representations
-                    ],
-                    "native_bindings": [
-                        _graph_binding_to_dict(item) for item in self.native_bindings
-                    ],
-                    "processing_activities": [
-                        _graph_activity_to_dict(item)
-                        for item in self.processing_activities
-                    ],
-                    "artifact_descriptors": [
-                        _graph_artifact_to_dict(item)
-                        for item in self.artifact_descriptors
-                    ],
-                }
-            )
-        return value
+        return _source_graph_dict(self, include_revision=include_revision)
 
     def to_json_bytes(self) -> bytes:
         """Serialize validated graph facts to canonical UTF-8 JSON bytes.
@@ -1408,9 +1362,13 @@ class SourceGraph:
 
         Fixture and artifact readers call this trust boundary. The algorithm
         rejects duplicate keys, distinguishes only two exact top-level shapes,
-        rejects unknown/mixed fields, parses frozen records, and validates all
-        cross-references. It performs no writes and wraps raw decode/type errors
-        in typed graph validation failures.
+        rejects unknown/mixed fields, parses frozen records, validates all facts
+        and cross-references, and for production recomputes the content revision
+        through the canonical persistence projection. Compact fixture loading
+        preserves its frozen compatibility revision. It performs no writes,
+        normalization, source/parser/network access, or repair; raw decode/type
+        errors and stale/forged revisions cross only bounded typed failures. Equal
+        input bytes are idempotent and immutable results are safe to share.
         """
         value = _strict_json_loads(
             payload,
@@ -1720,7 +1678,7 @@ class SourceGraphBuilder:
         )
         graph = SourceGraph(
             schema=SOURCE_GRAPH_SCHEMA,
-            graph_revision="pending",
+            graph_revision="",
             resources=resources,
             presentation_units=presentations,
             divisions=divisions,
@@ -1732,10 +1690,8 @@ class SourceGraphBuilder:
             processing_activities=activities,
             artifact_descriptors=descriptors,
         )
-        graph.validate()
-        revision = "sg-" + hashlib.sha256(
-            _json_bytes(graph.to_dict(include_revision=False)).rstrip(b"\n")
-        ).hexdigest()
+        _validate_source_graph_facts(graph)
+        revision = _production_graph_revision(graph)
         completed = replace(graph, graph_revision=revision)
         completed.validate()
         return completed
@@ -2422,6 +2378,94 @@ class _GraphIndexes:
     representations: Mapping[str, SourceGraphRepresentation]
     artifacts: Mapping[str, SourceGraphArtifactDescriptor]
     canonical_ids: frozenset[str]
+
+
+def _validate_source_graph_facts(graph: SourceGraph) -> None:
+    """Validate every persisted graph fact without trusting a revision value.
+
+    ``SourceGraph.validate`` and ``SourceGraphBuilder.build`` call this private
+    first stage. It checks the schema, closed compact/production shape, scalar and
+    record identities, hierarchy and ownership, production references,
+    representation acyclicity, relation safety, and deterministic production
+    ordering. The revision is deliberately excluded so the builder can validate
+    immutable facts before calculating their fingerprint; no public bypass is
+    introduced because only complete ``SourceGraph.validate`` authorizes use.
+    The pure, idempotent algorithm allocates only local indexes, performs no I/O,
+    parser/model/network work, or mutation, and raises typed validation/reference
+    failures without source content. Frozen inputs are safe for concurrent calls.
+    """
+    if graph.schema != SOURCE_GRAPH_SCHEMA:
+        raise SourceGraphValidationError(
+            f"Unsupported source graph schema: {graph.schema}"
+        )
+    indexes = _validate_graph_records(graph)
+    _validate_graph_hierarchy(graph, indexes)
+    _validate_graph_production_facts(graph, indexes)
+    _validate_graph_relations(graph, indexes)
+    if graph.compact_fixture:
+        if any(
+            (
+                graph.content_nodes,
+                graph.selectors,
+                graph.representations,
+                graph.native_bindings,
+                graph.processing_activities,
+                graph.artifact_descriptors,
+            )
+        ):
+            raise SourceGraphValidationError(
+                "Compact Source Graph cannot contain production-only fields"
+            )
+    else:
+        _validate_production_ordering(graph)
+
+
+def _validate_production_graph_revision(graph: SourceGraph) -> None:
+    """Require one exact lowercase content fingerprint for production graph facts.
+
+    Complete public validation calls this only after graph-fact validation. It
+    first enforces ``sg-`` plus 64 lowercase hexadecimal characters, recomputes
+    the expected revision through ``_production_graph_revision``, and compares
+    exact strings without normalization. The operation is deterministic,
+    idempotent, side-effect free, and performs no I/O; stale, forged, malformed,
+    uppercase, shortened, or placeholder values raise ``SourceGraphRevisionError``
+    without exposing source text. Immutable facts permit concurrent validation.
+    """
+    if (
+        not isinstance(graph.graph_revision, str)
+        or _PRODUCTION_GRAPH_REVISION.fullmatch(graph.graph_revision) is None
+    ):
+        raise SourceGraphRevisionError(
+            "Production Source Graph revision must be sg- plus a lowercase SHA-256"
+        )
+    expected = _production_graph_revision(graph)
+    if graph.graph_revision != expected:
+        raise SourceGraphRevisionError(
+            "Production Source Graph revision does not match its persisted facts"
+        )
+
+
+def _production_graph_revision(graph: SourceGraph) -> str:
+    """Calculate the production revision from the canonical graph-fact projection.
+
+    The builder and complete revision validator call this only after
+    ``_validate_source_graph_facts`` succeeds. The algorithm projects every
+    production-persisted fact except ``graph_revision`` through the same helper as
+    ``SourceGraph.to_dict``, encodes sorted-key compact UTF-8 JSON, removes the
+    serializer's single trailing newline to preserve the released T08 hash
+    algorithm, and returns ``sg-`` plus SHA-256. It never calls public validation,
+    accepts no caller digest, mutates nothing, and performs no I/O. Calling it for
+    compact compatibility data fails typed; immutable validated inputs are safe
+    for concurrent hashing.
+    """
+    if graph.compact_fixture:
+        raise SourceGraphRevisionError(
+            "Compact Source Graph revisions are frozen compatibility values"
+        )
+    payload = _json_bytes(
+        _source_graph_dict(graph, include_revision=False)
+    ).rstrip(b"\n")
+    return "sg-" + hashlib.sha256(payload).hexdigest()
 
 
 def _validate_graph_records(graph: SourceGraph) -> _GraphIndexes:
@@ -3127,6 +3171,63 @@ def _resolution(
     )
     result.validate()
     return result
+
+
+def _source_graph_dict(
+    graph: SourceGraph, *, include_revision: bool
+) -> dict[str, object]:
+    """Project one graph through the sole compact/production persistence shape.
+
+    ``SourceGraph.to_dict`` calls this after complete public validation;
+    ``_production_graph_revision`` calls it after private fact validation with the
+    revision excluded. The algorithm emits every persisted graph fact exactly
+    once, keeps already-validated semantic tuple order, omits canonical source
+    text and the non-persisted attached address catalog, and selects the frozen
+    compact or complete production field set. It performs no validation, hashing,
+    I/O, mutation, or normalization itself, so callers cannot create recursive
+    validation and builder/reader hashing cannot drift. Equal immutable facts
+    produce equal fresh mappings and are safe to project concurrently.
+    """
+    value: dict[str, object] = {
+        "schema": graph.schema,
+        "resources": [_graph_resource_to_dict(item) for item in graph.resources],
+        "presentation_units": [
+            _graph_presentation_to_dict(item)
+            for item in graph.presentation_units
+        ],
+        "divisions": [_graph_division_to_dict(item) for item in graph.divisions],
+        "relations": [_graph_relation_to_dict(item) for item in graph.relations],
+    }
+    if include_revision:
+        value["graph_revision"] = graph.graph_revision
+    if not graph.compact_fixture:
+        value.update(
+            {
+                "content_nodes": [
+                    _graph_node_to_dict(item) for item in graph.content_nodes
+                ],
+                "selectors": [
+                    _graph_selector_to_dict(item) for item in graph.selectors
+                ],
+                "representations": [
+                    _graph_representation_to_dict(item)
+                    for item in graph.representations
+                ],
+                "native_bindings": [
+                    _graph_binding_to_dict(item)
+                    for item in graph.native_bindings
+                ],
+                "processing_activities": [
+                    _graph_activity_to_dict(item)
+                    for item in graph.processing_activities
+                ],
+                "artifact_descriptors": [
+                    _graph_artifact_to_dict(item)
+                    for item in graph.artifact_descriptors
+                ],
+            }
+        )
+    return value
 
 
 def _graph_resource_to_dict(item: SourceGraphResource) -> dict[str, object]:
