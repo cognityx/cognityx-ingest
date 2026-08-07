@@ -98,13 +98,40 @@ valid when their explicit targets exist.
 
 ## Graph revisions
 
-The frozen fixture uses `sg-rev-001`. Production revisions use `sg-` followed by
-a SHA-256 over all persisted graph facts except the revision field itself. Input
-order does not change the revision. A changed resource, hierarchy, node binding,
-selector, activity, artifact reference, or relation does change it.
+A production graph revision is a fingerprint of the graph facts, not a label
+chosen by a caller. `SourceGraphBuilder` first validates the graph facts, then
+serializes every persisted fact except `graph_revision` through the same
+deterministic JSON projection used for persistence. It calculates SHA-256 over
+those compact UTF-8 bytes and stores `sg-` followed by exactly 64 lowercase
+hexadecimal characters.
+
+Public validation does not merely check that this field is present. Direct
+Python callers and strict JSON readers repeat the graph-fact checks, calculate
+the expected fingerprint again, and require exact equality. They do not repair,
+normalize, or accept a caller-selected value. Changing a resource hash or
+family/version, presentation unit, hierarchy, direct node owner, selector,
+representation, native binding, processing activity, artifact descriptor, or
+explicit relation invalidates the old revision. Changing an ambiguous
+relation's candidates or gold-safety facts also invalidates it. Equivalent
+builder input order still produces the same deterministic graph and revision.
+
+For example, copying a valid graph and changing one relation from `references`
+to `defines` while retaining its old revision creates contradictory evidence.
+`SourceGraph.validate()` and `SourceGraph.from_json_bytes(...)` reject that graph
+with a typed revision error before traversal, repository registration, or
+address resolution.
+
+The frozen compact fixture is an explicit compatibility exception. It uses
+`sg-rev-001`, which predates production content fingerprints, and must remain
+byte-for-byte unchanged. Only graphs loaded with `compact_fixture=True` use that
+frozen revision rule. A complete production graph cannot use `sg-rev-001`,
+`pending`, a UUID, a timestamp, uppercase hexadecimal text, or a random digest.
 
 A repository never treats "latest" as a substitute for a requested revision.
-Registering different content under the same revision is a conflict.
+It validates a production graph's content fingerprint before registration, so
+two different production graph contents cannot enter the repository under one
+revision. Registering different compact fixture content under the same frozen
+revision remains a conflict as before.
 
 ## Provenance addresses
 
@@ -134,6 +161,13 @@ canonical target, and selector set. It is suitable for audit and exact support.
 
 A strong address never redirects to a newer policy. A mismatched or explicitly
 superseded immutable context is obsolete.
+
+The graph revision inside a production strong address now rests on two proofs.
+The builder calculated it from all graph facts, and every public graph consumer
+recalculates it before the resolver can run. Changing graph facts and changing
+strong addresses to the same forged revision therefore cannot create exact
+support. The graph itself fails validation first. Exact resolution still also
+requires the source SHA-256, resource, canonical target, and selectors to match.
 
 In a complete production graph, each supplied selector must be provable from a
 selector record belonging to the addressed resource. If the address supplies a
@@ -247,4 +281,7 @@ T09's consumer trust boundary begins only after Source Graph validation and
 address-result validation succeed. DataForge may trust an `exact` ordered closure
 as support, but it must never promote an `ambiguous`, `obsolete`, `forbidden`, or
 `unresolved` explanation to gold evidence. T08 supplies that validated evidence
-boundary; it does not implement the T09 handoff itself.
+boundary. Because strict validation re-proves the production content fingerprint,
+T09 inherits a trustworthy graph revision rather than a human-selected label.
+T08 still does not implement the T09 handoff itself, and T10 remains responsible
+for any future SDK or CLI read surfaces.

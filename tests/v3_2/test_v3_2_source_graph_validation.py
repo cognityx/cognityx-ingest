@@ -20,7 +20,9 @@ from cognityx_ingest import (
 from cognityx_ingest.source_graph import (
     SourceGraphRepresentation,
     _graph_subject_resource_id,
+    _production_graph_revision,
     _validate_graph_records,
+    _validate_source_graph_facts,
 )
 
 
@@ -147,6 +149,21 @@ def _representation(representation_id: str, subject_id: str) -> SourceGraphRepre
     )
 
 
+def _with_valid_production_revision(graph: SourceGraph) -> SourceGraph:
+    """Bind test-only changed facts through the production revision algorithm.
+
+    Representation tests call this after deliberately composing complete valid
+    graph facts that the public builder does not currently need to synthesize.
+    The helper runs the private fact validator, computes the same content digest
+    used by production construction and strict validation, and returns a new
+    immutable graph. It does not expose a public recompute API, perform I/O, or
+    weaken stale-revision rejection; invalid facts fail with the normal typed
+    errors before a revision is returned.
+    """
+    _validate_source_graph_facts(graph)
+    return replace(graph, graph_revision=_production_graph_revision(graph))
+
+
 def test_representation_self_cycle_fails_typed_without_recursion(
     frozen_canonical_artifact,
 ) -> None:
@@ -173,13 +190,15 @@ def test_persisted_representation_multi_record_cycle_fails_before_use(
     """Reject persisted A-to-B-to-A lineage at the strict production JSON reader."""
     base = SourceGraphBuilder().build((frozen_canonical_artifact,))
     terminal = base.content_nodes[0].node_id
-    valid = replace(
-        base,
-        representations=(
-            _representation("rep-a", "rep-b"),
-            _representation("rep-b", terminal),
+    valid = _with_valid_production_revision(
+        replace(
+            base,
+            representations=(
+                _representation("rep-a", "rep-b"),
+                _representation("rep-b", terminal),
+            ),
+            address_catalog=None,
         ),
-        address_catalog=None,
     )
     value = valid.to_dict()
     value["representations"][1]["subject_id"] = "rep-a"
@@ -201,13 +220,15 @@ def test_nested_representation_chain_resolves_terminal_resource_deterministicall
     else:
         terminal_id = base.divisions[0].division_id
         expected_resource_id = base.divisions[0].resource_id
-    graph = replace(
-        base,
-        representations=(
-            _representation("rep-a", "rep-b"),
-            _representation("rep-b", terminal_id),
+    graph = _with_valid_production_revision(
+        replace(
+            base,
+            representations=(
+                _representation("rep-a", "rep-b"),
+                _representation("rep-b", terminal_id),
+            ),
+            address_catalog=None,
         ),
-        address_catalog=None,
     )
     target = ProvenanceTarget(representation_id="rep-a")
 
