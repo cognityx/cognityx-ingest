@@ -8,7 +8,9 @@ them through immutable keys. Its design principle is compatibility by additive
 contracts: v2 outputs remain stable while T01 native evidence, T02 canonical
 content, and T05 parser observations plus fusion decisions gain separate identities. Python
 callers, CLI composition, DataForge handoff, operations, and audit tooling use
-the service.
+the service. T08 additionally publishes a deterministic, text-free Source Graph
+and generated strong provenance addresses from canonical facts; logical business
+addresses and evidence-set intent remain explicit downstream composition.
 """
 
 from __future__ import annotations
@@ -92,6 +94,10 @@ from cognityx_ingest.parser_fusion import (
 )
 from cognityx_ingest.references import build_reference_provenance
 from cognityx_ingest.source_assets import SourceAssetRegistry
+from cognityx_ingest.source_graph import (
+    SourceGraphBuilder,
+    build_strong_address_catalog,
+)
 from cognityx_ingest.structure import (
     CanonicalBlockFragment,
     build_continuation_relations,
@@ -119,7 +125,8 @@ class IngestService:
 
     Responsibility:
         Preserve the established v2 ingest flow and add independently versioned
-        artifacts, including T01 native descriptors and T02 canonical content.
+        artifacts, including T01 native descriptors, T02 canonical content, and
+        T08 Source Graph/strong-address records.
     Constructed by:
         The Python composition root, CLI adapters, tests, or applications that
         provide scoped Storage, optional Jobs, parser, control, and registry seams.
@@ -721,6 +728,8 @@ class IngestService:
                     result.canonical_content_key,
                     result.observation_artifact_key,
                     result.fusion_artifact_key,
+                    result.source_graph_key,
+                    result.provenance_addresses_key,
                 )
                 if key
             ),
@@ -743,6 +752,8 @@ class IngestService:
             canonical_content_key=result.canonical_content_key,
             observation_artifact_key=result.observation_artifact_key,
             fusion_artifact_key=result.fusion_artifact_key,
+            source_graph_key=result.source_graph_key,
+            provenance_addresses_key=result.provenance_addresses_key,
         )
 
     def _persist(
@@ -761,8 +772,10 @@ class IngestService:
         retain their established keys and schema meanings. Parser-native payloads
         still pass through ``NativeArtifactStore`` at their existing keys. T02
         then builds one validated additive parser-neutral artifact at
-        ``canonical-content.json`` and adds references to provenance and manifest
-        without replacing or reinterpreting ``document.json``.
+        ``canonical-content.json``. T08 projects its existing IDs into immutable
+        ``source-graph.json`` and generated strong addresses into
+        ``provenance-addresses.json``. Their references are additive in provenance
+        and manifest without replacing or reinterpreting ``document.json``.
 
         Canonical content plus optional T05 observations and fusion decisions are
         validated together, serialized once through their deterministic public
@@ -772,10 +785,12 @@ class IngestService:
         an equivalent run-bound write is idempotent only when existing bytes and
         media type match exactly. Changed canonical data, parser bytes, native
         descriptors, or v3.2 content fails rather than overwriting retained
-        evidence. Storage writes are the only side effect. Existing document-prefix
-        deletion removes this additive artifact; T07 owns future retention policy.
-        T06 segmentation and T08 Source Graph work consume the artifacts later;
-        no segmentation, graph, SDK, or CLI behavior is implemented here.
+        evidence. Graph/address construction reads canonical records only, never
+        source or parser-native payloads, so later T07 purge does not affect
+        resolution. Storage writes are the only side effect. Existing
+        document-prefix deletion removes these additive artifacts; T07 owns raw
+        retention policy. T06 segmentation and T09 DataForge consume the records;
+        no semantic graph, SDK, or CLI behavior is implemented here.
         """
         prefix = f"ingest/documents/{document.document_id}"
         document_key = f"{prefix}/document.json"
@@ -783,6 +798,8 @@ class IngestService:
         manifest_key = f"{prefix}/manifest.json"
         provenance_key = f"{prefix}/provenance.json"
         canonical_content_key = f"{prefix}/canonical-content.json"
+        source_graph_key = f"{prefix}/source-graph.json"
+        provenance_addresses_key = f"{prefix}/provenance-addresses.json"
         observation_artifact_key = (
             f"{prefix}/parser/observations.json"
             if extraction.observation_artifact is not None
@@ -952,6 +969,20 @@ class IngestService:
             ),
             media_type="application/json",
         )
+        source_graph = SourceGraphBuilder().build((canonical_content,))
+        address_catalog = build_strong_address_catalog(
+            source_graph, (canonical_content,)
+        )
+        self._put_immutable_bytes(
+            source_graph_key,
+            source_graph.to_json_bytes(),
+            media_type="application/json",
+        )
+        self._put_immutable_bytes(
+            provenance_addresses_key,
+            address_catalog.to_json_bytes(),
+            media_type="application/json",
+        )
         relation_records = [
             {**item.to_dict(), "gold": _relation_is_gold(item)}
             for item in document.relations
@@ -966,6 +997,10 @@ class IngestService:
             "document": self._artifact_uri(document_key),
             "evidence": self._artifact_uri(evidence_key),
             "canonical_content": self._artifact_uri(canonical_content_key),
+            "source_graph": self._artifact_uri(source_graph_key),
+            "provenance_addresses": self._artifact_uri(
+                provenance_addresses_key
+            ),
             "provenance": self._artifact_uri(provenance_key),
             "manifest": self._artifact_uri(manifest_key),
             "parser": {
@@ -1105,6 +1140,10 @@ class IngestService:
             "document": self._storage.stat(document_key),
             "evidence": self._storage.stat(evidence_key),
             "canonical_content": self._storage.stat(canonical_content_key),
+            "source_graph": self._storage.stat(source_graph_key),
+            "provenance_addresses": self._storage.stat(
+                provenance_addresses_key
+            ),
             "provenance": self._storage.stat(provenance_key),
         }
         if fusion_artifact is not None:
@@ -1164,6 +1203,8 @@ class IngestService:
             canonical_content_key=canonical_content_key,
             observation_artifact_key=observation_artifact_key,
             fusion_artifact_key=fusion_artifact_key,
+            source_graph_key=source_graph_key,
+            provenance_addresses_key=provenance_addresses_key,
         )
 
     def _start_job(

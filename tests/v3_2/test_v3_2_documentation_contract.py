@@ -20,6 +20,7 @@ import cognityx_ingest.parser_fusion as parser_fusion
 import cognityx_ingest.parser_routing as parser_routing
 import cognityx_ingest.segmentation_views as segmentation_views
 import cognityx_ingest.source_assets as source_assets
+import cognityx_ingest.source_graph as source_graph
 
 
 def _module_tree(module: object = native_artifacts) -> ast.Module:
@@ -935,3 +936,108 @@ def test_compatibility_projection_helpers_document_occurrence_provenance() -> No
         "t08",
     ):
         assert concept in documentation, concept
+
+
+def test_source_graph_module_explains_architecture_and_boundaries() -> None:
+    """Require T08 purpose, flow, consumers, ownership, and explicit non-goals."""
+    module_docstring = " ".join(
+        (ast.get_docstring(_module_tree(source_graph)) or "").lower().split()
+    )
+    assert len(module_docstring) >= 2_500
+    for concept in (
+        "purpose",
+        "design principles",
+        "processing flow",
+        "primary consumers",
+        "ownership boundary",
+        "non-goals",
+        "source graph",
+        "canonical text",
+        "deterministic",
+        "ambiguous",
+        "provenance address",
+        "t09",
+        "t10",
+        "semantic knowledge graph",
+        "graph database",
+        "parser execution",
+        "network/provider/llm",
+    ):
+        assert concept in module_docstring, concept
+
+
+def test_every_public_source_graph_class_documents_its_full_contract() -> None:
+    """Require every T08 record, protocol, error, repository, and service rationale."""
+    public_classes = [
+        node
+        for node in _module_tree(source_graph).body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    ]
+    assert public_classes
+    for node in public_classes:
+        docstring = " ".join((ast.get_docstring(node) or "").lower().split())
+        for concept in (
+            "responsibility",
+            "constructed by",
+            "used by",
+            "main algorithm",
+            "invariants",
+            "lifecycle",
+            "side effects",
+            "typed failures",
+            "trust boundary",
+            "thread",
+        ):
+            assert concept in docstring, (node.name, concept)
+
+
+def test_every_source_graph_callable_has_a_docstring() -> None:
+    """Require public seams and private trust algorithms to explain why they exist."""
+    callables = [
+        node
+        for node in ast.walk(_module_tree(source_graph))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    assert callables
+    assert all(ast.get_docstring(node) for node in callables)
+
+
+def test_source_graph_guide_explains_records_addresses_and_handoffs() -> None:
+    """Pin ordinary-language documentation to T08 safety and compatibility facts."""
+    repository_root = Path(source_graph.__file__).parents[2]
+    guide = " ".join(
+        (
+            repository_root / "docs" / "source-graph-and-provenance-addresses.md"
+        ).read_text(encoding="utf-8").lower().split()
+    )
+    for concept in (
+        "source graph versus a knowledge graph",
+        "does not need a graph database",
+        "resources",
+        "presentation units",
+        "divisions and nodes",
+        "selectors and bindings",
+        "representation lineage is acyclic",
+        "bounded visited set",
+        "explicit relations",
+        "graph revisions",
+        "strong address",
+        "each supplied selector must be provable",
+        "compatibility form",
+        "logical address",
+        "evidence-set address",
+        "exact",
+        "redirected",
+        "ambiguous",
+        "obsolete",
+        "forbidden",
+        "unresolved",
+        "no failure becomes fabricated evidence",
+        "result shapes are closed",
+        "ordered exact member results",
+        "consumer trust boundary",
+        "parser-payload purge independence",
+        "t09",
+        "t10",
+    ):
+        assert concept in guide, concept

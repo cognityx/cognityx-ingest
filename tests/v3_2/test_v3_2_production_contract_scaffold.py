@@ -1,14 +1,12 @@
-"""Strict xfail tests for planned production APIs not implemented in T00.
+"""Production seam checks retained from the original T00 scaffold.
 
-These tests are intentionally production-facing: each one names the API that a
-future task will implement, while T00 keeps production parsing unchanged. The
-core design principle is narrow failure: xfails should break only when the
-planned API exists and satisfies the frozen fixture contract.
+T03, T06, and T08 converted their strict expected failures into real
+production-facing acceptance tests. This compact module now guards the live
+capability registry, non-copying view service, and exact Source Graph resolver.
+It contains no placeholder assertion and no v3.2 strict expected failure.
 """
 
 from __future__ import annotations
-
-import pytest
 
 from cognityx_ingest import ParserRouter
 
@@ -37,7 +35,6 @@ def test_segmentation_view_api_references_ids_and_spans(v3_2_fixture_root):
     assert all(segment.node_spans for segment in view.segments)
 
 
-@pytest.mark.xfail(strict=True, reason="T08: source graph and provenance resolver API is not implemented")
 def test_source_graph_and_provenance_resolver_api_returns_exact(v3_2_fixture_root):
     """Call the planned source graph resolver against a frozen strong address."""
     from cognityx_ingest.source_graph import ProvenanceAddressResolver, SourceGraphRepository

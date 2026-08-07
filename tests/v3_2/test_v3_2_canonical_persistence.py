@@ -23,8 +23,11 @@ from cognityx_ingest import (
     IngestResult,
     IngestService,
     NativeArtifactStore,
+    ProvenanceAddressCatalog,
+    ProvenanceAddressResolver,
     SourceAsset,
     SourceAssetRegistry,
+    SourceGraph,
 )
 from cognityx_ingest.parser import ExtractedPage, ExtractionResult
 from cognityx_jobs import JobRepository
@@ -215,6 +218,8 @@ def test_manifest_provenance_artifacts_and_usage_include_canonical_content(
             result.manifest_key,
             result.provenance_key,
             result.canonical_content_key,
+            result.source_graph_key,
+            result.provenance_addresses_key,
         )
     )
     assert result.usage is not None
@@ -278,6 +283,51 @@ def test_persisted_artifact_keeps_text_out_of_non_content_records(
         and path[2:] == ("content", "text")
         for path in matches
     )
+
+
+def test_ingest_service_persists_text_free_graph_and_strong_addresses(
+    tmp_path: Path,
+) -> None:
+    """Publish additive deterministic T08 artifacts from canonical facts only."""
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
+    graph = SourceGraph.from_json_bytes(storage.open(result.source_graph_key).read())
+    catalog = ProvenanceAddressCatalog.from_json_bytes(
+        storage.open(result.provenance_addresses_key).read()
+    )
+    manifest = json.load(storage.open(result.manifest_key))
+    provenance = json.load(storage.open(result.provenance_key))
+
+    assert result.source_graph_key.endswith("/source-graph.json")
+    assert result.provenance_addresses_key.endswith("/provenance-addresses.json")
+    assert graph.content_nodes
+    assert all("content" not in item for item in graph.to_dict()["content_nodes"])
+    assert catalog.strong_addresses
+    assert catalog.logical_addresses == ()
+    assert catalog.evidence_set_addresses == ()
+    assert manifest["artifacts"]["source_graph"]["uri"] == storage.uri(
+        result.source_graph_key
+    )
+    assert provenance["artifact_uris"]["provenance_addresses"] == storage.uri(
+        result.provenance_addresses_key
+    )
+
+
+def test_strong_resolution_survives_native_payload_deletion(tmp_path: Path) -> None:
+    """Resolve from graph/catalog metadata after the independent parser payload is gone."""
+    result, storage, _context, _asset = _ingest_with_canonical_content(tmp_path)
+    graph_bytes = storage.open(result.source_graph_key).read()
+    address_bytes = storage.open(result.provenance_addresses_key).read()
+    graph = SourceGraph.from_json_bytes(graph_bytes)
+    catalog = ProvenanceAddressCatalog.from_json_bytes(address_bytes)
+    address_id = catalog.strong_addresses[0].address_id
+
+    storage.delete(result.raw_parser_key)
+
+    resolved = ProvenanceAddressResolver(graph, catalog).resolve(address_id)
+    assert resolved.status == "exact"
+    assert resolved.target is not None
+    assert storage.open(result.source_graph_key).read() == graph_bytes
+    assert storage.open(result.provenance_addresses_key).read() == address_bytes
 
 
 def test_document_deletion_removes_document_local_canonical_content(

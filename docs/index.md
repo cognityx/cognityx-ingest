@@ -11,7 +11,7 @@ file, folder, or existing SourceAsset
                  ↓
           Cognityx Ingest
                  ↓
- document + page evidence + stable IDs
+ document + page evidence + Source Graph + stable addresses
                  ↓
              DataForge
 ```
@@ -52,6 +52,11 @@ cogni artifact read <document-id> provenance
 
 The ingest command returns stable run, job, bundle, asset, and document IDs.
 A normal DataForge user does not need to know the internal storage filenames.
+
+The [Source Graph and provenance-address guide](source-graph-and-provenance-addresses.md)
+explains how Ingest connects resources, divisions, nodes, selectors, and explicit
+relations without copying canonical text. It also explains exact, logical, and
+composite evidence addresses before the T09 DataForge handoff.
 
 ## Structure And Ambiguity
 

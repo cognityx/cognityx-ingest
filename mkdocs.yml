@@ -20,6 +20,7 @@ nav:
   - Parser Alignment Fusion Adjudication: parser-alignment-fusion-adjudication.md
   - Non-Copying Segmentation Views: non-copying-segmentation-views.md
   - Extraction Reuse Retention Purge: extraction-reuse-retention-purge.md
+  - Source Graph and Provenance Addresses: source-graph-and-provenance-addresses.md
   - Provenance Capabilities: provenance-capabilities.md
   - Provenance Gap Report: provenance-gap-report.md
   - API: api.md
