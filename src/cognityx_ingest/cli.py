@@ -1,4 +1,12 @@
-"""Command-line entrypoint for local ingest and lifecycle management."""
+"""Provide the compatibility-only Ingest command-line application boundary.
+
+This module preserves historical ``cognityx-ingest`` workflows while directing
+new users to the primary SDK-owned ``cogni`` command.  It parses local Resource
+and Storage overrides, constructs existing Ingest services/managers, and renders
+JSON without reimplementing parser, lifecycle, authorization, or persistence
+algorithms.  Artifact reads reuse Ingest's closed vocabulary and manager-owned
+document-plus-artifact authorization before any bytes are opened.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +26,7 @@ from cognityx_storage import (
     StorageRuntime,
 )
 
-from cognityx_ingest.management import IngestManager
+from cognityx_ingest.management import ARTIFACT_READ_NAMES, IngestManager
 from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.context import resolve_execution_context
 from cognityx_ingest.service import IngestService
@@ -27,6 +35,17 @@ from cognityx_ingest.models import SourceAssetBatchResult
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one compatibility CLI invocation through public Ingest components.
+
+    Console entry points and tests call this function with process or explicit
+    arguments.  It always emits the migration warning, parses a deterministic
+    command tree, resolves one execution context, composes only the service needed
+    by the command, and delegates policy/persistence to Ingest, Jobs, and Storage.
+    Artifact choices come directly from ``ARTIFACT_READ_NAMES`` and bytes are read
+    only through ``IngestManager.read_artifact``.  Argparse raises typed syntax
+    exits, component authorization/validation failures propagate, mutating actions
+    retain explicit confirmation, and no global mutable state survives a call.
+    """
     warnings.warn(
         "The cognityx-ingest CLI is retained for compatibility; use the cogni CLI.",
         FutureWarning,
@@ -93,9 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     artifact_commands = artifacts.add_subparsers(dest="artifact_command", required=True)
     read = artifact_commands.add_parser("read")
     read.add_argument("document_id")
-    read.add_argument(
-        "name", choices=("document", "evidence", "provenance", "manifest")
-    )
+    read.add_argument("name", choices=ARTIFACT_READ_NAMES)
     _add_runtime_arguments(read)
 
     _add_doc_bundle_commands(
