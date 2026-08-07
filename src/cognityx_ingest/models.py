@@ -1,23 +1,688 @@
 """Define stable ingestion records independent of parser and model providers.
 
+Purpose
+-------
+Keep durable Ingest values explicit, immutable, additive, and understandable to
+callers even while parser implementations and retention policy evolve.
+
 This module exists to keep the established v2 document, evidence, lifecycle, and
-result contracts readable while parser implementations evolve. Its core approach
-is immutable typed records with explicit dictionary projections. Compatibility is
-the governing design principle: v3.2's generalized source model lives separately
-in ``canonical_content`` and is exposed here only through an additive result key.
+result contracts readable while parser implementations evolve. It also defines
+T07's small extraction identity and retention records so policy code can describe
+retained parser output without storing the output itself. Its core approach is
+immutable typed records with explicit validation and dictionary projections.
+
+Compatibility is the governing design principle: v3.2's generalized source model
+lives separately in ``canonical_content`` and is exposed here only through an
+additive result key. The T07 records are also additive and do not alter normal
+ingest results. Application composition constructs them, the SourceAsset catalog
+persists their metadata, and retention/audit code consumes them. Storage still
+owns payload bytes and physical deletion. This module performs no parsing,
+persistence, network, provider, LLM, SDK, CLI, Source Graph, or DataForge work.
 Ingest services, CLI adapters, DataForge integrations, and existing Python callers
-use these records.
+continue to use the established records below unchanged.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+import hashlib
+import json
+import math
+import re
 from typing import Any, Mapping
 
 from cognityx_resource import ExecutionContext, ResourceRef
 
 CANONICAL_SCHEMA = "cognityx.ingest.document"
+
+EXTRACTION_IDENTITY_FIELDS = (
+    "source_sha256",
+    "parser_id",
+    "parser_version",
+    "parser_configuration_hash",
+    "model_version",
+    "scope",
+)
+EXTRACTION_RETENTION_STATES = (
+    "validated",
+    "retention-expired",
+    "purged",
+)
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$")
+_FORBIDDEN_CONFIGURATION_KEYS = {
+    "api-key",
+    "api_key",
+    "apikey",
+    "authorization",
+    "correlation-id",
+    "correlation_id",
+    "credential",
+    "credentials",
+    "local-path",
+    "local_path",
+    "password",
+    "path",
+    "run-id",
+    "run_id",
+    "secret",
+    "temp-path",
+    "temp_path",
+    "temporary-path",
+    "temporary_path",
+    "token",
+}
+_MAX_CONFIGURATION_DEPTH = 32
+_MAX_CONFIGURATION_ITEMS = 4_096
+_MAX_CONFIGURATION_COLLECTION = 1_024
+_MAX_CONFIGURATION_STRING = 4_096
+
+
+class ExtractionRetentionError(Exception):
+    """Base typed failure for T07 extraction-retention operations.
+
+    Identity constructors, the durable registry, and the retention service raise
+    this family so API and audit callers never receive raw JSON, SQLite, or
+    Storage implementation errors. Messages contain bounded IDs and policy
+    reasons only, never source text, payload bytes, credentials, SQL, or backend
+    paths. Instances are transient, side-effect free, and safe to pass between
+    threads like ordinary immutable exception diagnostics.
+    """
+
+
+class ExtractionIdentityError(ExtractionRetentionError, ValueError):
+    """Reject incomplete, unsafe, or nondeterministic extraction identity input.
+
+    ``ExtractionIdentity`` construction and configuration hashing use this type at
+    their untrusted-data boundary. Failure occurs before catalog or Storage I/O and
+    never echoes configuration values that might contain sensitive information.
+    """
+
+
+class ExtractionRetentionConflictError(ExtractionRetentionError):
+    """Report an attempted rewrite or invalid retention state transition.
+
+    Registry writers raise this when an immutable artifact/identity disagrees or a
+    caller attempts resurrection or out-of-order transition. The failed operation
+    is rolled back atomically and exposes no payload or SQL details.
+    """
+
+
+class ExtractionRetentionReferenceError(ExtractionRetentionError):
+    """Report a missing artifact or invalid explicit active-reference operation.
+
+    Context-scoped registry lookups and reference lifecycle calls use this bounded
+    type. It distinguishes absent metadata from policy conflicts without leaking
+    another context's records or any retained payload data.
+    """
+
+
+class ExtractionReuseError(ExtractionRetentionError):
+    """Base typed failure for exact reuse acquisition.
+
+    ``ExtractionRetentionService`` uses this family after metadata acquisition.
+    Ordinary exact misses return an immutable result instead; malformed identity
+    or unsafe integrity behavior fails explicitly and performs no parser call.
+    """
+
+
+class ExtractionReuseIntegrityError(ExtractionReuseError):
+    """Report that retained bytes or descriptor identity cannot support reuse.
+
+    The retention service raises this after ``NativeArtifactStore.reload`` or an
+    exact descriptor comparison fails. It releases only a reference inserted by
+    the failed acquisition and never repairs or rewrites immutable evidence.
+    """
+
+
+class ExtractionPurgeBlockedError(ExtractionRetentionError):
+    """Report current metadata that blocks purge planning or finalization.
+
+    Active references, legal hold, unexpired state, or an already-purged record
+    produce this policy failure. Callers receive the bounded decision reason while
+    canonical content, descriptors, and payloads remain untouched.
+    """
+
+
+class ExtractionPurgeFinalizationError(ExtractionRetentionError):
+    """Report an unsafe post-deletion finalization attempt.
+
+    The service raises this when the Storage payload still exists, Storage cannot
+    prove absence, or final transaction checks fail. It never performs physical
+    deletion and leaves the durable retention record unchanged.
+    """
+
+
+class ExtractionRetentionState(StrEnum):
+    """Define the one-way lifecycle of independently retained parser payloads.
+
+    Registry writers construct this value and policy records consume it. The only
+    production transition is ``validated`` to ``retention-expired`` to ``purged``;
+    no value represents resurrection. Enum values are stable persisted strings,
+    immutable, side-effect free, and safe for concurrent readers.
+    """
+
+    VALIDATED = "validated"
+    RETENTION_EXPIRED = "retention-expired"
+    PURGED = "purged"
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionIdentity:
+    """Identify one reusable parser execution by exactly six frozen components.
+
+    Application composition constructs this only when it knows the exact source,
+    parser/version, complete execution-affecting configuration, model version, and
+    scope. Reuse lookup and retention records consume its digest. The algorithm
+    validates bounded payload-free values and hashes compact sorted-key UTF-8 JSON
+    over ``EXTRACTION_IDENTITY_FIELDS``. It performs no I/O, parsing, persistence,
+    network, provider, or LLM call. Equal values are deterministic and thread-safe;
+    incomplete or unsafe input raises ``ExtractionIdentityError`` before reuse.
+    """
+
+    source_sha256: str
+    parser_id: str
+    parser_version: str
+    parser_configuration_hash: str
+    model_version: str
+    scope: str
+
+    def __post_init__(self) -> None:
+        """Enforce complete portable identity on every construction path.
+
+        Direct callers and the configuration helper converge here. SHA values must
+        be lowercase, IDs and versions are bounded, and scope cannot be an absolute
+        or traversal-like local path. Validation is pure and idempotent; typed
+        failure occurs before any retention lookup or side effect.
+        """
+        _require_sha256(self.source_sha256, "source_sha256")
+        _require_identifier(self.parser_id, "parser_id")
+        _require_text(self.parser_version, "parser_version")
+        _require_sha256(
+            self.parser_configuration_hash, "parser_configuration_hash"
+        )
+        _require_text(self.model_version, "model_version")
+        _require_scope(self.scope)
+
+    @classmethod
+    def from_configuration(
+        cls,
+        *,
+        source_sha256: str,
+        parser_id: str,
+        parser_version: str,
+        parser_configuration: Mapping[str, object],
+        model_version: str,
+        scope: str,
+    ) -> "ExtractionIdentity":
+        """Hash explicit JSON-safe execution configuration into the frozen formula.
+
+        Trusted application composition calls this after collecting all
+        execution-affecting parser, adapter, and pipeline settings. The recursive
+        algorithm rejects credential, run, and local-path keys; validates finite
+        JSON scalars and string mapping keys; then hashes canonical compact JSON.
+        Mapping insertion order cannot affect the result. The helper stores no
+        configuration, performs no I/O or external call, and raises
+        ``ExtractionIdentityError`` without echoing sensitive values.
+        """
+        normalized = _identity_configuration(parser_configuration)
+        configuration_hash = hashlib.sha256(
+            _canonical_identity_json(normalized)
+        ).hexdigest()
+        return cls(
+            source_sha256=source_sha256,
+            parser_id=parser_id,
+            parser_version=parser_version,
+            parser_configuration_hash=configuration_hash,
+            model_version=model_version,
+            scope=scope,
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        """Return the exact six fields in their frozen identity vocabulary.
+
+        Registry persistence, tests, and audit tooling consume this fresh mapping.
+        It contains no parser configuration values or mutable nested state, performs
+        no I/O, and is deterministic across threads and repeated calls.
+        """
+        return {field: getattr(self, field) for field in EXTRACTION_IDENTITY_FIELDS}
+
+    @property
+    def digest(self) -> str:
+        """Return SHA-256 of canonical JSON over exactly the six identity fields.
+
+        Reuse indexes and retention records call this pure property. No cached or
+        writable digest exists, so changing any component requires another frozen
+        identity and necessarily changes the canonical hash input.
+        """
+        return hashlib.sha256(_canonical_identity_json(self.to_dict())).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionTombstone:
+    """Preserve compact parser lineage after Storage removes a native payload.
+
+    Purge finalization constructs this record and audit/T08 consumers read it. It
+    retains parser/version, source hash, artifact hash fact, and deletion reason,
+    but no bytes, text, paths, credentials, or mutable metadata. Frozen fixture
+    artifact-hash markers remain representable while production registration is
+    independently verified against a strict T01 descriptor. Construction is pure,
+    thread-safe, and raises ``ExtractionIdentityError`` for malformed values.
+    """
+
+    parser_id: str
+    parser_version: str
+    source_sha256: str
+    artifact_sha256: str
+    deletion_reason: str
+
+    def __post_init__(self) -> None:
+        """Validate compact lineage without requiring deleted payload access."""
+        _require_identifier(self.parser_id, "parser_id")
+        _require_text(self.parser_version, "parser_version")
+        _require_sha256(self.source_sha256, "source_sha256")
+        _require_text(self.artifact_sha256, "artifact_sha256")
+        _require_text(self.deletion_reason, "deletion_reason")
+
+    def to_dict(self) -> dict[str, str]:
+        """Serialize exact tombstone facts without adding operational metadata."""
+        return {
+            "parser_id": self.parser_id,
+            "parser_version": self.parser_version,
+            "source_sha256": self.source_sha256,
+            "artifact_sha256": self.artifact_sha256,
+            "deletion_reason": self.deletion_reason,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionRetentionRecord:
+    """Describe one context-scoped retained extraction without owning its bytes.
+
+    The retention service constructs this from a complete identity and verified
+    T01 descriptor; ``SourceAssetRegistry`` persists and reloads it. Policy callers
+    derive reuse and purge decisions from immutable state, references, hold, and
+    tombstone rather than writable booleans. The record preserves exact artifact
+    key/hash/media facts for Storage coordination but contains no payload or source
+    text. Validation is pure and typed; tuples/frozen children support concurrent
+    readers while registry transactions own mutation and race safety.
+    """
+
+    context_id: str
+    artifact_id: str
+    identity: ExtractionIdentity
+    extraction_identity: str
+    artifact_sha256: str
+    artifact_storage_key: str
+    artifact_media_type: str
+    state: ExtractionRetentionState
+    reference_ids: tuple[str, ...]
+    legal_hold: bool
+    created_at: str
+    updated_at: str
+    updated_by: str | None
+    updated_run_id: str
+    tombstone: RetentionTombstone | None = None
+
+    def __post_init__(self) -> None:
+        """Reject mutable, inconsistent, or resurrected retention representations."""
+        _require_identifier(self.context_id, "context_id")
+        _require_identifier(self.artifact_id, "artifact_id")
+        if not isinstance(self.identity, ExtractionIdentity):
+            raise ExtractionIdentityError("identity must be ExtractionIdentity")
+        if self.extraction_identity != self.identity.digest:
+            raise ExtractionIdentityError(
+                "extraction_identity does not match its exact components"
+            )
+        _require_sha256(self.artifact_sha256, "artifact_sha256")
+        _require_storage_key(self.artifact_storage_key)
+        _require_text(self.artifact_media_type, "artifact_media_type")
+        if not isinstance(self.state, ExtractionRetentionState):
+            raise ExtractionRetentionConflictError(
+                "state must be an ExtractionRetentionState"
+            )
+        _require_reference_ids(self.reference_ids)
+        if not isinstance(self.legal_hold, bool):
+            raise ExtractionRetentionConflictError("legal_hold must be boolean")
+        for name, value in (
+            ("created_at", self.created_at),
+            ("updated_at", self.updated_at),
+            ("updated_run_id", self.updated_run_id),
+        ):
+            _require_text(value, name)
+        if self.updated_by is not None:
+            _require_text(self.updated_by, "updated_by")
+        if self.tombstone is not None and not isinstance(
+            self.tombstone, RetentionTombstone
+        ):
+            raise ExtractionRetentionConflictError(
+                "tombstone must be a RetentionTombstone"
+            )
+        if self.state is ExtractionRetentionState.PURGED:
+            if self.tombstone is None or self.reference_ids or self.legal_hold:
+                raise ExtractionRetentionConflictError(
+                    "purged records require a tombstone and no hold or references"
+                )
+        elif self.tombstone is not None:
+            raise ExtractionRetentionConflictError(
+                "only purged records may contain a tombstone"
+            )
+
+    @property
+    def reusable(self) -> bool:
+        """Derive exact-reuse eligibility without treating legal hold as a block."""
+        return (
+            self.state is ExtractionRetentionState.VALIDATED
+            and self.tombstone is None
+        )
+
+    @property
+    def purge_reason(self) -> str | None:
+        """Apply the frozen purge-decision precedence and return its reason."""
+        if self.state is ExtractionRetentionState.PURGED:
+            return "already purged"
+        if self.legal_hold:
+            return "legal hold blocks purge"
+        if self.reference_ids:
+            return "active references remain"
+        if self.state is not ExtractionRetentionState.RETENTION_EXPIRED:
+            return "retention has not expired"
+        return None
+
+    @property
+    def purge_eligible(self) -> bool:
+        """Derive purge eligibility from current state rather than persisted input."""
+        return self.purge_reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionReuseResult:
+    """Return an exact reusable record or a bounded deterministic miss reason.
+
+    ``ExtractionRetentionService.acquire_reusable`` constructs this after atomic
+    reference acquisition and payload integrity verification. Callers use it to
+    decide whether parsing must proceed. It never contains payload bytes and does
+    not claim reuse for incomplete, expired, purged, or nonexact identities.
+    """
+
+    reused: bool
+    reference_id: str
+    record: ExtractionRetentionRecord | None
+    reason: str | None
+
+    def __post_init__(self) -> None:
+        """Keep successful and missed reuse outcomes internally unambiguous."""
+        _require_identifier(self.reference_id, "reference_id")
+        if self.record is not None and not isinstance(
+            self.record, ExtractionRetentionRecord
+        ):
+            raise ExtractionReuseError(
+                "reuse result record must be an ExtractionRetentionRecord"
+            )
+        if self.reused != (self.record is not None):
+            raise ExtractionReuseError("reuse result record and status disagree")
+        if self.reused and self.reason is not None:
+            raise ExtractionReuseError("successful reuse cannot contain a miss reason")
+        if not self.reused:
+            _require_text(self.reason, "reason")
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionPurgeCandidate:
+    """Capture one current metadata-only purge decision for Storage handoff.
+
+    Purge planning constructs candidates from validated retention records;
+    operators and Storage coordination consume IDs, logical keys, and hashes. The
+    candidate is advisory, immutable, and payload-free. ``eligible`` and ``reason``
+    must mirror the record's derived decision, but finalization always rechecks the
+    live catalog rather than trusting this snapshot.
+    """
+
+    artifact_id: str
+    extraction_identity: str
+    artifact_storage_key: str
+    artifact_sha256: str
+    eligible: bool
+    reason: str | None
+
+    def __post_init__(self) -> None:
+        """Reject forged or internally inconsistent advisory purge metadata.
+
+        Registry projection and direct callers converge here before a candidate
+        enters a plan. The pure validation checks stable IDs, exact hashes, logical
+        Storage key, boolean eligibility, and the required reason polarity. It
+        performs no policy lookup or I/O and raises typed T07 validation errors.
+        """
+        _require_identifier(self.artifact_id, "artifact_id")
+        _require_sha256(self.extraction_identity, "extraction_identity")
+        _require_storage_key(self.artifact_storage_key)
+        _require_sha256(self.artifact_sha256, "artifact_sha256")
+        if not isinstance(self.eligible, bool):
+            raise ExtractionPurgeBlockedError("candidate eligibility must be boolean")
+        if self.eligible and self.reason is not None:
+            raise ExtractionPurgeBlockedError(
+                "eligible candidate cannot contain a blocking reason"
+            )
+        if not self.eligible:
+            _require_text(self.reason, "reason")
+
+    @classmethod
+    def from_record(cls, record: ExtractionRetentionRecord) -> "ExtractionPurgeCandidate":
+        """Project one immutable record into a compact advisory decision.
+
+        Registry planning calls this pure constructor after loading current
+        metadata. It copies only logical identity/hash/key facts and derives both
+        eligibility and reason from the record, so callers cannot persist a second
+        writable policy truth. Invalid record input raises a typed T07 conflict.
+        """
+        if not isinstance(record, ExtractionRetentionRecord):
+            raise ExtractionRetentionConflictError(
+                "purge candidate source must be an ExtractionRetentionRecord"
+            )
+        return cls(
+            artifact_id=record.artifact_id,
+            extraction_identity=record.extraction_identity,
+            artifact_storage_key=record.artifact_storage_key,
+            artifact_sha256=record.artifact_sha256,
+            eligible=record.purge_eligible,
+            reason=record.purge_reason,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExtractionPurgePlan:
+    """Separate eligible and protected extraction metadata without deleting it.
+
+    ``ExtractionRetentionService.plan_purge`` constructs this deterministic
+    context-scoped snapshot for operators or a Storage-owned deletion boundary.
+    It contains logical keys and hashes only, performs no deletion, and has no
+    authority during finalization. Frozen tuples make concurrent readers safe.
+    """
+
+    plan_id: str
+    context_id: str
+    created_at: str
+    eligible: tuple[ExtractionPurgeCandidate, ...]
+    protected: tuple[ExtractionPurgeCandidate, ...]
+
+    def __post_init__(self) -> None:
+        """Require canonical candidate partition and stable bounded plan identity."""
+        _require_identifier(self.plan_id, "plan_id")
+        _require_identifier(self.context_id, "context_id")
+        _require_text(self.created_at, "created_at")
+        if not isinstance(self.eligible, tuple) or not isinstance(
+            self.protected, tuple
+        ):
+            raise ExtractionRetentionConflictError(
+                "purge candidate partitions must be immutable tuples"
+            )
+        candidates = (*self.eligible, *self.protected)
+        if any(not isinstance(item, ExtractionPurgeCandidate) for item in candidates):
+            raise ExtractionRetentionConflictError(
+                "purge plans may contain only ExtractionPurgeCandidate records"
+            )
+        if any(not item.eligible for item in self.eligible):
+            raise ExtractionPurgeBlockedError("eligible plan entries must be eligible")
+        if any(item.eligible for item in self.protected):
+            raise ExtractionPurgeBlockedError("protected plan entries must be blocked")
+        if tuple(item.artifact_id for item in self.eligible) != tuple(
+            sorted(item.artifact_id for item in self.eligible)
+        ) or tuple(item.artifact_id for item in self.protected) != tuple(
+            sorted(item.artifact_id for item in self.protected)
+        ):
+            raise ExtractionRetentionConflictError(
+                "purge candidate partitions must use stable artifact order"
+            )
+        ids = tuple(item.artifact_id for item in candidates)
+        if len(ids) != len(set(ids)):
+            raise ExtractionRetentionConflictError("purge plan repeats an artifact")
+
+
+def _canonical_identity_json(value: object) -> bytes:
+    """Encode deterministic compact JSON and reject non-finite or unsupported data."""
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ExtractionIdentityError(
+            "parser configuration must contain finite JSON-safe values"
+        ) from error
+
+
+def _identity_configuration(value: Mapping[str, object]) -> dict[str, object]:
+    """Validate a bounded configuration tree and exclude operational secrets.
+
+    ``ExtractionIdentity.from_configuration`` calls this untrusted-data boundary.
+    The recursive algorithm copies finite JSON values, counts every node, bounds
+    depth/collection/string sizes, and rejects secret or run-local keys before
+    canonical hashing. It retains no caller mapping, performs no I/O, and raises
+    ``ExtractionIdentityError`` instead of recursion or serialization failures.
+    """
+    if not isinstance(value, Mapping):
+        raise ExtractionIdentityError("parser_configuration must be a mapping")
+    item_count = 0
+
+    def normalize(item: object, path: tuple[str, ...]) -> object:
+        """Return a fresh JSON-safe tree without logging values at the trust boundary."""
+        nonlocal item_count
+        item_count += 1
+        if item_count > _MAX_CONFIGURATION_ITEMS:
+            raise ExtractionIdentityError(
+                "parser configuration contains too many values"
+            )
+        if len(path) > _MAX_CONFIGURATION_DEPTH:
+            raise ExtractionIdentityError("parser configuration is nested too deeply")
+        if item is None or isinstance(item, (bool, int)):
+            return item
+        if isinstance(item, str):
+            if len(item) > _MAX_CONFIGURATION_STRING:
+                raise ExtractionIdentityError(
+                    "parser configuration text is too large"
+                )
+            return item
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ExtractionIdentityError(
+                    "parser configuration numbers must be finite"
+                )
+            return item
+        if isinstance(item, Mapping):
+            if len(item) > _MAX_CONFIGURATION_COLLECTION:
+                raise ExtractionIdentityError(
+                    "parser configuration mapping is too large"
+                )
+            result: dict[str, object] = {}
+            for key, nested in item.items():
+                if not isinstance(key, str) or not key or len(key) > 128:
+                    raise ExtractionIdentityError(
+                        "parser configuration keys must be bounded strings"
+                    )
+                if key.casefold() in _FORBIDDEN_CONFIGURATION_KEYS:
+                    raise ExtractionIdentityError(
+                        "parser configuration contains forbidden operational data"
+                    )
+                result[key] = normalize(nested, (*path, key))
+            return result
+        if isinstance(item, (list, tuple)):
+            if len(item) > _MAX_CONFIGURATION_COLLECTION:
+                raise ExtractionIdentityError(
+                    "parser configuration sequence is too large"
+                )
+            return [normalize(nested, path) for nested in item]
+        raise ExtractionIdentityError(
+            "parser configuration must contain only JSON-safe values"
+        )
+
+    normalized = normalize(value, ())
+    assert isinstance(normalized, dict)
+    return normalized
+
+
+def _require_sha256(value: object, field_name: str) -> str:
+    """Require lowercase SHA-256 without echoing malformed values."""
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ExtractionIdentityError(f"{field_name} must be lowercase SHA-256")
+    return value
+
+
+def _require_identifier(value: object, field_name: str) -> str:
+    """Require one bounded portable identifier without local path semantics."""
+    if not isinstance(value, str) or _IDENTIFIER_RE.fullmatch(value) is None:
+        raise ExtractionIdentityError(f"{field_name} must be a bounded identifier")
+    return value
+
+
+def _require_text(value: object, field_name: str) -> str:
+    """Require bounded nonempty text while keeping diagnostics value-free."""
+    if not isinstance(value, str) or not value.strip() or len(value) > 512:
+        raise ExtractionIdentityError(f"{field_name} must be bounded nonempty text")
+    return value
+
+
+def _require_scope(value: object) -> str:
+    """Require a portable logical scope rather than an absolute or traversal path."""
+    scope = _require_text(value, "scope")
+    if (
+        scope.startswith(("/", "\\"))
+        or "\\" in scope
+        or any(part in {".", ".."} for part in scope.split("/"))
+        or (len(scope) >= 2 and scope[1] == ":")
+    ):
+        raise ExtractionIdentityError("scope must be logical, not a local path")
+    return scope
+
+
+def _require_storage_key(value: object) -> str:
+    """Require a relative logical Storage key without filesystem traversal."""
+    key = _require_text(value, "artifact_storage_key")
+    if key.startswith(("/", "\\")) or "\\" in key or any(
+        part in {"", ".", ".."} for part in key.split("/")
+    ):
+        raise ExtractionIdentityError(
+            "artifact_storage_key must be a relative logical key"
+        )
+    return key
+
+
+def _require_reference_ids(values: object) -> tuple[str, ...]:
+    """Require immutable, sorted, unique active-reference identities."""
+    if not isinstance(values, tuple):
+        raise ExtractionRetentionReferenceError(
+            "reference_ids must be an immutable tuple"
+        )
+    validated = tuple(_require_identifier(value, "reference_id") for value in values)
+    if validated != tuple(sorted(set(validated))):
+        raise ExtractionRetentionReferenceError(
+            "reference_ids must be sorted and unique"
+        )
+    return validated
 
 
 class IngestJobState(StrEnum):

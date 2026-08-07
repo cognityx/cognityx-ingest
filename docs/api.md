@@ -32,6 +32,10 @@ same implementation.
 
 ::: cognityx_ingest.segmentation_views
 
+::: cognityx_ingest.cleanup.ExtractionRetentionService
+
+::: cognityx_ingest.cleanup.collect_reference_ids
+
 ::: cognityx_ingest.enhancement
 
 ::: cognityx_ingest.enrichment

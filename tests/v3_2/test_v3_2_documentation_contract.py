@@ -11,12 +11,15 @@ import ast
 from pathlib import Path
 
 import cognityx_ingest.canonical_content as canonical_content
+import cognityx_ingest.cleanup as cleanup
+import cognityx_ingest.models as models
 import cognityx_ingest.native_artifacts as native_artifacts
 import cognityx_ingest.parser as parser
 import cognityx_ingest.parser_capabilities as parser_capabilities
 import cognityx_ingest.parser_fusion as parser_fusion
 import cognityx_ingest.parser_routing as parser_routing
 import cognityx_ingest.segmentation_views as segmentation_views
+import cognityx_ingest.source_assets as source_assets
 
 
 def _module_tree(module: object = native_artifacts) -> ast.Module:
@@ -260,6 +263,174 @@ def test_named_segmentation_algorithms_have_invariant_documentation() -> None:
 
     assert required <= set(callables)
     assert all(ast.get_docstring(callables[name]) for name in required)
+
+
+def test_t07_modified_modules_explain_purpose_flow_consumers_and_ownership() -> None:
+    """Require architectural context in every production module modified by T07."""
+    for module in (cleanup, models, source_assets):
+        module_docstring = " ".join(
+            (ast.get_docstring(_module_tree(module)) or "").lower().split()
+        )
+        assert len(module_docstring) >= 700, module.__name__
+        for concept in (
+            "purpose",
+            "storage",
+            "metadata",
+            "t07",
+            "payload",
+        ):
+            assert concept in module_docstring, (module.__name__, concept)
+
+
+def test_every_t07_record_and_service_has_a_substantial_docstring() -> None:
+    """Require new public records and orchestration to explain their consumers."""
+    required = {
+        "ExtractionRetentionError",
+        "ExtractionIdentityError",
+        "ExtractionRetentionConflictError",
+        "ExtractionRetentionReferenceError",
+        "ExtractionReuseError",
+        "ExtractionReuseIntegrityError",
+        "ExtractionPurgeBlockedError",
+        "ExtractionPurgeFinalizationError",
+        "ExtractionRetentionState",
+        "ExtractionIdentity",
+        "RetentionTombstone",
+        "ExtractionRetentionRecord",
+        "ExtractionReuseResult",
+        "ExtractionPurgeCandidate",
+        "ExtractionPurgePlan",
+    }
+    model_classes = {
+        node.name: node
+        for node in _module_tree(models).body
+        if isinstance(node, ast.ClassDef)
+    }
+    assert required <= set(model_classes)
+    assert all(len(ast.get_docstring(model_classes[name]) or "") >= 180 for name in required)
+
+    cleanup_classes = {
+        node.name: node
+        for node in _module_tree(cleanup).body
+        if isinstance(node, ast.ClassDef)
+    }
+    assert len(
+        ast.get_docstring(cleanup_classes["ExtractionRetentionService"]) or ""
+    ) >= 600
+
+
+def test_every_t07_callable_and_material_algorithm_has_a_docstring() -> None:
+    """Pin documentation to identity, transactions, trust, and purge rechecks."""
+    required_by_module = {
+        models: {
+            "from_configuration",
+            "digest",
+            "purge_reason",
+            "purge_eligible",
+            "_canonical_identity_json",
+            "_identity_configuration",
+            "_require_scope",
+            "_require_reference_ids",
+        },
+        cleanup: {
+            "register_extraction",
+            "acquire_reusable",
+            "add_reference",
+            "remove_reference",
+            "set_legal_hold",
+            "mark_retention_expired",
+            "plan_purge",
+            "finalize_purge",
+            "collect_reference_ids",
+            "_verified_descriptor",
+            "_assert_record_descriptor",
+            "_ordered_reference_ids",
+        },
+        source_assets: {
+            "register_extraction_record",
+            "get_extraction_record",
+            "find_reusable_extraction",
+            "acquire_reusable_extraction",
+            "add_extraction_reference",
+            "remove_extraction_reference",
+            "set_extraction_legal_hold",
+            "mark_extraction_retention_expired",
+            "list_extraction_records",
+            "list_extraction_purge_candidates",
+            "finalize_extraction_purge",
+            "_release_failed_reuse_acquisition",
+            "_retention_record_from_row",
+        },
+    }
+    for module, required in required_by_module.items():
+        functions = {
+            node.name: node
+            for node in ast.walk(_module_tree(module))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert required <= set(functions), module.__name__
+        assert all(ast.get_docstring(functions[name]) for name in required)
+
+    t07_model_classes = {
+        "ExtractionIdentity",
+        "RetentionTombstone",
+        "ExtractionRetentionRecord",
+        "ExtractionReuseResult",
+        "ExtractionPurgeCandidate",
+        "ExtractionPurgePlan",
+    }
+    for node in _module_tree(models).body:
+        if isinstance(node, ast.ClassDef) and node.name in t07_model_classes:
+            methods = [
+                item
+                for item in node.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ]
+            assert methods, node.name
+            assert all(ast.get_docstring(item) for item in methods), node.name
+
+
+def test_t07_developer_guide_explains_identity_policy_and_storage_boundary() -> None:
+    """Require plain-language guidance from complete identity through tombstone."""
+    guide = " ".join(
+        (
+            Path(__file__).parents[2]
+            / "docs"
+            / "extraction-reuse-retention-purge.md"
+        )
+        .read_text(encoding="utf-8")
+        .lower()
+        .split()
+    )
+    assert len(guide) >= 10_000
+    for concept in (
+        "background and purpose",
+        "where it fits",
+        "extraction identity",
+        "exactly six fields",
+        "incomplete identity",
+        "parser_configuration_hash",
+        "adapter and pipeline",
+        "exact reuse flow",
+        "active reference",
+        "nativebinding",
+        "validate_view_set",
+        "legal hold",
+        "retention-expired",
+        "purge eligibility algorithm",
+        "metadata only",
+        "storage-owned physical deletion",
+        "stale-plan revalidation",
+        "retentiontombstone",
+        "canonical `contentnode.content.text`",
+        "immutable t01 `nativeartifactdescriptor`",
+        "normal `ingestservice`",
+        "t08",
+        "dataforge",
+        "sdk",
+        "cli",
+    ):
+        assert concept in guide, concept
 
 
 def test_segmentation_developer_guide_explains_all_six_views_and_boundaries() -> None:
