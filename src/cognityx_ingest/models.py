@@ -12,12 +12,14 @@ retained parser output without storing the output itself. Its core approach is
 immutable typed records with explicit validation and dictionary projections.
 
 Compatibility is the governing design principle: v3.2's generalized source model
-lives separately in ``canonical_content`` and is exposed here only through an
-additive result key. The T07 records are also additive and do not alter normal
-ingest results. Application composition constructs them, the SourceAsset catalog
-persists their metadata, and retention/audit code consumes them. Storage still
-owns payload bytes and physical deletion. This module performs no parsing,
-persistence, network, provider, LLM, SDK, CLI, Source Graph, or DataForge work.
+lives separately in ``canonical_content`` and T08's text-free Source Graph and
+strong-address catalog live separately in ``source_graph``. This module exposes
+their Storage keys only as additive result fields. The T07 records are also
+additive and do not alter normal ingest results. Application composition
+constructs them, the SourceAsset catalog persists their metadata, and
+retention/audit code consumes them. Storage still owns payload bytes and physical
+deletion. This module performs no parsing, persistence, network, provider, LLM,
+SDK, CLI, Source Graph construction/resolution, or DataForge work.
 Ingest services, CLI adapters, DataForge integrations, and existing Python callers
 continue to use the established records below unchanged.
 """
@@ -1638,12 +1640,13 @@ class IngestResult:
     Responsibility:
         Keep the established document, evidence, manifest, provenance, parser, and
         usage results while exposing T02 canonical content plus T05 parser
-        observations and fusion decisions additively.
+        observations, fusion decisions, Source Graph, and strong-address catalog
+        additively.
     Constructed by:
         ``IngestService`` after all immutable document artifacts persist.
     Used by:
         Existing Python callers, run aggregation, usage accounting, and future
-        readers that opt into the v3.2 artifact.
+        readers that opt into v3.2 artifacts, including T09 DataForge handoff.
     Invariants:
         Existing positional constructor fields and artifact identities remain
         unchanged; every newly added field has a backward-compatible default.
@@ -1670,6 +1673,8 @@ class IngestResult:
     canonical_content_key: str = ""
     observation_artifact_key: str = ""
     fusion_artifact_key: str = ""
+    source_graph_key: str = ""
+    provenance_addresses_key: str = ""
 
 
 @dataclass(frozen=True, slots=True)

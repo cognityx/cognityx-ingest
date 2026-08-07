@@ -36,6 +36,8 @@ same implementation.
 
 ::: cognityx_ingest.segmentation_views
 
+::: cognityx_ingest.source_graph
+
 ::: cognityx_ingest.cleanup.ExtractionRetentionService
     options:
       show_source: false

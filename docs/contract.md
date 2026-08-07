@@ -1,5 +1,14 @@
 # Output contract
 
+## Where the contract fits
+
+Cognityx Ingest turns registered source bytes into durable parser-neutral content,
+source structure, and exact evidence references. It sits between SourceAsset
+registration and downstream work such as DataForge question generation. The
+[Source Graph and provenance-address contract](source-graph-and-provenance-addresses.md)
+adds a connected, text-free map and deterministic evidence lookup without
+changing the existing document, evidence, or provenance artifacts.
+
 Source bytes live once as immutable SourceAsset blobs. Generated artifact keys
 are relative to the supplied artifact storage scope.
 
@@ -8,6 +17,8 @@ are relative to the supplied artifact storage scope.
 | `document.json` | Versioned pages, blocks, sections, objects, relations and decisions |
 | `evidence.jsonl` | Evidence v2 with exact source anchors, page facts and SourceAsset lineage |
 | `canonical-content.json` | Additive v3.2 parser-neutral resources, structure, text nodes, selectors and bindings |
+| `source-graph.json` | Additive v3.2 connected source structure, ownership, explicit relations and revision |
+| `provenance-addresses.json` | Additive v3.2 generated strong evidence addresses; logical/evidence-set records require explicit intent |
 | `provenance.json` | Complete DataForge handoff without reopening the PDF |
 | `parser/{backend}.json` | Optional raw parser output for audit and comparison |
 | `parser/observations.json` | Additive v3.2 exact parser observations and source-region locations |

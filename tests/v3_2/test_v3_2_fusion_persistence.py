@@ -165,9 +165,11 @@ def test_manifest_provenance_and_usage_reference_fusion_additively(tmp_path: Pat
             result.manifest_key,
             result.provenance_key,
             result.canonical_content_key,
-            result.observation_artifact_key,
-            result.fusion_artifact_key,
-        )
+                result.observation_artifact_key,
+                result.fusion_artifact_key,
+                result.source_graph_key,
+                result.provenance_addresses_key,
+            )
     )
     assert result.usage.output_bytes == expected_bytes
 
