@@ -11,12 +11,32 @@ import pytest
 from cognityx_ingest import (
     GraphProjectionDescriptor,
     ProvenanceAddressResolver,
+    ProvenanceTarget,
     ResourceVersionMetadata,
     SourceGraph,
     SourceGraphBuilder,
     SourceGraphValidationError,
     build_strong_address_catalog,
 )
+
+
+def _catalog_with_address(catalog, address):
+    """Replace one generated strong address while preserving catalog identity."""
+    return replace(
+        catalog,
+        strong_addresses=tuple(
+            address if item.address_id == address.address_id else item
+            for item in catalog.strong_addresses
+        ),
+    )
+
+
+def _resolve_replaced_address(graph, catalog, address):
+    """Resolve one deliberately changed address through the production resolver."""
+    return ProvenanceAddressResolver(
+        graph,
+        _catalog_with_address(catalog, address),
+    ).resolve(address.address_id)
 
 
 def test_production_graph_reuses_complete_canonical_ids_without_text(
@@ -115,6 +135,81 @@ def test_generated_catalog_contains_only_resolvable_strong_addresses(
         for item in catalog.strong_addresses
     )
     assert catalog.to_json_bytes() == catalog.to_json_bytes()
+
+
+def test_production_selector_without_id_must_match_graph_facts_exactly(
+    frozen_canonical_artifact,
+) -> None:
+    """Accept an omitted ID only when every remaining locator fact is graph-provable."""
+    graph = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    catalog = build_strong_address_catalog(graph, (frozen_canonical_artifact,))
+    address = next(item for item in catalog.strong_addresses if item.selectors)
+    without_ids = replace(
+        address,
+        selectors=tuple(replace(item, selector_id=None) for item in address.selectors),
+    )
+
+    assert ProvenanceAddressResolver(graph, catalog).resolve(address.address_id).status == "exact"
+    assert _resolve_replaced_address(graph, catalog, without_ids).status == "exact"
+
+
+@pytest.mark.parametrize("changed_fact", ("char_start", "source_path"))
+def test_production_selector_without_id_rejects_changed_locator_fact(
+    frozen_canonical_artifact,
+    changed_fact,
+) -> None:
+    """Return unresolved when an ID-less range or logical path lacks exact graph proof."""
+    graph = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    catalog = build_strong_address_catalog(graph, (frozen_canonical_artifact,))
+    address = next(item for item in catalog.strong_addresses if item.selectors)
+    selector = address.selectors[0]
+    if changed_fact == "char_start":
+        assert selector.char_start is not None and selector.char_end is not None
+        assert selector.char_start < selector.char_end
+        changed = replace(selector, selector_id=None, char_start=selector.char_start + 1)
+    else:
+        changed = replace(selector, selector_id=None, source_path="changed/source.md")
+    altered = replace(address, selectors=(changed, *address.selectors[1:]))
+
+    assert _resolve_replaced_address(graph, catalog, altered).status == "unresolved"
+
+
+def test_production_selector_id_with_changed_facts_is_unresolved(
+    frozen_canonical_artifact,
+) -> None:
+    """Keep selector identity insufficient when its represented facts are altered."""
+    graph = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    catalog = build_strong_address_catalog(graph, (frozen_canonical_artifact,))
+    address = next(item for item in catalog.strong_addresses if item.selectors)
+    selector = address.selectors[0]
+    assert selector.char_start is not None and selector.char_end is not None
+    assert selector.char_start < selector.char_end
+    altered = replace(
+        address,
+        selectors=(
+            replace(selector, char_start=selector.char_start + 1),
+            *address.selectors[1:],
+        ),
+    )
+
+    assert _resolve_replaced_address(graph, catalog, altered).status == "unresolved"
+
+
+def test_selector_owned_by_another_resource_is_unresolved(
+    frozen_canonical_artifact,
+) -> None:
+    """Reject a real graph selector when it belongs to a different source resource."""
+    graph = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    catalog = build_strong_address_catalog(graph, (frozen_canonical_artifact,))
+    address = next(item for item in catalog.strong_addresses if item.selectors)
+    foreign = next(
+        item
+        for item in catalog.strong_addresses
+        if item.resource_id != address.resource_id and item.selectors
+    )
+    altered = replace(address, selectors=foreign.selectors)
+
+    assert _resolve_replaced_address(graph, catalog, altered).status == "unresolved"
 
 
 def test_graph_projection_descriptor_is_lineage_only() -> None:

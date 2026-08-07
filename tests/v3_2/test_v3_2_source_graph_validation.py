@@ -9,11 +9,18 @@ import json
 import pytest
 
 from cognityx_ingest import (
+    ProvenanceTarget,
     SourceGraph,
+    SourceGraphBuilder,
     SourceGraphReferenceError,
     SourceGraphRepository,
     SourceGraphRevisionError,
     SourceGraphValidationError,
+)
+from cognityx_ingest.source_graph import (
+    SourceGraphRepresentation,
+    _graph_subject_resource_id,
+    _validate_graph_records,
 )
 
 
@@ -126,3 +133,84 @@ def test_repository_missing_revision_fails_typed(v3_2_fixture_root) -> None:
     repository = SourceGraphRepository.from_fixture(v3_2_fixture_root)
     with pytest.raises(SourceGraphRevisionError, match="Unknown"):
         repository.load("sg-missing")
+
+
+def _representation(representation_id: str, subject_id: str) -> SourceGraphRepresentation:
+    """Create one payload-free representation record for subject-chain tests."""
+    return SourceGraphRepresentation(
+        representation_id=representation_id,
+        subject_id=subject_id,
+        representation_type="test-view",
+        artifact_id=None,
+        selector_ids=(),
+        caption_node_id=None,
+    )
+
+
+def test_representation_self_cycle_fails_typed_without_recursion(
+    frozen_canonical_artifact,
+) -> None:
+    """Reject A-to-A both at graph validation and defensive subject traversal."""
+    base = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    graph = replace(
+        base,
+        representations=(_representation("rep-a", "rep-a"),),
+        address_catalog=None,
+    )
+
+    with pytest.raises(SourceGraphValidationError, match="cycle"):
+        graph.validate()
+    indexes = _validate_graph_records(graph)
+    with pytest.raises(SourceGraphValidationError, match="cycle"):
+        _graph_subject_resource_id("rep-a", indexes)
+    with pytest.raises(SourceGraphValidationError, match="cycle"):
+        graph.target_resource_id(ProvenanceTarget(representation_id="rep-a"))
+
+
+def test_persisted_representation_multi_record_cycle_fails_before_use(
+    frozen_canonical_artifact,
+) -> None:
+    """Reject persisted A-to-B-to-A lineage at the strict production JSON reader."""
+    base = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    terminal = base.content_nodes[0].node_id
+    valid = replace(
+        base,
+        representations=(
+            _representation("rep-a", "rep-b"),
+            _representation("rep-b", terminal),
+        ),
+        address_catalog=None,
+    )
+    value = valid.to_dict()
+    value["representations"][1]["subject_id"] = "rep-a"
+
+    with pytest.raises(SourceGraphValidationError, match="cycle"):
+        SourceGraph.from_json_bytes(json.dumps(value).encode())
+
+
+@pytest.mark.parametrize("terminal_kind", ("node", "division"))
+def test_nested_representation_chain_resolves_terminal_resource_deterministically(
+    frozen_canonical_artifact,
+    terminal_kind,
+) -> None:
+    """Allow acyclic A-to-B chains ending at canonical nodes or divisions."""
+    base = SourceGraphBuilder().build((frozen_canonical_artifact,))
+    if terminal_kind == "node":
+        terminal_id = base.content_nodes[0].node_id
+        expected_resource_id = base.content_nodes[0].resource_id
+    else:
+        terminal_id = base.divisions[0].division_id
+        expected_resource_id = base.divisions[0].resource_id
+    graph = replace(
+        base,
+        representations=(
+            _representation("rep-a", "rep-b"),
+            _representation("rep-b", terminal_id),
+        ),
+        address_catalog=None,
+    )
+    target = ProvenanceTarget(representation_id="rep-a")
+
+    graph.validate()
+    assert graph.target_resource_id(target) == expected_resource_id
+    assert graph.target_resource_id(target) == expected_resource_id

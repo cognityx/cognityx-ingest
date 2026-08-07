@@ -4,10 +4,15 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from cognityx_ingest import (
+    AddressResolution,
     PROVENANCE_RESOLUTION_STATUSES,
     ProvenanceAddressCatalog,
     ProvenanceAddressResolver,
+    ProvenanceAddressValidationError,
+    ProvenanceTarget,
     SourceGraphRepository,
 )
 from cognityx_ingest.source_graph import SourceGraphDivision, SourceGraphResource
@@ -57,6 +62,25 @@ def test_all_frozen_strong_addresses_resolve_exact(v3_2_fixture_root) -> None:
         "exact",
         "div-authority-2.1",
     )
+
+
+def test_compact_frozen_selector_compatibility_remains_exact(v3_2_fixture_root) -> None:
+    """Keep the frozen selector without ID and division address without selectors exact."""
+    graph, catalog = _fixture(v3_2_fixture_root)
+    p2 = next(
+        item for item in catalog.strong_addresses if item.address_id == "addr-strong-pol-p2"
+    )
+    authority = next(
+        item
+        for item in catalog.strong_addresses
+        if item.address_id == "addr-strong-auth-21"
+    )
+
+    assert p2.selectors and all(item.selector_id is None for item in p2.selectors)
+    assert authority.selectors == ()
+    resolver = ProvenanceAddressResolver(graph, catalog)
+    assert resolver.resolve(p2.address_id).status == "exact"
+    assert resolver.resolve(authority.address_id).status == "exact"
 
 
 def test_logical_unique_candidate_redirects_and_multiple_candidates_are_ambiguous(
@@ -247,3 +271,113 @@ def test_every_exact_resolver_status_is_exercised(v3_2_fixture_root) -> None:
         .status
     )
     assert results == set(PROVENANCE_RESOLUTION_STATUSES)
+
+
+def test_valid_direct_resolution_shapes_include_ordered_evidence_exact() -> None:
+    """Accept each target-bearing form and preserve evidence member target order."""
+    first_target = ProvenanceTarget(node_id="node-a")
+    second_target = ProvenanceTarget(division_id="division-b")
+    first = AddressResolution("member-a", "exact", target=first_target)
+    second = AddressResolution("member-b", "exact", target=second_target)
+
+    AddressResolution("single", "exact", target=first_target).validate()
+    AddressResolution("logical", "redirected", target=second_target).validate()
+    AddressResolution(
+        "evidence",
+        "exact",
+        targets=(first_target, second_target),
+        member_resolutions=(first, second),
+    ).validate()
+
+
+@pytest.mark.parametrize(
+    "resolution",
+    (
+        AddressResolution(
+            "ambiguous-target",
+            "ambiguous",
+            target=ProvenanceTarget(node_id="node-a"),
+        ),
+        AddressResolution("redirect-missing", "redirected"),
+        AddressResolution(
+            "redirect-candidate",
+            "redirected",
+            target=ProvenanceTarget(node_id="node-a"),
+            candidate_targets=(ProvenanceTarget(node_id="node-b"),),
+        ),
+        AddressResolution(
+            "forbidden-member",
+            "forbidden",
+            member_resolutions=(
+                AddressResolution(
+                    "member-a",
+                    "exact",
+                    target=ProvenanceTarget(node_id="node-a"),
+                ),
+            ),
+        ),
+        AddressResolution("exact-empty", "exact"),
+        AddressResolution(
+            "exact-both",
+            "exact",
+            target=ProvenanceTarget(node_id="node-a"),
+            targets=(ProvenanceTarget(node_id="node-b"),),
+        ),
+        AddressResolution(
+            "unresolved-candidate",
+            "unresolved",
+            candidate_targets=(ProvenanceTarget(node_id="node-a"),),
+        ),
+        AddressResolution(
+            "long-revision",
+            "unresolved",
+            graph_revision="g" * 4_097,
+        ),
+    ),
+)
+def test_direct_resolution_rejects_contradictory_status_shapes(resolution) -> None:
+    """Reject accepted, candidate, member, empty, and unbounded invalid combinations."""
+    with pytest.raises(ProvenanceAddressValidationError):
+        resolution.validate()
+
+
+def test_evidence_exact_requires_member_order_and_unique_targets() -> None:
+    """Reject reordered or duplicate collected targets in an exact evidence set."""
+    first_target = ProvenanceTarget(node_id="node-a")
+    second_target = ProvenanceTarget(node_id="node-b")
+    members = (
+        AddressResolution("member-a", "exact", target=first_target),
+        AddressResolution("member-b", "exact", target=second_target),
+    )
+
+    with pytest.raises(ProvenanceAddressValidationError, match="ordered exact"):
+        AddressResolution(
+            "reordered",
+            "exact",
+            targets=(second_target, first_target),
+            member_resolutions=members,
+        ).validate()
+    with pytest.raises(ProvenanceAddressValidationError, match="unique"):
+        AddressResolution(
+            "duplicates",
+            "exact",
+            targets=(first_target, first_target),
+            member_resolutions=(members[0], members[0]),
+        ).validate()
+
+
+def test_parent_resolution_recursively_rejects_malformed_member() -> None:
+    """Apply status-shape validation recursively to retained evidence explanations."""
+    malformed = AddressResolution(
+        "malformed-member",
+        "ambiguous",
+        target=ProvenanceTarget(node_id="protected-node"),
+    )
+    parent = AddressResolution(
+        "incomplete-evidence",
+        "unresolved",
+        member_resolutions=(malformed,),
+    )
+
+    with pytest.raises(ProvenanceAddressValidationError, match="Ambiguous"):
+        parent.validate()

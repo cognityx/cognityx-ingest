@@ -465,7 +465,8 @@ class SourceGraphRepresentation:
     Main algorithm:
         Reuse canonical subject, selector, caption, and artifact references.
     Invariants:
-        Every referenced canonical ID exists in the complete production graph.
+        Every referenced canonical ID exists in the complete production graph,
+        and representation-to-representation subject lineage is acyclic.
     Lifecycle and persistence:
         Immutable metadata may outlive independently retained parser artifacts.
     Side effects and typed failures:
@@ -962,10 +963,11 @@ class AddressResolution:
     Used by:
         Audit clients, DataForge handoff, and future SDK/CLI adapters.
     Main algorithm:
-        Represent success or conservative failure; never synthesize a target.
+        Validate one closed shape per status, recursively validate any evidence-set
+        explanation, and never synthesize or leak a target.
     Invariants:
-        Status is exact vocabulary; forbidden has no target/candidates; source
-        text is absent; exact/redirected targets must have been graph-validated.
+        Status is exact vocabulary; accepted, candidate, and member fields cannot
+        contradict it; forbidden has no details; source text is structurally absent.
     Lifecycle and persistence:
         Transient immutable response; authoritative support remains the address.
     Side effects and typed failures:
@@ -984,22 +986,96 @@ class AddressResolution:
     graph_revision: str | None = None
 
     def validate(self) -> None:
-        """Validate result vocabulary and no-leak/no-invention shape.
+        """Validate the closed result shape before it crosses the public API.
 
-        Resolver tests and adapters may call this pure, repeatable check before
-        exposing a response. It validates targets and forbids target detail on a
-        denied result. It performs no I/O and raises typed address validation
-        failures for invalid manually constructed results.
+        The resolver, future T09/T10 consumers, and direct constructors call this
+        trust-boundary check. The algorithm validates bounded metadata and targets,
+        recursively validates evidence members, rejects duplicate collected target
+        identities, and applies the exact field shape for each of the six statuses.
+        It performs no I/O or mutation, is deterministic and thread-safe for frozen
+        records, and raises ``ProvenanceAddressValidationError`` rather than
+        exposing contradictory accepted, candidate, or protected target details.
         """
         _require_address_text(self.address_id, "address_id")
         if self.status not in PROVENANCE_RESOLUTION_STATUSES:
             raise ProvenanceAddressValidationError(
                 "Address resolution status is unsupported"
             )
+        if self.reason:
+            _require_address_text(self.reason, "resolution reason")
+        if self.graph_revision is not None:
+            _require_address_text(self.graph_revision, "graph_revision")
         if self.target is not None:
             self.target.validate()
         for item in (*self.targets, *self.candidate_targets):
             item.validate()
+        for item in self.member_resolutions:
+            item.validate()
+        _require_unique(
+            tuple(item.target_id for item in self.targets),
+            "resolution target identities",
+            ProvenanceAddressValidationError,
+        )
+        _require_unique(
+            tuple(item.target_id for item in self.candidate_targets),
+            "resolution candidate target identities",
+            ProvenanceAddressValidationError,
+        )
+
+        if self.status == "exact":
+            if self.candidate_targets:
+                raise ProvenanceAddressValidationError(
+                    "Exact resolution cannot expose candidate targets"
+                )
+            if self.target is not None:
+                if self.targets:
+                    raise ProvenanceAddressValidationError(
+                        "One-address exact resolution cannot expose target collections"
+                    )
+                if any(item.status != "exact" for item in self.member_resolutions):
+                    raise ProvenanceAddressValidationError(
+                        "Exact resolution cannot contain non-exact members"
+                    )
+                return
+            if not self.targets or not self.member_resolutions:
+                raise ProvenanceAddressValidationError(
+                    "Evidence-set exact resolution requires targets and members"
+                )
+            if len(self.targets) != len(self.member_resolutions) or any(
+                item.status != "exact" or item.target != target
+                for target, item in zip(self.targets, self.member_resolutions)
+            ):
+                raise ProvenanceAddressValidationError(
+                    "Evidence-set exact targets must match ordered exact members"
+                )
+            return
+
+        if self.status == "redirected":
+            if (
+                self.target is None
+                or self.targets
+                or self.candidate_targets
+                or self.member_resolutions
+            ):
+                raise ProvenanceAddressValidationError(
+                    "Redirected resolution requires exactly one accepted target"
+                )
+            return
+
+        if self.status == "ambiguous":
+            if self.target is not None or self.targets:
+                raise ProvenanceAddressValidationError(
+                    "Ambiguous resolution cannot expose an accepted target"
+                )
+            if any(
+                item.target is not None or item.targets
+                for item in self.member_resolutions
+            ):
+                raise ProvenanceAddressValidationError(
+                    "Ambiguous member explanation cannot expose accepted targets"
+                )
+            return
+
         if self.status == "forbidden" and (
             self.target is not None
             or self.targets
@@ -1009,9 +1085,11 @@ class AddressResolution:
             raise ProvenanceAddressValidationError(
                 "Forbidden resolution cannot expose target details"
             )
-        if self.status in {"unresolved", "obsolete"} and self.target is not None:
+        if self.status in {"unresolved", "obsolete"} and (
+            self.target is not None or self.targets or self.candidate_targets
+        ):
             raise ProvenanceAddressValidationError(
-                "Non-resolving status cannot expose an accepted target"
+                "Non-resolving status cannot expose target details"
             )
 
 
@@ -1197,8 +1275,9 @@ class SourceGraph:
         Build local indexes, validate hierarchy/ownership/relations, and serialize
         either the exact compact form or the complete production form.
     Invariants:
-        IDs are unique, links resolve, hierarchy is acyclic, node ownership is
-        singular, unsafe relations are non-gold, and canonical text is absent.
+        IDs are unique, links resolve, division and representation lineage is
+        acyclic, node ownership is singular, unsafe relations are non-gold, and
+        canonical text is absent.
     Lifecycle and persistence:
         One frozen instance represents one immutable content-bound revision.
     Side effects and typed failures:
@@ -1230,9 +1309,10 @@ class SourceGraph:
         Builders, readers, traversal, and resolver composition call this before
         use. The algorithm validates scalar shapes, builds unique local indexes,
         proves parent/child reciprocity and acyclicity, assigns every direct node
-        once, validates complete production references, and checks edge targets
-        and epistemic/gold consistency. It is pure/idempotent and raises bounded
-        validation/reference errors without source text.
+        once, validates complete production references and acyclic representation
+        subjects, and checks edge targets and epistemic/gold consistency. It is
+        pure/idempotent and raises bounded validation/reference errors without
+        source text or unbounded recursive traversal.
         """
         if self.schema != SOURCE_GRAPH_SCHEMA:
             raise SourceGraphValidationError(
@@ -1403,81 +1483,22 @@ class SourceGraph:
         """Resolve a canonical target to its owning resource without payload access.
 
         The address resolver calls this after target shape validation. The
-        algorithm follows node ownership, division membership, or representation
-        subject membership using local records only. It returns ``None`` for an
-        unknown target, is idempotent/read-only, and never opens source or parser
-        bytes; malformed graph data raises typed graph failures.
+        algorithm follows node ownership, division membership, or an acyclic
+        representation subject chain using an explicit visited set and local
+        records only. It returns ``None`` for an unknown target, is deterministic,
+        idempotent/read-only, and never opens source or parser bytes. Malformed
+        in-memory cycles raise typed graph validation errors, never
+        ``RecursionError``; frozen graph state is safe for concurrent readers.
         """
         target.validate()
         self.validate()
-        division_by_id = {item.division_id: item for item in self.divisions}
-        node_owner = {
-            node_id: division.resource_id
-            for division in self.divisions
-            for node_id in division.direct_node_ids
-        }
-        production_nodes = {
-            item.node_id: item.resource_id for item in self.content_nodes
-        }
+        indexes = _validate_graph_records(self)
         if target.node_id is not None:
-            return production_nodes.get(target.node_id) or node_owner.get(target.node_id)
+            return indexes.node_resources.get(target.node_id)
         if target.division_id is not None:
-            division = division_by_id.get(target.division_id)
+            division = indexes.divisions.get(target.division_id)
             return division.resource_id if division is not None else None
-        representation = next(
-            (
-                item
-                for item in self.representations
-                if item.representation_id == target.representation_id
-            ),
-            None,
-        )
-        if representation is None:
-            return None
-        resource = next(
-            (
-                item
-                for item in self.resources
-                if item.resource_id == representation.subject_id
-            ),
-            None,
-        )
-        if resource is not None:
-            return resource.resource_id
-        presentation = next(
-            (
-                item
-                for item in self.presentation_units
-                if item.presentation_unit_id == representation.subject_id
-            ),
-            None,
-        )
-        if presentation is not None:
-            return presentation.resource_id
-        subject = ProvenanceTarget(
-            node_id=(
-                representation.subject_id
-                if representation.subject_id in production_nodes
-                else None
-            ),
-            division_id=(
-                representation.subject_id
-                if representation.subject_id in division_by_id
-                else None
-            ),
-            representation_id=(
-                representation.subject_id
-                if any(
-                    item.representation_id == representation.subject_id
-                    for item in self.representations
-                )
-                else None
-            ),
-        )
-        try:
-            return self.target_resource_id(subject)
-        except ProvenanceAddressValidationError:
-            return None
+        return _graph_subject_resource_id(target.representation_id or "", indexes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2181,11 +2202,18 @@ class ProvenanceAddressResolver:
                     reason="Access policy denied all logical candidates",
                     graph_revision=self.graph.graph_revision,
                 )
+            if len(resources) > 1:
+                return _resolution(
+                    address.address_id,
+                    "ambiguous",
+                    candidate_targets=candidates,
+                    reason="Version policy did not prove one candidate",
+                    graph_revision=self.graph.graph_revision,
+                )
             return _resolution(
                 address.address_id,
-                "ambiguous" if len(resources) > 1 else "unresolved",
-                candidate_targets=candidates,
-                reason="Version policy did not prove one candidate",
+                "unresolved",
+                reason="Version policy did not accept the sole candidate",
                 graph_revision=self.graph.graph_revision,
             )
         if selected in self.obsolete_resource_ids or address.address_id in self.obsolete_address_ids:
@@ -2592,8 +2620,11 @@ def _validate_graph_production_facts(
 
     ``SourceGraph.validate`` calls this for both forms; compact graphs naturally
     have empty production tuples. It proves node/resource/owner/selector agreement,
-    representation support, native bindings, activities, and artifact references.
-    The algorithm is pure and does not dereference URIs or native pointers.
+    representation support and acyclic subject lineage, native bindings,
+    activities, and artifact references. The algorithm is deterministic and pure,
+    uses bounded iterative subject walks, and does not dereference URIs, native
+    pointers, source bytes, or parser payloads. Typed validation/reference failures
+    protect every later traversal and address-resolution consumer.
     """
     for selector in graph.selectors:
         if selector.resource_id not in indexes.resources:
@@ -2629,6 +2660,7 @@ def _validate_graph_production_facts(
         *indexes.node_resources,
         *indexes.representations,
     }
+    _validate_representation_subject_cycles(indexes)
     for item in graph.representations:
         if item.subject_id not in subject_ids:
             raise SourceGraphReferenceError(
@@ -2733,25 +2765,63 @@ def _graph_subject_resource_id(
 ) -> str | None:
     """Resolve a production representation subject to resource metadata only.
 
-    Representation validation uses this pure helper after subject existence is
-    proven. It follows resource, presentation, division, node, or representation
-    references without opening payloads. Recursive representation subjects are
-    bounded by aggregate reference validation; an unknown subject returns None.
+    Representation validation and ``SourceGraph.target_resource_id`` call this
+    trust-boundary helper after indexing immutable graph records. It follows
+    resource, presentation, division, node, or representation references with an
+    explicit visited set. The bounded iterative walk performs no I/O or mutation,
+    returns ``None`` for an unknown terminal, and raises
+    ``SourceGraphValidationError`` for a malformed cycle rather than relying on a
+    Python recursion limit. Local indexes make deterministic concurrent reads safe.
     """
-    if subject_id in indexes.resources:
-        return subject_id
-    presentation = indexes.presentations.get(subject_id)
-    if presentation is not None:
-        return presentation.resource_id
-    division = indexes.divisions.get(subject_id)
-    if division is not None:
-        return division.resource_id
-    if subject_id in indexes.node_resources:
-        return indexes.node_resources[subject_id]
-    representation = indexes.representations.get(subject_id)
-    if representation is not None and representation.subject_id != subject_id:
-        return _graph_subject_resource_id(representation.subject_id, indexes)
-    return None
+    current = subject_id
+    visited: set[str] = set()
+    while True:
+        if current in visited:
+            raise SourceGraphValidationError(
+                f"Representation subject lineage contains a cycle: {current}"
+            )
+        visited.add(current)
+        if current in indexes.resources:
+            return current
+        presentation = indexes.presentations.get(current)
+        if presentation is not None:
+            return presentation.resource_id
+        division = indexes.divisions.get(current)
+        if division is not None:
+            return division.resource_id
+        if current in indexes.node_resources:
+            return indexes.node_resources[current]
+        representation = indexes.representations.get(current)
+        if representation is None:
+            return None
+        current = representation.subject_id
+
+
+def _validate_representation_subject_cycles(indexes: _GraphIndexes) -> None:
+    """Reject every self or multi-record representation subject cycle.
+
+    ``SourceGraph.validate`` reaches this helper before representations can be
+    traversed or used by the provenance resolver. For each representation, the
+    algorithm follows only representation-to-representation subjects, records a
+    local path, and stops at a non-representation terminal or a previously proven
+    chain. It performs no I/O or graph mutation, is deterministic for immutable
+    indexes, and raises ``SourceGraphValidationError`` with a bounded ID instead
+    of allowing ``RecursionError`` to cross the persisted-data trust boundary.
+    """
+    proven: set[str] = set()
+    for representation_id in indexes.representations:
+        current = representation_id
+        path: set[str] = set()
+        while current in indexes.representations:
+            if current in path:
+                raise SourceGraphValidationError(
+                    f"Representation subject lineage contains a cycle: {current}"
+                )
+            if current in proven:
+                break
+            path.add(current)
+            current = indexes.representations[current].subject_id
+        proven.update(path)
 
 
 def _validate_graph_relations(graph: SourceGraph, indexes: _GraphIndexes) -> None:
@@ -2979,16 +3049,29 @@ def _address_selectors_match_graph(
     """Cross-check production selector IDs/facts while allowing compact fixtures.
 
     Strong resolution calls this after target/resource validation. Compact graphs
-    intentionally lack selector records, so already-validated frozen selectors
-    pass. Production selectors carrying an ID must match the graph record's
-    resource and all represented locator facts. No source is opened and failure
-    returns ``False`` rather than inventing a fallback.
+    intentionally lack selector records, so their structurally validated frozen
+    compatibility selectors pass unchanged. In a complete production graph, an
+    ID-bearing selector must name the addressed resource and equal its graph
+    record; a selector without an ID must equal every represented locator fact of
+    at least one selector on that resource after only the absent ID is ignored.
+    The deterministic scan performs no source, filesystem, parser, or network I/O,
+    mutates nothing, invents no ID, and returns ``False`` on proof failure.
     """
     if graph.compact_fixture:
         return True
     by_id = {item.selector_id: item for item in graph.selectors}
     for selector in address.selectors:
         if selector.selector_id is None:
+            if not any(
+                replace(
+                    _address_selector_from_graph(graph_selector),
+                    selector_id=None,
+                )
+                == selector
+                for graph_selector in graph.selectors
+                if graph_selector.resource_id == address.resource_id
+            ):
+                return False
             continue
         graph_selector = by_id.get(selector.selector_id)
         if graph_selector is None or graph_selector.resource_id != address.resource_id:

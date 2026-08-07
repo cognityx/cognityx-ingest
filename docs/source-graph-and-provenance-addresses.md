@@ -71,6 +71,19 @@ location in a retained parser artifact. The binding metadata can survive after
 the parser payload is purged, although the old native pointer cannot then open
 the deleted payload.
 
+### Representation lineage is acyclic
+
+A representation can describe a view of another representation. For example, a
+cropped figure can point to the full-page image that it came from, and that image
+can point to its canonical page or section. This chain is representation
+lineage: a trace of which source object each later view represents.
+
+The chain must always finish at a supported canonical subject. It cannot point
+back to itself or form a loop through several records. Ingest checks every chain
+with a bounded visited set while validating the Source Graph. A cycle in
+persisted JSON therefore fails with a typed graph error before traversal or
+address resolution, rather than eventually failing with Python recursion.
+
 ### Explicit relations
 
 A relation keeps its source, optional accepted target, type, status, epistemic
@@ -121,6 +134,21 @@ canonical target, and selector set. It is suitable for audit and exact support.
 
 A strong address never redirects to a newer policy. A mismatched or explicitly
 superseded immutable context is obsolete.
+
+In a complete production graph, each supplied selector must be provable from a
+selector record belonging to the addressed resource. If the address supplies a
+`selector_id`, both the ID and every locator fact must match. If it omits the ID,
+the complete remaining facts, such as logical path, character range, page,
+rectangle, and source-anchor IDs, must exactly match one graph selector. Ingest
+does not invent an ID, rewrite the address, or open source or parser bytes to make
+a near match succeed.
+
+The compact frozen fixture predates complete production selector records. Its
+selectors are a compatibility form: Ingest validates their safe structure, but
+does not treat them as production trust evidence. This deliberate exception
+keeps the frozen examples byte-identical. A strong address with no selectors can
+still be exact when its source hash, graph revision, resource, and target all
+match.
 
 ### Logical address
 
@@ -178,6 +206,23 @@ The resolver returns exactly six outcomes:
 No failure becomes fabricated evidence. A forbidden result contains no protected
 target IDs, selectors, or candidate details.
 
+### Result shapes are closed
+
+An `AddressResolution` cannot mix fields that tell conflicting stories. A
+one-address `exact` result has one target. An evidence-set `exact` result has an
+ordered target collection and matching ordered exact member results. A
+`redirected` result has exactly one target, while an `ambiguous` result has no
+accepted target and may list candidates. `obsolete` and `unresolved` results have
+no target or candidate collection, although they may retain safe member results
+to explain an incomplete evidence set. A `forbidden` result has no target,
+candidate, or member detail at all.
+
+Validation applies these rules recursively to member results, rejects duplicate
+target identities, and bounds the graph revision and explanation text. This
+closed status shape prevents a future consumer from accidentally treating a
+candidate or a partially resolved member as accepted support. The no-leak rule
+for `forbidden` remains strongest: even an explanatory member result is removed.
+
 ## Parser-payload purge independence
 
 Resolution reads the canonical Source Graph, address catalog, hashes, selectors,
@@ -197,3 +242,9 @@ T09 will consume these records for paragraph Q/A and cross-section or
 cross-document Knowledge Unit handoff. T10 may add SDK and CLI read surfaces.
 T08 does not change current CLI commands, the Python composition root, or the
 meaning of the existing `provenance.json` artifact.
+
+T09's consumer trust boundary begins only after Source Graph validation and
+address-result validation succeed. DataForge may trust an `exact` ordered closure
+as support, but it must never promote an `ambiguous`, `obsolete`, `forbidden`, or
+`unresolved` explanation to gold evidence. T08 supplies that validated evidence
+boundary; it does not implement the T09 handoff itself.
