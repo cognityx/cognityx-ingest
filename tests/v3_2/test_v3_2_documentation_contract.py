@@ -401,7 +401,7 @@ def test_registry_bound_public_methods_document_executable_trust_boundary() -> N
 def test_parser_fusion_module_has_substantial_architectural_docstring() -> None:
     """Require the complete T04-to-T06 decision boundary and consumer guidance."""
     module_docstring = ast.get_docstring(_module_tree(parser_fusion)) or ""
-    normalized = module_docstring.lower()
+    normalized = " ".join(module_docstring.lower().split())
     assert len(module_docstring) >= 3_000
     for concept in (
         "purpose",
@@ -425,6 +425,12 @@ def test_parser_fusion_module_has_substantial_architectural_docstring() -> None:
         "fusion-decisions.json",
         "sha-256",
         "source-region",
+        "page, block, object, relation, section, or generic",
+        "cross-kind geometry",
+        "relation source endpoints are facts, not relation-record identities",
+        "reciprocal and unique",
+        "unused policy is rejected",
+        "known geometry must match exactly",
         "superseded",
         "fact-family",
         "replays",
@@ -488,6 +494,10 @@ def test_named_parser_fusion_algorithms_have_invariant_documentation() -> None:
         "_bbox_iou",
         "_build_source_region_aggregates",
         "_compatible_region_location",
+        "_relation_signature",
+        "_region_alignment_candidate",
+        "_region_kinds_compatible",
+        "_resolve_exact_region_candidates",
         "_mutual_best_region_bbox",
         "_build_alignment_groups",
         "_parser_observation_id",
@@ -503,6 +513,7 @@ def test_named_parser_fusion_algorithms_have_invariant_documentation() -> None:
         "_enrich_compatibility_fact_sources",
         "_enrich_source_details",
         "_select_compatibility_observation",
+        "_compatibility_parser_id",
         "_processing_activity_threshold",
         "_strict_json_loads",
     }
@@ -525,6 +536,14 @@ def test_parser_fusion_guide_explains_exact_binding_and_priority_semantics() -> 
     )
     for concept in (
         "exact parser-occurrence binding",
+        "source-region kind",
+        "cross-kind geometry",
+        "relation record identity",
+        "source endpoint",
+        "reciprocal",
+        "ambiguous exact",
+        "unused retained policy",
+        "missing geometry",
         "source anchor",
         "value-hash fallback",
         "more than one match raises",

@@ -83,10 +83,23 @@ An `ObservationSourceRegion` says where an observation came from without quoting
 the source text. It can use a resource, physical page, presentation unit, anchor,
 selector, character span, bounding box, or text-span digest.
 
+Every region also declares a source-region kind: `page`, `block`, `object`,
+`relation`, `section`, or `generic`. Ordinary parser adaptation assigns the
+specific kind. `generic` exists for reviewed fixtures and manually constructed
+observations whose record type is genuinely unknown; it is not a wildcard.
+Region kind is serialized, included in observation identity, and checked when
+facts sharing one region ID are aggregated. Two incompatible non-generic kinds
+cannot claim the same explicit region ID.
+
 A bounding box is four coordinates around a region. A selector is a stable
 source-location record such as a page and character range. At least one real
 locator is required, coordinates must be finite and ordered, and source text is
 never copied into the region record.
+
+A relation region also keeps an optional parser-local relation record identity.
+This identity is separate from the relation source endpoint. Several links can
+start at the same heading or object, so endpoint equality alone cannot prove
+that two relation records are the same link.
 
 ## Alignment Algorithm
 
@@ -97,7 +110,7 @@ Before cross-parser matching, T05 groups every observation with the same
 `source_region_id`. For example, one parser block's text, block type, bounding
 box, and reading order become one initial region. This happens even when only one
 parser ran. Repeated location fields must be compatible; contradictory page,
-anchor, character-span, or geometry evidence fails validation.
+anchor, character-span, geometry, or non-generic kind evidence fails validation.
 
 Cross-parser matching compares those region aggregates once. It does not compare
 every text fact with every geometry or structure fact. Alignment records retain
@@ -110,8 +123,27 @@ The deterministic priority is:
 2. Exact resource, page, and source-anchor identity.
 3. Exact shared selector.
 4. Exact character span.
-5. Unique mutual-best bounding-box overlap on the same page and compatible fact family.
-6. Exact normalized text digest plus occurrence when stronger location evidence is absent.
+5. Exact relation signature containing relation type, source endpoint, and exact
+   target identifier.
+6. Unique mutual-best bounding-box overlap on the same page and same typed
+   source-region kind.
+7. Exact normalized text digest plus occurrence for generic textual observations
+   when stronger location evidence is absent.
+
+Kind compatibility is checked before anchor, selector, span, relation signature,
+geometry, or digest evidence. Cross-kind geometry is forbidden: a block and an
+object can occupy the same rectangle without being the same source record. The
+same rule prevents a page, relation, or section from merging with a surrounding
+block. Generic regions can share an explicit region ID, selector, span, or exact
+text digest with another generic region, but cannot geometry-align to every
+typed region.
+
+Relation source endpoints remain normal `ParserObservation` facts for audit and
+fusion. They do not act as exact relation-region identity. When reviewed
+selectors are absent, relation matching requires the exact bounded signature.
+Target text is not copied into alignment evidence and paraphrase similarity is
+never used. Duplicate equal signatures remain ambiguous unless stronger
+deterministic source evidence distinguishes their occurrences.
 
 Text normalization collapses whitespace only for alignment. It never changes the
 original value. Semantic similarity, embeddings, LLM calls, fuzzy paraphrase
@@ -122,6 +154,14 @@ matching, and arbitrary nearest-neighbor choices are excluded.
 Exact evidence uses matching source identities or spans. An accepted candidate
 uses geometry only when each observation is the other's unique best match above
 the configured overlap threshold.
+
+Exact does not mean automatically unique. At each priority, T05 generates all
+compatible candidates for each other parser. A pair is accepted only when the
+choice is reciprocal and unique from both endpoints. If one region has two equal
+anchor, selector, span, or relation-signature candidates from the same parser,
+those edges are ambiguous exact matches. None is unioned, and the downstream
+region decisions remain unresolved and non-gold. Three parsers can still form
+one group when every cross-parser pair is individually reciprocal and unique.
 
 Geometry uses intersection over union (IoU), which compares the shared rectangle
 area with the total covered area. Coordinates are never averaged. When two
@@ -184,6 +224,10 @@ inside a conflict, but the state remains `conflict` and every rejected
 observation remains referenced. The fusion artifact stores complete policy
 records, including strategy, preferred values, resolution, and flags. Strict
 reload validation reapplies those records and requires identical decisions.
+It also enforces applied-policy closure: the sorted `policy_ids`, the IDs of the
+retained policy records, and the distinct non-null policy IDs actually used by
+fact decisions must be exactly equal. An unused retained policy is rejected even
+when it is otherwise valid and an attacker recomputes the fusion ID.
 
 ## Confidence Behavior
 
@@ -275,6 +319,14 @@ matches leave the old source unenriched. More than one match raises
 `ParserFusionCompatibilityError`; choosing the alphabetically smallest
 observation would create false provenance.
 
+Compatibility parser identity must resolve to one nonempty bounded `backend` or
+`parser_id`; malformed or conflicting metadata raises the typed compatibility
+error instead of silently producing no match. Bounding-box identity is also
+strict. When a compatibility source supplies a box, it matches only the exact
+same box; an observation with missing geometry cannot satisfy known geometry.
+An exact source-region ID or source anchor remains stronger and can legitimately
+identify an observation whose geometry is absent.
+
 The resulting observation and decision IDs identify the same source occurrence
 in `CanonicalFactSource`. Canonical builders and audit tools use them now. T06
 may later use the references for non-copying segmentation views, and T08 may use
@@ -326,6 +378,13 @@ summary per final region. It reruns region alignment with the persisted threshol
 and reapplies retained policy records. Changing observation bytes while keeping
 the same observation-set ID fails the SHA binding; changing policy strategy,
 preferred values, or resolution fails fusion integrity.
+
+These checks protect later provenance work. T06 must not build one reusable view
+from a block/object coincidence or an ambiguous exact fan-out. T08 must not turn
+a shared relation source endpoint into a false graph edge. Typed regions,
+reciprocal uniqueness, exact policy ownership, and strict compatibility geometry
+keep those downstream references replayable without implementing either future
+production seam in T05.
 
 ### Processing-Activity Binding
 

@@ -10,6 +10,7 @@ import pytest
 
 from cognityx_ingest import (
     AlignmentEvidence,
+    FactAdjudicationPolicy,
     FactFusionDecision,
     ObservationSourceRegion,
     ObservationValue,
@@ -181,6 +182,55 @@ def test_artifact_rejects_missing_policy_and_wrong_state_counts(
     wrong_counts["state_counts"]["conflict"] = 0
     with pytest.raises(ParserFusionValidationError):
         ParserFusionArtifact.from_json_bytes(json.dumps(wrong_counts).encode())
+
+
+def test_artifact_rejects_unused_retained_policy_with_recomputed_fusion_id(
+    fusion_cases, build_fusion_observation_set
+) -> None:
+    """Close policy ownership even when tampered aggregate identity is consistent."""
+    case = next(item for item in fusion_cases if item["case_id"] == "table-versus-text")
+    artifact = ParserFusionService().fuse(build_fusion_observation_set(case))
+    unused = FactAdjudicationPolicy(
+        "policy-unused",
+        fact="unused_fact",
+        strategy="exact-agreement",
+        resolution_code="unused-policy-must-fail",
+    )
+    policies = tuple(sorted(
+        (*artifact.adjudication_policies, unused),
+        key=lambda item: item.policy_id,
+    ))
+    policy_ids = tuple(item.policy_id for item in policies)
+    fusion_id = _parser_fusion_id(
+        artifact.observation_set_id,
+        artifact.observation_set_sha256,
+        artifact.source_backends,
+        artifact.backend_versions,
+        artifact.alignment_evidence,
+        artifact.aligned_groups,
+        artifact.fact_decisions,
+        artifact.region_decisions,
+        policies,
+        artifact.processing_activity,
+        artifact.state_counts,
+    )
+    with pytest.raises(ParserFusionValidationError, match="retained and used"):
+        ParserFusionArtifact(
+            schema=artifact.schema,
+            fusion_id=fusion_id,
+            observation_set_id=artifact.observation_set_id,
+            observation_set_sha256=artifact.observation_set_sha256,
+            source_backends=artifact.source_backends,
+            backend_versions=artifact.backend_versions,
+            alignment_evidence=artifact.alignment_evidence,
+            aligned_groups=artifact.aligned_groups,
+            fact_decisions=artifact.fact_decisions,
+            region_decisions=artifact.region_decisions,
+            adjudication_policies=policies,
+            policy_ids=policy_ids,
+            processing_activity=artifact.processing_activity,
+            state_counts=artifact.state_counts,
+        )
 
 
 def test_agreement_requires_two_equivalent_observations() -> None:
@@ -388,6 +438,7 @@ def test_changed_threshold_fails_exact_alignment_replay() -> None:
             parser_version=None,
             source_region=ObservationSourceRegion(
                 f"block:{parser_id}:0:a",
+                region_kind="block",
                 physical_page_index=0,
                 bbox=bbox,
             ),

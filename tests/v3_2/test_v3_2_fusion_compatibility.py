@@ -24,7 +24,11 @@ from cognityx_ingest import (
     ParserObservationSet,
     ParserRouter,
 )
-from cognityx_ingest.parser_fusion import _enrich_source_details
+from cognityx_ingest.parser_fusion import (
+    ObservationValue,
+    _enrich_source_details,
+    _select_compatibility_observation,
+)
 
 
 class _ResultPlugin:
@@ -379,6 +383,100 @@ def test_ambiguous_value_only_compatibility_binding_raises_typed_error() -> None
             0,
             observations,
             {},
+        )
+
+
+def test_compatibility_bbox_requires_exact_known_geometry() -> None:
+    """Never treat missing observation geometry as equal to a supplied box."""
+    missing = ParserObservation.create(
+        parser_id="docling",
+        parser_version=None,
+        source_region=ObservationSourceRegion(
+            "block:docling:0:missing",
+            region_kind="block",
+            physical_page_index=0,
+        ),
+        fact="text",
+        value="Selected text",
+    )
+    known = ParserObservation.create(
+        parser_id="docling",
+        parser_version=None,
+        source_region=ObservationSourceRegion(
+            "block:docling:0:known",
+            region_kind="block",
+            physical_page_index=0,
+            bbox=(0.0, 0.0, 20.0, 20.0),
+        ),
+        fact="text",
+        value="Selected text",
+    )
+    selected_hash = ObservationValue.from_value("Selected text").sha256
+    assert _select_compatibility_observation(
+        {"backend": "docling"},
+        "text",
+        selected_hash,
+        0,
+        (0.0, 0.0, 20.0, 20.0),
+        (missing,),
+    ) is None
+    assert _select_compatibility_observation(
+        {"backend": "docling"},
+        "text",
+        selected_hash,
+        0,
+        (0.0, 0.0, 20.0, 20.0),
+        (missing, known),
+    ) == known
+
+
+def test_exact_region_identity_precedes_missing_compatibility_geometry() -> None:
+    """Allow a stronger exact region ID to identify a geometry-free observation."""
+    observation = ParserObservation.create(
+        parser_id="docling",
+        parser_version=None,
+        source_region=ObservationSourceRegion(
+            "block:docling:0:exact",
+            region_kind="block",
+            physical_page_index=0,
+        ),
+        fact="text",
+        value="Selected text",
+    )
+    assert _select_compatibility_observation(
+        {
+            "backend": "docling",
+            "source_region_id": "block:docling:0:exact",
+        },
+        "text",
+        observation.value_sha256,
+        0,
+        (0.0, 0.0, 20.0, 20.0),
+        (observation,),
+    ) == observation
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        {},
+        {"backend": ""},
+        {"backend": "INVALID PARSER"},
+        {"backend": "docling", "parser_id": "pymupdf"},
+    ),
+)
+def test_malformed_compatibility_parser_identity_raises_typed_error(
+    source: dict[str, object],
+) -> None:
+    """Reject missing, malformed, or conflicting parser identity metadata."""
+    with pytest.raises(ParserFusionCompatibilityError, match="parser identity"):
+        _select_compatibility_observation(
+            source,
+            "text",
+            ObservationValue.from_value("Selected text").sha256,
+            0,
+            None,
+            (),
         )
 
 

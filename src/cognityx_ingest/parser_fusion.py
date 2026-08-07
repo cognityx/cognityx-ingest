@@ -21,9 +21,20 @@ serialized collection has a stable logical order.
 Alignment aggregates all facts sharing an original source-region ID before it
 compares regions across parsers. One parser block's text, block type, box, and
 reading order therefore begin in one region even when no second parser exists.
-Stronger accepted identity or anchor evidence suppresses weaker ambiguous
-geometry candidates for that region; the weaker edge remains as superseded audit
-evidence instead of changing the accepted group's state.
+The bounded kinds are page, block, object, relation, section, or generic.
+Cross-kind geometry and anchor coincidence are
+forbidden because occupying the same rectangle does not make a table object the
+same source record as the paragraph block around it. Stronger accepted identity
+or anchor evidence suppresses weaker ambiguous geometry candidates for that
+region; the weaker edge remains as superseded audit evidence instead of changing
+the accepted group's state.
+
+Exact evidence is accepted only when it is reciprocal and unique at its current
+priority. Anchor, selector, span, relation-signature, and geometry fan-out stays
+ambiguous rather than forming an arbitrary connected component. Relation source
+endpoints are facts, not relation-record identities: a bounded parser-local
+record ID remains separate, and exact relation signatures include relation type,
+source endpoint, and target identifier without copying target text.
 
 Processing flow
 ---------------
@@ -66,7 +77,9 @@ precedence. Validation replays these retained policies and rejects changed
 strategies, preferred values, resolutions, or arbitrary replacement identities.
 For explicit-value policy, preferred values are an ordered reviewed priority:
 only the first listed value present in the observations is accepted. No policy
-can discard an observation.
+can discard an observation. The retained policy IDs must be exactly the distinct
+non-null policy IDs used by fact decisions; an unused policy is rejected even if
+the fusion ID was recomputed around it.
 
 Compatibility fact sources retain parser-local source-region and anchor identity
 before enrichment. The enrichment stage first uses that exact occurrence
@@ -74,6 +87,10 @@ identity and uses value hashing only as a uniquely identifying fallback. If two
 observations remain possible, fusion fails rather than selecting an arbitrary
 stable ID. This lets canonical fact sources, audit tools, and later T06 and T08
 consumers point to the occurrence that actually produced the legacy projection.
+When compatibility matching uses a bounding box, known geometry must match
+exactly and cannot match an observation whose geometry is absent. Parser identity
+metadata is also validated before matching rather than silently producing no
+provenance link.
 
 The fusion processing activity has exactly three fields: activity ID, canonical
 bounding-box threshold, and deterministic method. It contributes to fusion
@@ -145,6 +162,14 @@ ALIGNMENT_STATUSES = (
     "ambiguous",
     "rejected",
     "superseded",
+)
+SOURCE_REGION_KINDS = (
+    "page",
+    "block",
+    "object",
+    "relation",
+    "section",
+    "generic",
 )
 FACT_FAMILIES = (
     "textual",
@@ -458,9 +483,11 @@ class ObservationSourceRegion:
     Used by:
         Alignment, decision grouping, canonical provenance, and future T06 views.
     Main algorithm:
-        Validate IDs, pages, spans, ordered finite geometry, and optional digest.
+        Validate bounded region kind and parser-local record identity alongside
+        IDs, pages, spans, ordered finite geometry, and optional digest.
     Invariants:
-        At least one locator exists and no field contains copied source text.
+        Region kind uses the exact public vocabulary, relation record identity
+        remains distinct from its endpoint, and no field contains copied text.
     Lifecycle/persistence:
         The immutable record is serialized inside an observation set.
     Side effects:
@@ -483,14 +510,26 @@ class ObservationSourceRegion:
     char_end: int | None = None
     bbox: tuple[float, float, float, float] | None = None
     text_span_sha256: str | None = None
+    region_kind: str = "generic"
+    native_record_id: str | None = None
 
     def __post_init__(self) -> None:
-        """Reject malformed location evidence at immutable construction time."""
+        """Reject malformed typed location evidence before alignment consumers use it.
+
+        Parser adapters and strict readers share this pure trust boundary. It
+        validates the exact kind vocabulary, bounded parser-local record ID, and
+        every existing locator invariant; malformed input raises
+        ``ParserObservationValidationError`` without side effects or source-value
+        disclosure. The frozen result is safe for concurrent readers.
+        """
         _require_id(self.source_region_id, "source_region_id", observation=True)
+        if self.region_kind not in SOURCE_REGION_KINDS:
+            raise ParserObservationValidationError("region_kind is unsupported.")
         for name, value in (
             ("resource_id", self.resource_id),
             ("presentation_unit_id", self.presentation_unit_id),
             ("source_anchor", self.source_anchor),
+            ("native_record_id", self.native_record_id),
         ):
             if value is not None:
                 _require_id(value, name, observation=True)
@@ -517,9 +556,15 @@ class ObservationSourceRegion:
             raise ParserObservationValidationError("text_span_sha256 must be SHA-256.")
 
     def to_dict(self) -> dict[str, object]:
-        """Serialize location evidence in deterministic field form without text."""
+        """Serialize typed location evidence deterministically without copied text.
+
+        Observation identity hashing and artifact writers consume this detached
+        mapping. It includes kind and parser-local record identity, performs no
+        I/O, and cannot mutate the frozen region.
+        """
         return {
             "source_region_id": self.source_region_id,
+            "region_kind": self.region_kind,
             "resource_id": self.resource_id,
             "physical_page_index": self.physical_page_index,
             "presentation_unit_id": self.presentation_unit_id,
@@ -529,18 +574,25 @@ class ObservationSourceRegion:
             "char_end": self.char_end,
             "bbox": list(self.bbox) if self.bbox is not None else None,
             "text_span_sha256": self.text_span_sha256,
+            "native_record_id": self.native_record_id,
         }
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "ObservationSourceRegion":
-        """Validate one untrusted region mapping with no external side effects."""
+        """Validate one untrusted typed region mapping without external effects.
+
+        Strict observation readers call this constructor. Missing kind remains
+        the documented ``generic`` compatibility default; supplied kinds and
+        record IDs pass the same immutable trust boundary. It returns a frozen
+        region or raises ``ParserObservationValidationError``.
+        """
         _require_fields(
             value,
             required={"source_region_id"},
             optional={
-                "resource_id", "physical_page_index", "presentation_unit_id",
+                "region_kind", "resource_id", "physical_page_index", "presentation_unit_id",
                 "source_anchor", "selector_ids", "char_start", "char_end", "bbox",
-                "text_span_sha256",
+                "text_span_sha256", "native_record_id",
             },
             observation=True,
         )
@@ -548,6 +600,11 @@ class ObservationSourceRegion:
         bbox = None if bbox_value is None else _number_tuple(bbox_value, 4, observation=True)
         return cls(
             source_region_id=_text_field(value, "source_region_id", observation=True),
+            region_kind=(
+                _text_field(value, "region_kind", observation=True)
+                if "region_kind" in value
+                else "generic"
+            ),
             resource_id=_optional_text(value.get("resource_id"), "resource_id", observation=True),
             physical_page_index=_optional_int(value.get("physical_page_index"), "physical_page_index", observation=True),
             presentation_unit_id=_optional_text(value.get("presentation_unit_id"), "presentation_unit_id", observation=True),
@@ -557,6 +614,9 @@ class ObservationSourceRegion:
             char_end=_optional_int(value.get("char_end"), "char_end", observation=True),
             bbox=bbox,  # type: ignore[arg-type]
             text_span_sha256=_optional_text(value.get("text_span_sha256"), "text_span_sha256", observation=True),
+            native_record_id=_optional_text(
+                value.get("native_record_id"), "native_record_id", observation=True
+            ),
         )
 
 
@@ -1433,6 +1493,7 @@ class ParserFusionArtifact:
     Invariants:
         Schema and ordering are exact; decisions reference observations rather
         than repeating accepted text; state counts match fact decisions; the
+        retained policy IDs equal exactly the policy IDs used by decisions; the
         three-field processing activity is canonical and contributes to fusion
         identity before cross-validation against its observation set.
     Lifecycle/persistence:
@@ -1552,13 +1613,15 @@ class ParserFusionArtifact:
         return _canonical_json_bytes(self.to_dict())
 
     def validate(self) -> None:
-        """Validate schema, deterministic ordering, identities, and references.
+        """Validate schema, policy closure, identities, ordering, and references.
 
         Construction and untrusted reads call this idempotent pure method. It
         requires the exact three-field processing-activity shape and canonical
-        threshold before recomputing every stable identity and cross-reference.
-        It performs no parser, network, provider, or LLM operation and raises
-        only ``ParserFusionValidationError`` for aggregate contract failures.
+        threshold, and requires retained policy records to equal exactly the
+        distinct non-null policy IDs used by decisions, before recomputing every
+        stable identity and cross-reference. It performs no parser, network,
+        provider, or LLM operation and raises only
+        ``ParserFusionValidationError`` for aggregate contract failures.
         """
         if self.schema != PARSER_FUSION_ARTIFACT_SCHEMA:
             raise ParserFusionValidationError("Fusion artifact schema is unsupported.")
@@ -1597,9 +1660,20 @@ class ParserFusionArtifact:
         _validate_record_order(self.fact_decisions, "decision_id", "fact_decisions")
         _validate_record_order(self.region_decisions, "region_decision_id", "region_decisions")
         _validate_record_order(self.adjudication_policies, "policy_id", "adjudication_policies")
-        if self.policy_ids != tuple(item.policy_id for item in self.adjudication_policies):
+        retained_policy_ids = tuple(
+            item.policy_id for item in self.adjudication_policies
+        )
+        used_policy_ids = tuple(sorted({
+            item.policy_id
+            for item in self.fact_decisions
+            if item.policy_id is not None
+        }))
+        if (
+            self.policy_ids != retained_policy_ids
+            or self.policy_ids != used_policy_ids
+        ):
             raise ParserFusionValidationError(
-                "policy_ids do not match retained adjudication policies."
+                "policy_ids must match exactly the retained and used policies."
             )
         evidence_ids = {item.alignment_id for item in self.alignment_evidence}
         group_ids = {item.alignment_group_id for item in self.aligned_groups}
@@ -2005,12 +2079,13 @@ class ParserFusionService:
 
         Fusion callers may inspect this stage independently. Observations first
         aggregate by original source-region ID, including one-parser regions.
-        Exact region, anchor, selector, span, unique mutual-best IoU, and exact
-        digest evidence are then considered in that order. Stronger accepted
-        edges supersede weaker candidates; genuine ambiguity remains visible and
-        is not greedily joined. The pure operation is order-independent and performs no
-        parser, network, provider, or LLM call. Invalid references raise
-        ``ParserAlignmentError`` and nothing is persisted.
+        Region kind compatibility is checked before exact anchor, selector, span,
+        relation-signature, unique mutual-best IoU, or generic digest evidence.
+        Each priority requires reciprocal unique candidates; fan-out remains
+        ambiguous, while stronger decisive evidence supersedes weaker candidates.
+        The returned evidence and groups are deterministic immutable tuples. The
+        pure operation performs no parser, network, provider, LLM, or persistence
+        call; invalid aggregate references raise ``ParserAlignmentError``.
         """
         observation_set.validate()
         regions = _build_source_region_aggregates(observation_set.observations)
@@ -2308,12 +2383,16 @@ def _select_compatibility_observation(
     """Select one parser observation using strongest available occurrence identity.
 
     ``_enrich_source_details`` calls this pure matcher for one compatibility
-    source. It progressively narrows parser/fact/value candidates by exact region,
-    anchor, and occurrence-aware page/geometry. A legacy value-only fallback is
-    accepted only when unique. Malformed identity metadata or any remaining
-    ambiguity raises ``ParserFusionCompatibilityError`` without exposing values.
+    source. It first validates one nonempty bounded backend/parser ID, then
+    progressively narrows parser/fact/value candidates by exact region, anchor,
+    and occurrence-aware page/geometry. Supplied geometry must match exactly and
+    can never match an observation with missing geometry; stronger exact region
+    or anchor identity may still resolve before that check. A legacy value-only
+    fallback is accepted only when unique. Malformed identity metadata or any
+    remaining ambiguity raises ``ParserFusionCompatibilityError`` without
+    exposing values or causing side effects.
     """
-    parser_id = source.get("backend") or source.get("parser_id")
+    parser_id = _compatibility_parser_id(source)
     candidates = tuple(
         item
         for item in observations
@@ -2365,7 +2444,6 @@ def _select_compatibility_observation(
         if item.source_region.physical_page_index == page_index
         and (
             bbox is None
-            or item.source_region.bbox is None
             or item.source_region.bbox == bbox
         )
         and (
@@ -2391,7 +2469,6 @@ def _select_compatibility_observation(
         and item.source_region.physical_page_index == page_index
         and (
             bbox is None
-            or item.source_region.bbox is None
             or item.source_region.bbox == bbox
         )
     )
@@ -2402,6 +2479,33 @@ def _select_compatibility_observation(
             "Compatibility value fallback matches multiple parser observations."
         )
     return None
+
+
+def _compatibility_parser_id(source: Mapping[str, object]) -> str:
+    """Resolve and validate one parser identity at the legacy trust boundary.
+
+    Compatibility enrichment calls this before observation matching. It accepts
+    a bounded ``backend`` or ``parser_id`` string, requires supplied aliases to
+    agree, and rejects missing, empty, non-string, or malformed metadata with
+    ``ParserFusionCompatibilityError``. The pure helper performs no lookup or
+    persistence and prevents malformed legacy metadata from silently appearing
+    as an ordinary no-match result.
+    """
+    supplied: list[str] = []
+    for field_name in ("backend", "parser_id"):
+        if field_name not in source or source[field_name] is None:
+            continue
+        value = source[field_name]
+        if not isinstance(value, str) or not _PARSER_ID_PATTERN.fullmatch(value):
+            raise ParserFusionCompatibilityError(
+                "Compatibility parser identity is malformed."
+            )
+        supplied.append(value)
+    if not supplied or len(set(supplied)) != 1:
+        raise ParserFusionCompatibilityError(
+            "Compatibility source must resolve one parser identity."
+        )
+    return supplied[0]
 
 
 def _canonical_value_bytes(value: object) -> bytes:
@@ -2671,7 +2775,16 @@ def _parser_fusion_id(
 
 
 def _adapt_result(result: ExtractionResult, source_document_id: str | None) -> tuple[ParserObservation, ...]:
-    """Adapt one parser result into stable page, block, object, relation, and section facts."""
+    """Adapt one completed parser result into typed, stable T05 observations.
+
+    ``ParserFusionService.build_observation_set`` calls this pure adapter after
+    parser execution. It assigns the contractual page, block, object, relation,
+    and section kinds, keeps relation record IDs separate from endpoints, and
+    emits exact fact values without invoking parsers or external services. It
+    returns immutable observations; malformed backend or value data raises
+    ``ParserObservationValidationError`` before persistence. T01 native payloads,
+    T04 routing, T06 views, and T08 graph records remain outside this boundary.
+    """
     if not _PARSER_ID_PATTERN.fullmatch(result.backend):
         raise ParserObservationValidationError("Parser result backend is malformed.")
     observations: list[ParserObservation] = []
@@ -2681,6 +2794,7 @@ def _adapt_result(result: ExtractionResult, source_document_id: str | None) -> t
         page_index = page.physical_page_index
         page_region = ObservationSourceRegion(
             source_region_id=f"page:{page_index}",
+            region_kind="page",
             resource_id=resource_id,
             physical_page_index=page_index,
             presentation_unit_id=f"page:{page_index}",
@@ -2722,10 +2836,12 @@ def _adapt_result(result: ExtractionResult, source_document_id: str | None) -> t
         for item in sorted(page.relations, key=lambda value: value.relation_id):
             region = ObservationSourceRegion(
                 source_region_id=f"relation:{result.backend}:{item.relation_id}",
+                region_kind="relation",
                 resource_id=resource_id,
                 physical_page_index=page_index,
                 source_anchor=item.source_anchor,
                 bbox=item.bbox,
+                native_record_id=item.relation_id,
             )
             for fact, value in (
                 ("source_anchor", item.source_anchor), ("target_anchor", item.target_anchor),
@@ -2738,9 +2854,11 @@ def _adapt_result(result: ExtractionResult, source_document_id: str | None) -> t
     for section in sorted(result.sections, key=lambda item: item.section_id):
         region = ObservationSourceRegion(
             source_region_id=f"section:{result.backend}:{section.section_id}",
+            region_kind="section",
             resource_id=resource_id,
             physical_page_index=section.start_page_index,
             source_anchor=section.section_id,
+            native_record_id=section.section_id,
         )
         for fact, value in (
             ("title", section.title),
@@ -2759,7 +2877,15 @@ def _make_observation(
     confidence: float | None,
     epistemic_state: str = "observed",
 ) -> ParserObservation:
-    """Construct one adapter observation without fabricating native artifact links."""
+    """Construct one typed adapter observation without invented native links.
+
+    The result adapter calls this helper for each nonempty parser fact. It
+    delegates canonical value hashing and stable identity creation to
+    ``ParserObservation.create`` and returns one immutable observation. The
+    operation is side-effect free, thread-safe over immutable inputs, and raises
+    ``ParserObservationValidationError`` for untrusted values; it never creates a
+    T01 descriptor, executes a parser, or persists data.
+    """
     return ParserObservation.create(
         parser_id=result.backend,
         parser_version=result.backend_version,
@@ -2782,21 +2908,24 @@ def _block_region(
 
     The extraction-result adapter calls this for every parser block. It uses the
     parser module's bounded region-ID algorithm so compatibility metadata names
-    the same occurrence, retains the parser block ID as an anchor, and stores
-    only a text digest rather than copied text. Alignment and canonical audit
-    consumers use the resulting immutable region; T06 view creation remains out
-    of scope.
+    the same occurrence, declares block kind, retains the parser block ID as
+    bounded record and anchor identity, and stores only a text digest rather than
+    copied text. Alignment and canonical audit consumers use the resulting
+    immutable region; invalid locators raise the observation error, no side
+    effect occurs, and T06 view creation remains out of scope.
     """
     digest = hashlib.sha256(block.text.encode("utf-8")).hexdigest() if block.text else None
     return ObservationSourceRegion(
         source_region_id=_parser_source_region_id(
             "block", parser_id, page_index, block.block_id
         ),
+        region_kind="block",
         resource_id=resource_id,
         physical_page_index=page_index,
         source_anchor=block.block_id,
         bbox=block.bbox,
         text_span_sha256=digest,
+        native_record_id=block.block_id,
     )
 
 
@@ -2810,18 +2939,22 @@ def _object_region(
 
     The adapter calls this for each normalized object. It binds the parser-local
     object ID to the same bounded source-region identity emitted by legacy
-    compatibility metadata, while retaining optional page geometry. T05
-    alignment and audit consumers use the locator without copying caption or
-    object text; T08 graph materialization remains a later responsibility.
+    compatibility metadata, declares object kind, and retains optional page
+    geometry and parser-local record identity. T05 alignment and audit consumers
+    use the immutable locator without copying caption or object text; malformed
+    input raises the observation error, the helper has no side effects, and T08
+    graph materialization remains a later responsibility.
     """
     return ObservationSourceRegion(
         source_region_id=_parser_source_region_id(
             "object", parser_id, page_index, item.object_id
         ),
+        region_kind="object",
         resource_id=resource_id,
         physical_page_index=page_index,
         source_anchor=item.object_id,
         bbox=item.bbox,
+        native_record_id=item.object_id,
     )
 
 @dataclass(frozen=True, slots=True)
@@ -2834,8 +2967,9 @@ class _SourceRegionAggregate:
         block from competing as separate geometry candidates.
     Core algorithm:
         Collect observations sharing ``source_region_id``, verify that their
-        non-null location evidence does not contradict, and expose one stable
-        representative observation for compatibility alignment endpoints.
+        non-null location and kind evidence does not contradict, derive a
+        value-hash-only relation signature, and expose one stable representative
+        observation for compatibility alignment endpoints.
     Design principle:
         Preserve every observation while comparing location only once per region.
     Used by:
@@ -2850,6 +2984,7 @@ class _SourceRegionAggregate:
     representative_observation_id: str
     representative_observation_ids: tuple[str, ...]
     text_digest_occurrences: tuple[tuple[str, int], ...]
+    relation_signature: tuple[str, str, str] | None
 
 
 def _build_source_region_aggregates(
@@ -2858,8 +2993,10 @@ def _build_source_region_aggregates(
     """Aggregate same-region facts and reject contradictory location evidence.
 
     ``ParserFusionService.align`` calls this before cross-parser matching. The
-    operation groups even a single parser's facts, validates all location fields,
-    and returns deterministic immutable aggregates without copying source text.
+    operation groups even a single parser's facts, validates location and kind
+    fields, derives bounded relation signatures, and returns deterministic
+    immutable aggregates without copying source or target text. Invalid repeated
+    evidence raises ``ParserAlignmentError`` before any edge is persisted.
     """
     grouped: dict[str, list[ParserObservation]] = {}
     for observation in observations:
@@ -2892,6 +3029,7 @@ def _build_source_region_aggregates(
                     for parser_id in sorted({item.parser_id for item in ordered})
                 ),
                 text_digest_occurrences=text_occurrences,
+                relation_signature=_relation_signature(ordered, source_region),
             )
         )
     return tuple(aggregates)
@@ -2905,7 +3043,9 @@ def _compatible_region_location(
 
     Parser adapters may repeat the same region record for several facts. A field
     may be absent on some facts, but two different non-null values would make the
-    region unsafe to align and therefore raise ``ParserAlignmentError``.
+    region unsafe to align and therefore raise ``ParserAlignmentError``. Generic
+    and one typed declaration can share an explicit region ID, but incompatible
+    non-generic kinds are rejected before any cross-parser edge is generated.
     """
     def one_value(name: str) -> object:
         """Return one non-null location value or reject contradictory evidence."""
@@ -2920,13 +3060,43 @@ def _compatible_region_location(
             )
         return next(iter(found), None)
 
+    def one_parser_local_record() -> str | None:
+        """Retain one local record ID only when parser-local evidence is consistent."""
+        records_by_parser: dict[str, set[str]] = {}
+        for item in observations:
+            if item.source_region.native_record_id is not None:
+                records_by_parser.setdefault(item.parser_id, set()).add(
+                    item.source_region.native_record_id
+                )
+        if any(len(records) > 1 for records in records_by_parser.values()):
+            raise ParserAlignmentError(
+                "Source-region observations disagree about native_record_id."
+            )
+        all_records = {
+            record
+            for records in records_by_parser.values()
+            for record in records
+        }
+        return next(iter(all_records)) if len(all_records) == 1 else None
+
     selector_ids = tuple(sorted({
         selector
         for item in observations
         for selector in item.source_region.selector_ids
     }))
+    non_generic_kinds = {
+        item.source_region.region_kind
+        for item in observations
+        if item.source_region.region_kind != "generic"
+    }
+    if len(non_generic_kinds) > 1:
+        raise ParserAlignmentError(
+            "Source-region observations declare incompatible region kinds."
+        )
+    region_kind = next(iter(non_generic_kinds), "generic")
     return ObservationSourceRegion(
         source_region_id=source_region_id,
+        region_kind=region_kind,
         resource_id=one_value("resource_id"),  # type: ignore[arg-type]
         physical_page_index=one_value("physical_page_index"),  # type: ignore[arg-type]
         presentation_unit_id=one_value("presentation_unit_id"),  # type: ignore[arg-type]
@@ -2936,113 +3106,201 @@ def _compatible_region_location(
         char_end=one_value("char_end"),  # type: ignore[arg-type]
         bbox=one_value("bbox"),  # type: ignore[arg-type]
         text_span_sha256=one_value("text_span_sha256"),  # type: ignore[arg-type]
+        native_record_id=one_parser_local_record(),
     )
+
+
+def _relation_signature(
+    observations: tuple[ParserObservation, ...],
+    source_region: ObservationSourceRegion,
+) -> tuple[str, str, str] | None:
+    """Build a bounded exact relation signature without target or source text.
+
+    Region aggregation calls this only for typed relation records. The algorithm
+    requires one unambiguous canonical value hash for relation type, source
+    endpoint, and target anchor; it never uses ``target_text`` or semantic
+    similarity. Alignment consumers compare the returned hashes, while missing
+    or internally contradictory facts return ``None`` and leave the relation
+    unresolved. The helper is pure, has no side effects, and trusts only already
+    validated immutable observations.
+    """
+    if source_region.region_kind != "relation":
+        return None
+    hashes_by_fact = {
+        fact: {
+            item.value_sha256
+            for item in observations
+            if item.fact == fact
+        }
+        for fact in ("relation_type", "source_anchor", "target_anchor")
+    }
+    if any(len(hashes_by_fact[fact]) != 1 for fact in hashes_by_fact):
+        return None
+    return tuple(
+        next(iter(hashes_by_fact[fact]))
+        for fact in ("relation_type", "source_anchor", "target_anchor")
+    )  # type: ignore[return-value]
+
+
+@dataclass(frozen=True, slots=True)
+class _RegionAlignmentCandidate:
+    """Carry one bounded cross-parser region match before disposition.
+
+    Why it exists:
+        Exact evidence can fan out, so candidate generation must be separate from
+        acceptance rather than immediately unioning equal anchors or selectors.
+    Core algorithm:
+        Retain priority, endpoints, method, score, and selector support until a
+        reciprocal-uniqueness pass assigns exact, candidate, ambiguous,
+        rejected, or superseded status.
+    Design principle:
+        Evidence strength and uniqueness are explicit and deterministic.
+    Used by:
+        Private T05 alignment only; the candidate is never persisted directly or
+        exposed as a T06 or T08 production seam.
+    """
+
+    priority: int
+    left: _SourceRegionAggregate
+    right: _SourceRegionAggregate
+    method: str
+    score: float
+    selectors: tuple[str, ...] = ()
 
 
 def _build_alignment_evidence(
     regions: tuple[_SourceRegionAggregate, ...], threshold: float
 ) -> tuple[AlignmentEvidence, ...]:
-    """Compare region aggregates once and enforce stronger-evidence precedence.
+    """Resolve typed cross-parser matches by priority and reciprocal uniqueness.
 
-    Exact anchor, selector, and span matches are accepted before geometry. Any
-    lower-priority bbox candidate touching an exactly matched region is retained
-    as ``superseded`` audit evidence and cannot make that accepted region
-    ambiguous. Remaining geometry uses unique mutual-best IoU; exact normalized
-    text plus occurrence is considered only when stronger location is absent.
+    ``ParserFusionService.align`` calls this after region aggregation. Explicit
+    shared IDs are recorded first, then anchor, selector, span, exact relation
+    signature, geometry, and generic digest candidates are evaluated one priority
+    at a time. A candidate is accepted only when each endpoint has one reciprocal
+    candidate for the other parser identity; fan-out remains ambiguous, and
+    weaker evidence touching a stronger decisive region becomes superseded.
+    Cross-kind pairs are never candidates. The pure result is order-independent,
+    copies no source text, and leaves T06/T08 ownership untouched.
     """
-    exact: list[AlignmentEvidence] = [
-        _internal_region_alignment_record(region)
-        for region in regions
-        if len(region.representative_observation_ids) >= 2
-    ]
-    bbox_candidates: list[tuple[_SourceRegionAggregate, _SourceRegionAggregate]] = []
-    digest: list[AlignmentEvidence] = []
+    evidence: list[AlignmentEvidence] = []
+    decisive_regions: set[str] = set()
+    for region in regions:
+        internal = _internal_region_alignment_records(region)
+        evidence.extend(internal)
+        if internal:
+            decisive_regions.add(region.source_region_id)
+
+    candidates_by_priority: dict[int, list[_RegionAlignmentCandidate]] = {}
     for index, left in enumerate(regions):
         for right in regions[index + 1:]:
             if set(left.parser_ids) & set(right.parser_ids):
                 continue
-            direct = _direct_region_alignment(left, right)
-            if direct is not None:
-                method, selectors = direct
-                exact.append(
-                    _alignment_record(left, right, method, 1.0, selectors, "exact")
+            candidate = _region_alignment_candidate(left, right)
+            if candidate is not None:
+                candidates_by_priority.setdefault(candidate.priority, []).append(
+                    candidate
                 )
-            elif (
-                _same_region_page(left, right)
-                and left.source_region.bbox is not None
-                and right.source_region.bbox is not None
-            ):
-                bbox_candidates.append((left, right))
-            elif _digest_region_alignment(left, right):
-                digest.append(
-                    _alignment_record(
-                        left,
-                        right,
-                        "exact-text-digest-occurrence",
-                        1.0,
-                        (),
-                        "exact",
-                    )
-                )
-    locked = {
-        region_id
-        for item in exact
-        for region_id in (item.left_source_region_id, item.right_source_region_id)
-    }
-    bbox_evidence = _mutual_best_region_bbox(bbox_candidates, threshold, locked)
-    return tuple(
-        sorted((*exact, *bbox_evidence, *digest), key=lambda item: item.alignment_id)
-    )
+
+    for priority in sorted(candidates_by_priority):
+        candidates = tuple(sorted(
+            candidates_by_priority[priority],
+            key=lambda item: (
+                item.left.source_region_id,
+                item.right.source_region_id,
+                item.method,
+            ),
+        ))
+        if candidates and candidates[0].method == "bbox-iou-mutual-best":
+            resolved = _mutual_best_region_bbox(
+                candidates, threshold, decisive_regions
+            )
+        else:
+            resolved = _resolve_exact_region_candidates(
+                candidates, decisive_regions
+            )
+        evidence.extend(resolved)
+        decisive_regions.update(
+            region_id
+            for item in resolved
+            if item.status in {"exact", "accepted-candidate", "ambiguous"}
+            for region_id in (
+                item.left_source_region_id,
+                item.right_source_region_id,
+            )
+        )
+    return tuple(sorted(evidence, key=lambda item: item.alignment_id))
 
 
-def _internal_region_alignment_record(
+def _internal_region_alignment_records(
     region: _SourceRegionAggregate,
-) -> AlignmentEvidence:
-    """Record explicit identity when multiple parsers already share one region ID."""
-    first, second = sorted(region.representative_observation_ids)[:2]
-    alignment_id = _alignment_evidence_id(
-        first,
-        second,
-        region.source_region_id,
-        region.source_region_id,
-        "exact-source-region-id",
-        1.0,
-        (),
-        "exact",
-    )
-    return AlignmentEvidence(
-        alignment_id=alignment_id,
-        left_observation_id=first,
-        right_observation_id=second,
-        left_source_region_id=region.source_region_id,
-        right_source_region_id=region.source_region_id,
-        alignment_method="exact-source-region-id",
-        alignment_score=1.0,
-        status="exact",
-    )
+) -> tuple[AlignmentEvidence, ...]:
+    """Record every parser pair intentionally sharing one explicit region ID.
+
+    Region aggregation has already rejected conflicting typed location evidence.
+    This helper emits pairwise exact proof for a two-or-more-parser aggregate so a
+    common group never depends on one arbitrary representative pair. It returns
+    stable immutable evidence without I/O or source values.
+    """
+    representatives = tuple(sorted(region.representative_observation_ids))
+    records: list[AlignmentEvidence] = []
+    for index, first in enumerate(representatives):
+        for second in representatives[index + 1:]:
+            alignment_id = _alignment_evidence_id(
+                first,
+                second,
+                region.source_region_id,
+                region.source_region_id,
+                "exact-source-region-id",
+                1.0,
+                (),
+                "exact",
+            )
+            records.append(AlignmentEvidence(
+                alignment_id=alignment_id,
+                left_observation_id=first,
+                right_observation_id=second,
+                left_source_region_id=region.source_region_id,
+                right_source_region_id=region.source_region_id,
+                alignment_method="exact-source-region-id",
+                alignment_score=1.0,
+                status="exact",
+            ))
+    return tuple(sorted(records, key=lambda item: item.alignment_id))
 
 
-def _direct_region_alignment(
+def _region_alignment_candidate(
     left: _SourceRegionAggregate,
     right: _SourceRegionAggregate,
-) -> tuple[str, tuple[str, ...]] | None:
-    """Return the strongest exact source-native evidence for two regions."""
+) -> _RegionAlignmentCandidate | None:
+    """Return only the strongest kind-compatible evidence for one region pair.
+
+    Candidate generation calls this once per cross-parser pair. Typed regions
+    must have the same kind; generic regions match only other generic regions.
+    Relation endpoint anchors are deliberately excluded, while exact relation
+    signatures use hashed bounded facts. Geometry is available only to equal
+    non-generic kinds, and digest fallback only to generic textual regions. The
+    pure helper returns ``None`` when no contractual evidence exists.
+    """
+    if not _region_kinds_compatible(left, right):
+        return None
     a, b = left.source_region, right.source_region
-    if a.source_region_id == b.source_region_id:
-        return "exact-source-region-id", tuple(
-            sorted(set(a.selector_ids) & set(b.selector_ids))
-        )
     if (
-        a.resource_id is not None
+        a.region_kind != "relation"
+        and a.resource_id is not None
         and a.resource_id == b.resource_id
+        and a.physical_page_index is not None
         and a.physical_page_index == b.physical_page_index
         and a.source_anchor is not None
         and a.source_anchor == b.source_anchor
     ):
-        return "exact-resource-page-anchor", ()
+        return _RegionAlignmentCandidate(
+            1, left, right, "exact-resource-page-anchor", 1.0
+        )
     shared_selectors = tuple(sorted(set(a.selector_ids) & set(b.selector_ids)))
     if shared_selectors:
-        return "exact-selector", shared_selectors
+        return _RegionAlignmentCandidate(
+            2, left, right, "exact-selector", 1.0, shared_selectors
+        )
     if (
         a.resource_id == b.resource_id
         and a.physical_page_index == b.physical_page_index
@@ -3051,17 +3309,117 @@ def _direct_region_alignment(
         and a.char_start == b.char_start
         and a.char_end == b.char_end
     ):
-        return "exact-character-span", ()
+        return _RegionAlignmentCandidate(
+            3, left, right, "exact-character-span", 1.0
+        )
+    if (
+        a.region_kind == "relation"
+        and left.relation_signature is not None
+        and left.relation_signature == right.relation_signature
+    ):
+        return _RegionAlignmentCandidate(
+            4, left, right, "exact-relation-signature", 1.0
+        )
+    if (
+        a.region_kind != "generic"
+        and _same_region_page(left, right)
+        and a.bbox is not None
+        and b.bbox is not None
+    ):
+        return _RegionAlignmentCandidate(
+            5,
+            left,
+            right,
+            "bbox-iou-mutual-best",
+            _bbox_iou(a.bbox, b.bbox),
+        )
+    if _digest_region_alignment(left, right):
+        return _RegionAlignmentCandidate(
+            6, left, right, "exact-text-digest-occurrence", 1.0
+        )
     return None
+
+
+def _region_kinds_compatible(
+    left: _SourceRegionAggregate,
+    right: _SourceRegionAggregate,
+) -> bool:
+    """Allow matching only equal typed kinds or two explicit generic regions.
+
+    The alignment candidate generator calls this trust rule before inspecting
+    anchors, selectors, spans, geometry, or digests. It prevents generic from
+    acting as a wildcard and prevents coincident block, object, relation,
+    section, and page locations from merging. Explicit shared IDs are handled
+    earlier by aggregate consistency validation.
+    """
+    return left.source_region.region_kind == right.source_region.region_kind
+
+
+def _resolve_exact_region_candidates(
+    candidates: tuple[_RegionAlignmentCandidate, ...],
+    decisive_regions: set[str],
+) -> tuple[AlignmentEvidence, ...]:
+    """Accept exact evidence only when each cross-parser choice is reciprocal.
+
+    Priority orchestration supplies candidates of one equal strength. Candidates
+    touching a stronger exact or ambiguous region become superseded. Remaining
+    endpoints are counted separately for each other-parser identity; a pair is
+    exact only when both counts are one, otherwise every fan-out edge is retained
+    as ambiguous. The function is deterministic, side-effect free, and returns
+    persisted evidence records without unioning regions itself.
+    """
+    active = tuple(
+        item for item in candidates
+        if item.left.source_region_id not in decisive_regions
+        and item.right.source_region_id not in decisive_regions
+    )
+    counts: dict[tuple[str, tuple[str, ...]], int] = {}
+    for item in active:
+        left_key = (item.left.source_region_id, item.right.parser_ids)
+        right_key = (item.right.source_region_id, item.left.parser_ids)
+        counts[left_key] = counts.get(left_key, 0) + 1
+        counts[right_key] = counts.get(right_key, 0) + 1
+    records = []
+    for item in candidates:
+        if (
+            item.left.source_region_id in decisive_regions
+            or item.right.source_region_id in decisive_regions
+        ):
+            status = "superseded"
+        elif (
+            counts[(item.left.source_region_id, item.right.parser_ids)] == 1
+            and counts[(item.right.source_region_id, item.left.parser_ids)] == 1
+        ):
+            status = "exact"
+        else:
+            status = "ambiguous"
+        records.append(_alignment_record(
+            item.left,
+            item.right,
+            item.method,
+            item.score,
+            item.selectors,
+            status,
+        ))
+    return tuple(records)
 
 
 def _digest_region_alignment(
     left: _SourceRegionAggregate,
     right: _SourceRegionAggregate,
 ) -> bool:
-    """Match exact normalized text occurrences only without stronger location."""
+    """Match only generic exact text occurrences without stronger location.
+
+    Candidate generation calls this final fallback after typed and source-native
+    rules. It compares deterministic digest/occurrence tuples only when both
+    regions are generic and location-free, returns a boolean, copies no text, and
+    performs no mutation or external call. Typed regions can never use this
+    helper to bypass kind compatibility.
+    """
     return bool(
-        left.text_digest_occurrences
+        left.source_region.region_kind == "generic"
+        and right.source_region.region_kind == "generic"
+        and left.text_digest_occurrences
         and left.text_digest_occurrences == right.text_digest_occurrences
         and not _has_strong_location(left.source_region)
         and not _has_strong_location(right.source_region)
@@ -3069,7 +3427,13 @@ def _digest_region_alignment(
 
 
 def _has_strong_location(region: ObservationSourceRegion) -> bool:
-    """Identify evidence that must take precedence over text-digest fallback."""
+    """Identify source-native evidence that blocks generic digest fallback.
+
+    The digest matcher calls this pure predicate. Resource, page, presentation
+    unit, anchor, selector, span, geometry, or native record identity returns
+    true so a weaker value-derived digest cannot override known location. It has
+    no side effects or typed failures over a validated immutable region.
+    """
     return bool(
         region.resource_id
         or region.physical_page_index is not None
@@ -3078,6 +3442,7 @@ def _has_strong_location(region: ObservationSourceRegion) -> bool:
         or region.selector_ids
         or region.char_start is not None
         or region.bbox is not None
+        or region.native_record_id
     )
 
 
@@ -3117,17 +3482,27 @@ def _bbox_iou(
 
 
 def _mutual_best_region_bbox(
-    candidates: list[tuple[_SourceRegionAggregate, _SourceRegionAggregate]],
+    candidates: tuple[_RegionAlignmentCandidate, ...],
     threshold: float,
-    locked_regions: set[str],
+    decisive_regions: set[str],
 ) -> tuple[AlignmentEvidence, ...]:
-    """Accept unique mutual-best region IoU and preserve every rejected candidate."""
-    scored = [
-        (left, right, _bbox_iou(left.source_region.bbox, right.source_region.bbox))  # type: ignore[arg-type]
-        for left, right in candidates
-    ]
+    """Accept unique mutual-best same-kind geometry and supersede weaker peers.
+
+    Geometry priority calls this with pre-scored typed candidates. It ignores
+    candidates touching stronger decisive regions, computes per-other-parser
+    maxima and tie counts, accepts only reciprocal unique maxima above threshold,
+    marks weaker peers touching an accepted region as superseded, and retains
+    unresolved ties as ambiguous. No box is averaged or mutated, and generic or
+    cross-kind candidates can never reach this helper.
+    """
+    scored = tuple(
+        item for item in candidates
+        if item.left.source_region_id not in decisive_regions
+        and item.right.source_region_id not in decisive_regions
+    )
     best: dict[tuple[str, str], float] = {}
-    for left, right, score in scored:
+    for item in scored:
+        left, right, score = item.left, item.right, item.score
         right_parser_key = "|".join(right.parser_ids)
         left_parser_key = "|".join(left.parser_ids)
         best[(left.source_region_id, right_parser_key)] = max(
@@ -3137,7 +3512,8 @@ def _mutual_best_region_bbox(
             score, best.get((right.source_region_id, left_parser_key), -1.0)
         )
     peer_counts: dict[tuple[str, str], int] = {}
-    for left, right, score in scored:
+    for item in scored:
+        left, right, score = item.left, item.right, item.score
         right_parser_key = "|".join(right.parser_ids)
         left_parser_key = "|".join(left.parser_ids)
         if math.isclose(score, best[(left.source_region_id, right_parser_key)]):
@@ -3146,23 +3522,48 @@ def _mutual_best_region_bbox(
         if math.isclose(score, best[(right.source_region_id, left_parser_key)]):
             key = (right.source_region_id, left_parser_key)
             peer_counts[key] = peer_counts.get(key, 0) + 1
-    result: list[AlignmentEvidence] = []
-    for left, right, score in scored:
+    accepted: set[tuple[str, str]] = set()
+    for item in scored:
+        left, right, score = item.left, item.right, item.score
         right_parser_key = "|".join(right.parser_ids)
         left_parser_key = "|".join(left.parser_ids)
         left_best = best[(left.source_region_id, right_parser_key)]
         right_best = best[(right.source_region_id, left_parser_key)]
         peers_left = peer_counts[(left.source_region_id, right_parser_key)]
         peers_right = peer_counts[(right.source_region_id, left_parser_key)]
-        if left.source_region_id in locked_regions or right.source_region_id in locked_regions:
+        if (
+            score >= threshold
+            and math.isclose(score, left_best)
+            and math.isclose(score, right_best)
+            and peers_left == peers_right == 1
+        ):
+            accepted.add((left.source_region_id, right.source_region_id))
+    accepted_regions = {
+        region_id for pair in accepted for region_id in pair
+    }
+    result: list[AlignmentEvidence] = []
+    for item in candidates:
+        left, right, score = item.left, item.right, item.score
+        pair = (left.source_region_id, right.source_region_id)
+        if (
+            left.source_region_id in decisive_regions
+            or right.source_region_id in decisive_regions
+        ):
+            status = "superseded"
+        elif pair in accepted:
+            status = "accepted-candidate"
+        elif (
+            left.source_region_id in accepted_regions
+            or right.source_region_id in accepted_regions
+        ):
             status = "superseded"
         elif score < threshold:
             status = "rejected"
-        elif math.isclose(score, left_best) and math.isclose(score, right_best) and peers_left == peers_right == 1:
-            status = "accepted-candidate"
         else:
             status = "ambiguous"
-        result.append(_alignment_record(left, right, "bbox-iou-mutual-best", score, (), status))
+        result.append(_alignment_record(
+            left, right, item.method, score, item.selectors, status
+        ))
     return tuple(result)
 
 
@@ -3816,6 +4217,7 @@ __all__ = [
     "FUSION_STATES",
     "PARSER_FUSION_ARTIFACT_SCHEMA",
     "PARSER_OBSERVATION_SET_SCHEMA",
+    "SOURCE_REGION_KINDS",
     "AlignedObservationGroup",
     "AlignmentEvidence",
     "FactAdjudicationPolicy",
