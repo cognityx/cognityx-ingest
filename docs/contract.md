@@ -74,6 +74,16 @@ available, but conflict or unresolved projections are not accepted gold evidence
 See [Parser Alignment, Fusion, and
 Adjudication](parser-alignment-fusion-adjudication.md).
 
+T06 segmentation views are optional derived read models over the canonical
+artifact. They use `cognityx.ingest.segmentation-views/v3.2` and contain canonical
+node IDs, optional character ranges, division IDs, native chunk pointers, and
+bounded strategy metadata. They never contain copied source text. Several views
+may overlap or disagree, and none becomes a fused canonical chunk boundary. Text
+is reconstructed from `ContentNode.content.text` only when a caller requests it.
+T06 does not add an always-written ingest artifact or physical cache; T07 owns
+reuse, retention, and purge decisions. See [Non-Copying Segmentation
+Views](non-copying-segmentation-views.md).
+
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff
 is technically called `provenance.json`. Version 2 records the run and job,

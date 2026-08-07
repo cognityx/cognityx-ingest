@@ -16,6 +16,7 @@ import cognityx_ingest.parser as parser
 import cognityx_ingest.parser_capabilities as parser_capabilities
 import cognityx_ingest.parser_fusion as parser_fusion
 import cognityx_ingest.parser_routing as parser_routing
+import cognityx_ingest.segmentation_views as segmentation_views
 
 
 def _module_tree(module: object = native_artifacts) -> ast.Module:
@@ -151,6 +152,137 @@ def test_named_canonical_algorithms_have_invariant_documentation() -> None:
     }
     assert required <= set(functions)
     assert all(ast.get_docstring(functions[name]) for name in required)
+
+
+def test_segmentation_view_module_has_substantial_architectural_docstring() -> None:
+    """Require T06 ownership, algorithms, consumers, and handoff boundaries."""
+    module_docstring = ast.get_docstring(_module_tree(segmentation_views)) or ""
+    normalized = " ".join(module_docstring.lower().split())
+
+    assert len(module_docstring) >= 3_500
+    for concept in (
+        "purpose",
+        "design principles",
+        "processing flow",
+        "primary consumers",
+        "ownership boundary",
+        "non-goals",
+        "segmentation view",
+        "derived read model",
+        "canonical text",
+        "nodespan",
+        "source text",
+        "paragraph",
+        "direct",
+        "parser-native",
+        "sentence",
+        "parent",
+        "reconstruction",
+        "fused boundary",
+        "t05",
+        "t07",
+        "retrieval/dataforge",
+    ):
+        assert concept in normalized, concept
+
+
+def test_every_public_segmentation_class_documents_its_full_contract() -> None:
+    """Require every T06 record, protocol, error, aggregate, and service rationale."""
+    public_classes = [
+        node
+        for node in _module_tree(segmentation_views).body
+        if isinstance(node, ast.ClassDef) and not node.name.startswith("_")
+    ]
+
+    assert public_classes
+    for node in public_classes:
+        docstring = " ".join((ast.get_docstring(node) or "").lower().split())
+        for concept in (
+            "responsibility",
+            "constructed by",
+            "used by",
+            "main algorithm",
+            "invariants",
+            "lifecycle",
+            "side effects",
+            "typed failures",
+            "trust boundary",
+            "thread",
+        ):
+            assert concept in docstring, (node.name, concept)
+
+
+def test_every_segmentation_callable_has_a_docstring() -> None:
+    """Require public seams and private trust algorithms to explain why they exist."""
+    callables = [
+        node
+        for node in ast.walk(_module_tree(segmentation_views))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+    assert callables
+    assert all(ast.get_docstring(node) for node in callables)
+
+
+def test_named_segmentation_algorithms_have_invariant_documentation() -> None:
+    """Pin docs to spans, strategies, reconstruction, identity, JSON, and no-copy."""
+    required = {
+        "validate",
+        "resolve_span",
+        "build_paragraph",
+        "build_direct_division",
+        "build_parser_native",
+        "build_sentence_safe_fixed_size",
+        "build_sentence_window",
+        "build_parent_child",
+        "from_fixture",
+        "to_json_bytes",
+        "cache_identity",
+        "_validate_span",
+        "_validate_profile",
+        "_strict_json_loads",
+        "_reject_copy_fields",
+        "_reject_canonical_text",
+    }
+    callables = {
+        node.name: node
+        for node in ast.walk(_module_tree(segmentation_views))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    assert required <= set(callables)
+    assert all(ast.get_docstring(callables[name]) for name in required)
+
+
+def test_segmentation_developer_guide_explains_all_six_views_and_boundaries() -> None:
+    """Require ordinary-language guidance from canonical content to consumers."""
+    guide = (
+        Path(__file__).parents[2] / "docs" / "non-copying-segmentation-views.md"
+    ).read_text(encoding="utf-8").lower()
+
+    assert len(guide) >= 7_000
+    for concept in (
+        "background and purpose",
+        "canonical content",
+        "nodespan",
+        "segment text is absent",
+        "paragraph",
+        "direct-division",
+        "parser-native",
+        "sentence-safe-fixed-size",
+        "sentence-window",
+        "parent-child",
+        "read-time reconstruction",
+        "deterministic identity",
+        "native artifact",
+        "overlapping views",
+        "no fused canonical chunks",
+        "t05 relationship",
+        "t07 retention boundary",
+        "retrieval and dataforge boundary",
+        "t06 non-goals",
+    ):
+        assert concept in guide, concept
 
 
 def test_parser_capability_module_has_substantial_architectural_docstring() -> None:

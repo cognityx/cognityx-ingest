@@ -27,7 +27,6 @@ def test_parser_capability_registry_api_exposes_three_source_classes(v3_2_fixtur
     )
 
 
-@pytest.mark.xfail(strict=True, reason="T06: segmentation view production API is not implemented")
 def test_segmentation_view_api_references_ids_and_spans(v3_2_fixture_root):
     """Call the planned non-copying segmentation view API."""
     from cognityx_ingest.segmentation_views import SegmentationViewService

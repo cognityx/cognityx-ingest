@@ -8,8 +8,10 @@ design principle is compatibility by addition, which is why T04 routing records
 do not replace existing ``ExtractionPolicy`` execution names and the v3.2
 ``CanonicalRepresentation`` alias does not replace the established enrichment
 ``Representation`` name. T05 observation and decision records likewise accompany
-rather than replace ``ExtractionResult``. CLI adapters, DataForge, audit tooling,
-tests, future orchestration, and direct Python integrators use this surface.
+rather than replace ``ExtractionResult``. T06 segmentation views add derived
+references without making copied text or canonical chunks. CLI adapters,
+DataForge, audit tooling, tests, future orchestration, and direct Python
+integrators use this surface.
 """
 
 from cognityx_ingest.canonical_content import (
@@ -191,6 +193,24 @@ from cognityx_ingest.parser_routing import (
     adaptive_mode_for_legacy_policy,
 )
 from cognityx_ingest.service import IngestService
+from cognityx_ingest.segmentation_views import (
+    SEGMENTATION_STRATEGIES,
+    SEGMENTATION_VIEWS_SCHEMA,
+    NodeSpan,
+    SegmentationFixtureError,
+    SegmentationProfile,
+    SegmentationReconstructionError,
+    SegmentationSegment,
+    SegmentationStrategyError,
+    SegmentationView,
+    SegmentationViewError,
+    SegmentationViewReferenceError,
+    SegmentationViewService,
+    SegmentationViewSet,
+    SegmentationViewValidationError,
+    SegmentReturnScope,
+    TokenCounter,
+)
 from cognityx_ingest.source_assets import (
     SourceAssetBatchCancelled,
     SourceAssetCatalogAmbiguityError,
@@ -277,6 +297,7 @@ __all__ = [
     "NativeBinding",
     "NativeBindingValidationError",
     "NativePointerError",
+    "NodeSpan",
     "OfficialDocumentationEvidence",
     "ObservationSourceRegion",
     "ObservationValue",
@@ -284,6 +305,8 @@ __all__ = [
     "PARSER_OBSERVATION_SET_SCHEMA",
     "SOURCE_REGION_KINDS",
     "PARSER_CAPABILITY_REGISTRY_SCHEMA",
+    "SEGMENTATION_STRATEGIES",
+    "SEGMENTATION_VIEWS_SCHEMA",
     "PageRecord",
     "ParserInvocation",
     "ParserAdjudicationError",
@@ -340,6 +363,18 @@ __all__ = [
     "ResourceRef",
     "RetrievalUnit",
     "Section",
+    "SegmentReturnScope",
+    "SegmentationFixtureError",
+    "SegmentationProfile",
+    "SegmentationReconstructionError",
+    "SegmentationSegment",
+    "SegmentationStrategyError",
+    "SegmentationView",
+    "SegmentationViewError",
+    "SegmentationViewReferenceError",
+    "SegmentationViewService",
+    "SegmentationViewSet",
+    "SegmentationViewValidationError",
     "SourceAsset",
     "SourceAssetBatchCancelled",
     "SourceAssetBatchItem",
@@ -355,6 +390,7 @@ __all__ = [
     "TableCell",
     "TablePart",
     "TableRow",
+    "TokenCounter",
     "SourceBundle",
     "SourceContext",
     "SourceLocation",
