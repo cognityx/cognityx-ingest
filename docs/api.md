@@ -30,6 +30,8 @@ same implementation.
 
 ::: cognityx_ingest.parser_fusion
 
+::: cognityx_ingest.segmentation_views
+
 ::: cognityx_ingest.enhancement
 
 ::: cognityx_ingest.enrichment

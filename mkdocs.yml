@@ -18,6 +18,7 @@ nav:
   - Parser Capability Registry: parser-capability-registry.md
   - Adaptive Parser Routing: adaptive-parser-routing.md
   - Parser Alignment Fusion Adjudication: parser-alignment-fusion-adjudication.md
+  - Non-Copying Segmentation Views: non-copying-segmentation-views.md
   - Provenance Capabilities: provenance-capabilities.md
   - Provenance Gap Report: provenance-gap-report.md
   - API: api.md
