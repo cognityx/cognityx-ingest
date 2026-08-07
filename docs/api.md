@@ -3,6 +3,8 @@
 ::: cognityx_ingest.service.IngestService
 
 ::: cognityx_ingest.source_assets.SourceAssetRegistry
+    options:
+      show_source: false
 
 `cognityx_ingest.sources.SourceRegistry` remains a compatibility alias to the
 same implementation.
@@ -13,6 +15,8 @@ same implementation.
 `cognityx_resource`.
 
 ::: cognityx_ingest.models
+    options:
+      show_source: false
 
 ::: cognityx_ingest.control
 
@@ -33,6 +37,8 @@ same implementation.
 ::: cognityx_ingest.segmentation_views
 
 ::: cognityx_ingest.cleanup.ExtractionRetentionService
+    options:
+      show_source: false
 
 ::: cognityx_ingest.cleanup.collect_reference_ids
 

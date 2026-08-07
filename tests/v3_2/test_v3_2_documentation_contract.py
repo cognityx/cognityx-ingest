@@ -298,7 +298,6 @@ def test_every_t07_record_and_service_has_a_substantial_docstring() -> None:
         "ExtractionIdentity",
         "RetentionTombstone",
         "ExtractionRetentionRecord",
-        "ExtractionPayloadAbsenceProof",
         "ExtractionRetentionEvent",
         "ExtractionReuseResult",
         "ExtractionPurgeCandidate",
@@ -311,6 +310,8 @@ def test_every_t07_record_and_service_has_a_substantial_docstring() -> None:
     }
     assert required <= set(model_classes)
     assert all(len(ast.get_docstring(model_classes[name]) or "") >= 180 for name in required)
+    internal_handoff = model_classes["_ExtractionPayloadAbsenceProof"]
+    assert len(ast.get_docstring(internal_handoff) or "") >= 400
 
     cleanup_classes = {
         node.name: node
@@ -367,7 +368,7 @@ def test_every_t07_callable_and_material_algorithm_has_a_docstring() -> None:
             "list_extraction_records",
             "list_extraction_retention_events",
             "list_extraction_purge_candidates",
-            "finalize_extraction_purge",
+            "_finalize_extraction_purge_after_verified_absence",
             "_release_failed_reuse_acquisition",
             "_append_retention_event",
             "_retention_event_from_row",
@@ -388,7 +389,7 @@ def test_every_t07_callable_and_material_algorithm_has_a_docstring() -> None:
         "ExtractionIdentity",
         "RetentionTombstone",
         "ExtractionRetentionRecord",
-        "ExtractionPayloadAbsenceProof",
+        "_ExtractionPayloadAbsenceProof",
         "ExtractionRetentionEvent",
         "ExtractionReuseResult",
         "ExtractionPurgeCandidate",
@@ -438,6 +439,10 @@ def test_t07_developer_guide_explains_identity_policy_and_storage_boundary() -> 
         "purge eligibility algorithm",
         "metadata only",
         "storage-owned physical deletion",
+        "supported public flow",
+        "internal registry transaction",
+        "not proof that storage bytes are absent",
+        "applications must never manufacture",
         "same context-bound `nativeartifactstore`",
         "append-only changed-state facts",
         "stale-plan revalidation",

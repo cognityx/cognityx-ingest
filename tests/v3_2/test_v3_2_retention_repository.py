@@ -16,6 +16,8 @@ import sqlite3
 
 import pytest
 
+import cognityx_ingest
+import cognityx_ingest.models as ingest_models
 from cognityx_ingest.canonical_content import (
     CanonicalArtifactDescriptor,
     CanonicalContentArtifact,
@@ -28,7 +30,6 @@ from cognityx_ingest.cleanup import (
 from cognityx_ingest.models import (
     EXTRACTION_RETENTION_EVENT_TYPES,
     ExtractionIdentity,
-    ExtractionPayloadAbsenceProof,
     ExtractionPurgeBlockedError,
     ExtractionPurgeFinalizationError,
     ExtractionRetentionConflictError,
@@ -778,10 +779,10 @@ def test_finalization_uses_only_native_store_and_requires_surviving_descriptor(
     assert record.state is ExtractionRetentionState.RETENTION_EXPIRED
 
 
-def test_finalization_rejects_corrupt_payload_and_mismatched_absence_proof(
+def test_finalization_rejects_corrupt_payload(
     tmp_path: Path,
 ) -> None:
-    """Fail corruption and field-forged proof without changing durable state."""
+    """Treat present corrupt bytes as failure rather than payload absence."""
     harness = _harness(tmp_path)
     _expired_without_protection(harness)
     payload_path = harness.storage.resolve_local_path(
@@ -797,25 +798,32 @@ def test_finalization_rejects_corrupt_payload_and_mismatched_absence_proof(
             harness.descriptor.artifact_id,
             "retention-expired",
         )
-    harness.storage.delete(harness.descriptor.storage_key)
-    mismatched = ExtractionPayloadAbsenceProof(
-        artifact_id=harness.descriptor.artifact_id,
-        extraction_identity=harness.identity.digest,
-        artifact_sha256="f" * 64,
-        artifact_storage_key=harness.descriptor.storage_key,
-    )
-    with pytest.raises(
-        ExtractionPurgeFinalizationError, match="does not match"
-    ):
-        harness.registry.finalize_extraction_purge(
-            harness.execution,
-            harness.descriptor.artifact_id,
-            "retention-expired",
-            absence_proof=mismatched,
-        )
     assert harness.registry.get_extraction_record(
         harness.execution, harness.descriptor.artifact_id
     ).state is ExtractionRetentionState.RETENTION_EXPIRED
+
+
+def test_purge_finalization_has_no_supported_registry_or_proof_bypass() -> None:
+    """Expose finalization only through the documented retention service method.
+
+    Applications discover supported operations through public class attributes,
+    package exports, and the ordinary API guide. This test deliberately avoids
+    reflection into underscore-prefixed implementation details: it proves the
+    registry has no old public finalizer, the package exports no constructible
+    proof model, and documentation names only the service-owned trust boundary.
+    """
+    assert not hasattr(SourceAssetRegistry, "finalize_extraction_purge")
+    assert not hasattr(cognityx_ingest, "ExtractionPayloadAbsenceProof")
+    assert not hasattr(ingest_models, "ExtractionPayloadAbsenceProof")
+    assert "ExtractionPayloadAbsenceProof" not in cognityx_ingest.__all__
+    assert callable(ExtractionRetentionService.finalize_purge)
+    api_guide = (
+        Path(__file__).resolve().parents[2] / "docs" / "api.md"
+    ).read_text(encoding="utf-8")
+    assert "finalize_extraction_purge" not in api_guide
+    assert "ExtractionPayloadAbsenceProof" not in api_guide
+    assert "cognityx_ingest.cleanup.ExtractionRetentionService" in api_guide
+    assert api_guide.count("show_source: false") >= 3
 
 
 def test_retention_service_has_no_second_storage_backend_argument(

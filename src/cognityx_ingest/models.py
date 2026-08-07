@@ -460,17 +460,20 @@ class ExtractionRetentionRecord:
 
 
 @dataclass(frozen=True, slots=True)
-class ExtractionPayloadAbsenceProof:
-    """Bind one T01-verified missing payload to exact retention metadata.
+class _ExtractionPayloadAbsenceProof:
+    """Carry an internal T01 observation into the registry transaction.
 
-    ``ExtractionRetentionService`` constructs this only after reading a surviving
-    descriptor, observing payload absence through ``NativeArtifactStore.reload``,
-    and reading the same descriptor again. The registry consumes the proof inside
-    its final transaction and compares every field with the live record. This
-    bounded immutable value replaces an arbitrary callback, so the catalog cannot
-    accidentally query a different Storage backend or execute caller code while
-    holding its write lock. It contains no bytes, secrets, physical paths, or
-    deletion capability and is safe for concurrent readers.
+    ``ExtractionRetentionService._prove_payload_absent`` is the only supported
+    producer and the registry's private finalization seam is the only consumer.
+    The service creates this value only after reading a surviving descriptor,
+    observing payload-specific absence through the same
+    ``NativeArtifactStore.reload`` boundary, and reading the descriptor again.
+    Its fields bind that observation to live metadata but do not independently
+    prove Storage absence, so application callers must never manufacture it.
+    The immutable handoff contains no bytes, secrets, physical paths, deletion
+    capability, or cryptographic claim. Construction and validation are pure;
+    typed validation failures occur before the private transaction, and frozen
+    state is safe for concurrent readers.
     """
 
     artifact_id: str
@@ -479,7 +482,14 @@ class ExtractionPayloadAbsenceProof:
     artifact_storage_key: str
 
     def __post_init__(self) -> None:
-        """Validate exact logical identity before a proof reaches persistence."""
+        """Validate the internal handoff's exact logical metadata fields.
+
+        The private service factory and registry transaction rely on this pure
+        check to reject malformed IDs, hashes, or logical keys. Passing validation
+        does not establish payload absence; only the preceding T01 store traversal
+        supplies that observation. No I/O or mutation occurs, and failures use the
+        existing bounded extraction-identity error family.
+        """
         _require_identifier(self.artifact_id, "artifact_id")
         _require_sha256(self.extraction_identity, "extraction_identity")
         _require_sha256(self.artifact_sha256, "artifact_sha256")

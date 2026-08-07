@@ -40,7 +40,7 @@ from cognityx_ingest.control import ControlClient
 from cognityx_ingest.models import (
     ExecutionContext,
     ExtractionIdentity,
-    ExtractionPayloadAbsenceProof,
+    _ExtractionPayloadAbsenceProof,
     ExtractionPurgeCandidate,
     ExtractionPurgeFinalizationError,
     ExtractionPurgePlan,
@@ -469,7 +469,7 @@ class ExtractionRetentionService:
         """
         record = self._registry.get_extraction_record(execution, artifact_id)
         absence_proof = self._prove_payload_absent(record)
-        return self._registry.finalize_extraction_purge(
+        return self._registry._finalize_extraction_purge_after_verified_absence(
             execution,
             artifact_id,
             deletion_reason,
@@ -478,7 +478,7 @@ class ExtractionRetentionService:
 
     def _prove_payload_absent(
         self, record: ExtractionRetentionRecord
-    ) -> ExtractionPayloadAbsenceProof:
+    ) -> _ExtractionPayloadAbsenceProof:
         """Prove missing payload and surviving descriptor through one T01 store.
 
         Finalization calls this read-only gate before acquiring the catalog write
@@ -488,7 +488,10 @@ class ExtractionRetentionService:
         to a second descriptor read; that read must still succeed and match every
         immutable fact before the method returns a bounded proof. Missing or
         corrupt descriptors, hash/pointer failures, and Storage errors become
-        typed finalization failures. No payload or descriptor is changed.
+        typed finalization failures. The returned underscore-prefixed handoff is
+        internal metadata, not caller evidence and not an independently sufficient
+        absence claim. No payload or descriptor is changed; repeated observations
+        are read-only, and the registry later serializes competing policy writers.
         """
         try:
             descriptor = self._native_artifacts.read(record.artifact_id)
@@ -507,7 +510,7 @@ class ExtractionRetentionService:
                 raise ExtractionPurgeFinalizationError(
                     "native artifact descriptor did not survive payload removal"
                 ) from error
-            return ExtractionPayloadAbsenceProof(
+            return _ExtractionPayloadAbsenceProof(
                 artifact_id=record.artifact_id,
                 extraction_identity=record.extraction_identity,
                 artifact_sha256=record.artifact_sha256,

@@ -76,7 +76,7 @@ from cognityx_ingest.models import (
     DocBundleDeletionResult,
     ExecutionContext,
     ExtractionIdentity,
-    ExtractionPayloadAbsenceProof,
+    _ExtractionPayloadAbsenceProof,
     ExtractionPurgeBlockedError,
     ExtractionPurgeCandidate,
     ExtractionPurgeFinalizationError,
@@ -1516,29 +1516,31 @@ class SourceAssetRegistry:
                 "could not plan extraction purge metadata"
             ) from error
 
-    def finalize_extraction_purge(
+    def _finalize_extraction_purge_after_verified_absence(
         self,
         execution: ExecutionContext,
         artifact_id: str,
         deletion_reason: str,
         *,
-        absence_proof: ExtractionPayloadAbsenceProof,
+        absence_proof: _ExtractionPayloadAbsenceProof,
     ) -> ExtractionRetentionRecord:
-        """Finalize a tombstone from an exact T01 payload-absence proof.
+        """Commit purge metadata after the service's verified T01 observation.
 
-        ``ExtractionRetentionService.finalize_purge`` supplies the bounded proof
-        after verifying one surviving descriptor around a missing-payload reload.
-        Inside one immediate transaction this method reloads live state, rejects
-        hold/references/unexpired/purged records, and requires proof identity,
-        artifact hash, and logical key to equal that record before writing
-        ``purged`` and its event atomically. It executes no callback, Storage call,
-        delete, parser, or network action, so a different backend cannot be
-        consulted while the catalog lock is held. Stale or forged proofs fail and
-        leave state and history unchanged.
+        This explicitly private registry seam is called only by
+        ``ExtractionRetentionService.finalize_purge`` after that public service has
+        traversed the same T01 ``NativeArtifactStore`` around payload-specific
+        absence. The handoff fields alone are not evidence an application may
+        supply. Inside one immediate transaction the algorithm reloads live state,
+        rejects hold/references/unexpired/purged records, and requires artifact,
+        extraction identity, hash, and logical key to match before writing
+        ``purged``, tombstone, and event atomically. It executes no callback,
+        Storage call, delete, parser, or network action. Stale or malformed
+        internal handoffs fail without changing state or history; SQLite's write
+        lock serializes competing lifecycle writers.
         """
-        if not isinstance(absence_proof, ExtractionPayloadAbsenceProof):
+        if not isinstance(absence_proof, _ExtractionPayloadAbsenceProof):
             raise ExtractionPurgeFinalizationError(
-                "payload absence proof must use the bounded production contract"
+                "payload absence handoff must use the internal service contract"
             )
         context = self.resolve_context(execution)
         self._authorize(

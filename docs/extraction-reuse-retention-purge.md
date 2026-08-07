@@ -222,14 +222,44 @@ payload is absent while the same descriptor can still be read and still matches
 the retention record. A present payload, missing descriptor, corrupt payload,
 invalid native pointer, or Storage failure stops finalization.
 
-After that read-only check, the service creates a small typed absence proof bound
+The supported public flow is deliberately narrow:
+
+```text
+application or operator
+          |
+          v
+ExtractionRetentionService.finalize_purge()
+          |
+          v
+same T01 NativeArtifactStore: read -> reload -> read
+          |
+          v
+internal registry transaction
+          |
+          v
+purged metadata + tombstone + event
+```
+
+After the read-only T01 check, the service creates a small internal handoff bound
 to the artifact ID, extraction identity, artifact SHA-256, and logical Storage
-key. The registry reacquires the metadata write lock, rechecks current state,
-legal hold, and active references, and compares every proof field with the live
-record before committing. The registry accepts no callback and the service
-accepts no second Storage client, so checking the wrong backend is structurally
-unavailable. If a new reference or hold appeared, finalization fails even if an
-old plan said eligible.
+key. These matching fields are not proof that Storage bytes are absent. They only
+carry the result of the service's immediately preceding T01 observation into the
+transaction. Applications must never manufacture an “absence proof” from catalog
+metadata, and the registry therefore exposes no supported public purge-finalizer
+that accepts one.
+
+The registry's underscore-prefixed finalization seam exists only to finish the
+service operation under `BEGIN IMMEDIATE`. It rechecks current state, legal hold,
+and active references and compares every internal handoff field with the live
+record before committing. It accepts no callback, appears in no ordinary public
+API or example, and the service accepts no second Storage client, so checking the
+wrong backend is structurally unavailable. If a new reference or hold appeared,
+finalization fails even if an old plan said eligible.
+
+This separation is a trust boundary, not cryptographic attestation. T01 remains
+the authoritative observation boundary because its descriptor and payload share
+one configured Storage scope. Storage remains responsible for physical deletion;
+T07 only observes the outcome and records metadata after the safe service path.
 
 This algorithm is called **stale-plan revalidation**. It means a previous decision
 cannot overrule newer safety information.
