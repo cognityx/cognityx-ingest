@@ -115,6 +115,13 @@ source bytes:
 This separation means deleting an extracted document does not silently delete
 the original PDF.
 
+Parser-native extraction payloads have a separate retention policy. Ingest can
+reuse one only when all six execution identity values match and T01 verifies the
+stored bytes. Active consumers and legal hold block purge. Ingest plans native
+payload purge as metadata, while Storage owns physical deletion; canonical
+document content and its evidence remain. See [Extraction Reuse, Retention, and
+Purge](extraction-reuse-retention-purge.md).
+
 ## Advanced Configuration
 
 Normal commands load the standard Storage Runtime. An operator may select an

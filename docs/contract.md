@@ -84,6 +84,20 @@ T06 does not add an always-written ingest artifact or physical cache; T07 owns
 reuse, retention, and purge decisions. See [Non-Copying Segmentation
 Views](non-copying-segmentation-views.md).
 
+T07 identifies a reusable parser extraction from exactly six values: source
+SHA-256, parser ID, parser version, parser-configuration hash, model version, and
+logical scope. Exact validated records may be reused only after T01 reloads and
+verifies the native payload. Active NativeBinding, canonically verified
+parser-native view, and explicit downstream-consumer references protect the
+payload. Retention expiry does not override active references or legal hold.
+
+Purge planning produces metadata only. Cognityx Storage remains responsible for
+physical deletion. T07 records `purged` and a compact tombstone only after it
+rechecks current policy and read-only Storage existence reports the native
+payload absent. Canonical content, selectors, bindings, T05 decisions, T06 views,
+provenance, and the immutable T01 descriptor survive. See [Extraction Reuse,
+Retention, and Purge](extraction-reuse-retention-purge.md).
+
 The immutable provenance artifact is the complete package another program
 needs to understand the document without opening the PDF again. This handoff
 is technically called `provenance.json`. Version 2 records the run and job,

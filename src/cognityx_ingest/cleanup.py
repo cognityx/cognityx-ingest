@@ -1,19 +1,89 @@
-"""Ingest/Storage coordination for explicit SourceAsset Blob cleanup."""
+"""Coordinate deletion policy while leaving physical removal to Storage.
+
+Purpose
+-------
+This module separates two kinds of cleanup. ``SourceAssetCleanupService`` keeps
+the existing source-blob garbage-collection flow. ``ExtractionRetentionService``
+adds T07 policy for parser-native artifacts: exact reuse, active references,
+retention expiry, legal hold, advisory purge plans, and post-deletion tombstones.
+
+Design and flow
+---------------
+Ingest owns metadata decisions and Storage owns bytes. Exact extraction identity
+selects a validated record, the registry atomically acquires a reference, and
+``NativeArtifactStore.reload`` verifies retained bytes before reuse succeeds.
+Purge planning reads metadata only. After an external Storage-owned process has
+removed a payload, finalization proves descriptor survival and payload absence
+through the same T01 store before recording ``purged``. Canonical content,
+selectors, native bindings,
+segmentation views, observations, and immutable native descriptors are untouched.
+
+Consumers and boundaries
+------------------------
+Application composition, retention operators, and future T10 controls use these
+services. Parsers, routing, T08 source graphs, DataForge generation, SDK, CLI, and
+physical artifact deletion remain outside this module. Instances hold immutable
+collaborator references; SQLite transactions provide metadata race safety while
+the configured Storage backend defines its own thread-safety guarantees.
+"""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from collections.abc import Iterable, Mapping
+from datetime import UTC, datetime, timedelta
+import hashlib
+import json
 import warnings
 
+from cognityx_ingest.canonical_content import CanonicalContentArtifact
 from cognityx_ingest.control import ControlClient
-from cognityx_ingest.models import ExecutionContext
-from cognityx_ingest.models import UsageReport
+from cognityx_ingest.models import (
+    ExecutionContext,
+    ExtractionIdentity,
+    _ExtractionPayloadAbsenceProof,
+    ExtractionPurgeCandidate,
+    ExtractionPurgeFinalizationError,
+    ExtractionPurgePlan,
+    ExtractionRetentionConflictError,
+    ExtractionRetentionEvent,
+    ExtractionRetentionRecord,
+    ExtractionRetentionState,
+    ExtractionReuseIntegrityError,
+    ExtractionReuseResult,
+    UsageReport,
+)
+from cognityx_ingest.native_artifacts import (
+    NativeArtifactDescriptor,
+    NativeArtifactError,
+    NativeArtifactNotFoundError,
+    NativeArtifactStore,
+)
+from cognityx_ingest.segmentation_views import (
+    SegmentationView,
+    SegmentationViewService,
+    SegmentationViewSet,
+)
 from cognityx_ingest.source_assets import SourceAssetRegistry
-from cognityx_storage import BlobGcPlan, BlobGcResult, StorageRuntime
+from cognityx_storage import (
+    BlobGcPlan,
+    BlobGcResult,
+    StorageRuntime,
+)
 
 
 class SourceAssetCleanupService:
-    """Keep catalog reference enumeration separate from Storage deletion."""
+    """Keep existing source-blob reference policy separate from Storage deletion.
+
+    Source lifecycle composition constructs this service and operators use it to
+    plan and execute Storage's content-addressed blob GC. The algorithm enumerates
+    live catalog references, delegates grace periods and deletion to
+    ``StorageRuntime.blob_gc``, and rechecks references under a catalog lock for
+    each bounded batch. It does not govern T07 parser-native retention. Repeated
+    planning is read-only; execution is intentionally side-effecting and Storage
+    reports idempotent already-absent results. Authorization failures remain
+    typed by the control client. Each call owns local state, while registry and
+    Storage collaborators provide concurrency safety.
+    """
 
     def __init__(
         self,
@@ -22,6 +92,13 @@ class SourceAssetCleanupService:
         storage_runtime: StorageRuntime,
         control: ControlClient | None = None,
     ) -> None:
+        """Bind source cleanup to its registry, Storage runtime, and control seam.
+
+        Application composition calls this pure constructor. It performs no I/O,
+        adds no mutable cleanup state, and preserves the historical default of
+        using the registry's control client. Invalid collaborators fail naturally
+        when an operation uses their documented protocol.
+        """
         self.registry = registry
         self.storage_runtime = storage_runtime
         self.control = control or registry.control
@@ -32,6 +109,13 @@ class SourceAssetCleanupService:
         *,
         older_than: timedelta = timedelta(days=7),
     ) -> BlobGcPlan:
+        """Build a grace-period-aware source-blob plan without deleting objects.
+
+        Operators call this authorized, metadata-first operation. It gathers live
+        and historical BlobRefs, delegates candidate calculation to Storage, and
+        reports bounded usage metrics. The catalog and payloads are not mutated;
+        repeated calls may differ only as time or external state changes.
+        """
         self._authorize(execution, "storage.blob.gc.plan")
         refs = self.registry.list_referenced_blob_refs(include_deleted=False)
         historical = self.registry.list_referenced_blob_refs(include_deleted=True)
@@ -55,6 +139,14 @@ class SourceAssetCleanupService:
         *,
         batch_size: int = 100,
     ) -> BlobGcResult:
+        """Execute a Storage-owned source-blob plan in reference-safe batches.
+
+        Operators call this explicit destructive boundary for SourceAsset CAS
+        blobs, never T07 native artifacts. Each batch reacquires the catalog write
+        lock, reloads live references, delegates deletion to Storage, and combines
+        immutable results. Invalid batch bounds raise ``ValueError`` before any
+        deletion; backend failures are represented by Storage's result contract.
+        """
         if not 1 <= batch_size <= 500:
             raise ValueError("batch_size must be between 1 and 500")
         self._authorize(execution, "storage.blob.gc.execute")
@@ -84,6 +176,7 @@ class SourceAssetCleanupService:
         return result
 
     def _report(self, execution: ExecutionContext, metrics: dict[str, int]) -> None:
+        """Report completed cleanup usage without undoing successful Storage work."""
         try:
             self.control.report_usage(execution, UsageReport(run_id=execution.run_id, metrics=metrics))
         except Exception as exc:
@@ -94,6 +187,7 @@ class SourceAssetCleanupService:
             )
 
     def _authorize(self, execution: ExecutionContext, action: str) -> None:
+        """Require the existing owner-scoped source-blob cleanup permission."""
         decision = self.control.authorize(execution, action, resource={"role": "source_asset"})
         if not decision.allowed:
             from cognityx_ingest.control import IngestAuthorizationError
@@ -101,3 +195,477 @@ class SourceAssetCleanupService:
             raise IngestAuthorizationError(
                 decision.reason or f"Control policy rejected {action}."
             )
+
+
+class ExtractionRetentionService:
+    """Coordinate exact extraction reuse and metadata-only retention policy.
+
+    Application composition constructs this service from the existing catalog
+    and one context-bound T01 native store. Retention
+    operators and complete-identity callers use it. Registration and reuse verify
+    descriptors and payloads through ``NativeArtifactStore``; policy mutations
+    delegate to transactional registry APIs; purge planning is advisory; and
+    finalization records a tombstone only after the same T01 store proves payload
+    absence while its descriptor survives.
+    The service never selects or executes a parser, calls a provider/LLM/network,
+    copies payload bytes into metadata, deletes Storage objects, or modifies
+    canonical/T05/T06 records. Calls are idempotent where the registry contract is
+    idempotent; typed T07 errors bound integrity and policy failures. Immutable
+    collaborator references are safe to share when their implementations are.
+    """
+
+    def __init__(
+        self,
+        *,
+        registry: SourceAssetRegistry,
+        native_artifacts: NativeArtifactStore,
+    ) -> None:
+        """Bind T07 policy to one catalog and one authoritative T01 store.
+
+        The composition root constructs this without I/O. Registration, reuse, and
+        finalization all traverse the same ``NativeArtifactStore`` instance, which
+        makes selecting a different payload backend structurally impossible. No
+        separate Storage client, parser, or deletion collaborator is accepted.
+        The immutable references are safe to share when their implementations are,
+        and operational methods expose typed T07/T01 failures rather than backend
+        details.
+        """
+        self._registry = registry
+        self._native_artifacts = native_artifacts
+
+    def register_extraction(
+        self,
+        execution: ExecutionContext,
+        identity: ExtractionIdentity,
+        descriptor: NativeArtifactDescriptor,
+        *,
+        reference_ids: Iterable[str] = (),
+    ) -> ExtractionRetentionRecord:
+        """Register one already stored and integrity-verified native extraction.
+
+        Trusted post-parser composition calls this only when all six identity
+        fields are explicit. The algorithm reloads exact T01 bytes, checks artifact,
+        parser, version, hash, key, URI, and media facts, builds a validated record,
+        and delegates atomic idempotent persistence to the registry. It does not
+        execute a parser or write/copy payloads. Conflicting metadata raises typed
+        retention errors, and failed integrity checks leave no catalog record.
+        """
+        if not isinstance(identity, ExtractionIdentity):
+            raise ExtractionRetentionConflictError(
+                "complete ExtractionIdentity is required for registration"
+            )
+        verified = self._verified_descriptor(descriptor)
+        if (
+            verified.parser_id != identity.parser_id
+            or verified.parser_version != identity.parser_version
+        ):
+            raise ExtractionRetentionConflictError(
+                "native descriptor parser identity does not match extraction identity"
+            )
+        now = _now()
+        record = ExtractionRetentionRecord(
+            context_id=execution.context_id,
+            artifact_id=verified.artifact_id,
+            identity=identity,
+            extraction_identity=identity.digest,
+            artifact_sha256=verified.sha256,
+            artifact_storage_key=verified.storage_key,
+            artifact_media_type=verified.media_type,
+            state=ExtractionRetentionState.VALIDATED,
+            reference_ids=_ordered_reference_ids(reference_ids),
+            legal_hold=False,
+            created_at=now,
+            updated_at=now,
+            updated_by=execution.principal_id,
+            updated_run_id=execution.run_id,
+        )
+        return self._registry.register_extraction_record(execution, record)
+
+    def acquire_reusable(
+        self,
+        execution: ExecutionContext,
+        identity: ExtractionIdentity,
+        reference_id: str,
+    ) -> ExtractionReuseResult:
+        """Acquire and verify only one exact validated retained extraction.
+
+        Complete-identity composition calls this before deciding whether parsing
+        is needed. The registry atomically adds the consumer reference before this
+        service reloads payload bytes through T01. Exact misses, expired records,
+        and tombstones return a deterministic non-reuse result. Integrity mismatch
+        removes only the reference inserted by this call and raises
+        ``ExtractionReuseIntegrityError``. No parser, network, provider, LLM, or
+        Storage write/delete occurs; a successful reference remains until its
+        owner explicitly removes it.
+        """
+        record, acquisition_token = self._registry.acquire_reusable_extraction(
+            execution, identity, reference_id
+        )
+        if record is None:
+            return ExtractionReuseResult(
+                reused=False,
+                reference_id=reference_id,
+                record=None,
+                reason="no exact validated extraction",
+            )
+        try:
+            descriptor = self._native_artifacts.reload(
+                record.artifact_id
+            ).descriptor
+            self._assert_record_descriptor(record, descriptor)
+        except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
+            self._registry._release_failed_reuse_acquisition(
+                execution,
+                record.artifact_id,
+                reference_id,
+                acquisition_token,
+            )
+            if isinstance(error, ExtractionReuseIntegrityError):
+                raise
+            raise ExtractionReuseIntegrityError(
+                "retained native artifact failed integrity verification"
+            ) from error
+        return ExtractionReuseResult(
+            reused=True,
+            reference_id=reference_id,
+            record=self._registry.get_extraction_record(
+                execution, record.artifact_id
+            ),
+            reason=None,
+        )
+
+    def add_reference(
+        self, execution: ExecutionContext, artifact_id: str, reference_id: str
+    ) -> ExtractionRetentionRecord:
+        """Add one explicit payload-requiring consumer reference idempotently.
+
+        NativeBinding, verified-view, and downstream lifecycle composition call
+        this after establishing a real payload dependency. The registry validates
+        context and identity, serializes the insert, deduplicates retries, and
+        returns current immutable state. No payload, parser, network, provider,
+        LLM, or deletion operation occurs; typed registry failures propagate and
+        thread safety comes from the immediate SQLite transaction.
+        """
+        return self._registry.add_extraction_reference(
+            execution, artifact_id, reference_id
+        )
+
+    def remove_reference(
+        self, execution: ExecutionContext, artifact_id: str, reference_id: str
+    ) -> ExtractionRetentionRecord:
+        """Remove only a caller-named reference as an explicit lifecycle step.
+
+        The consumer that owns a stable reference calls this when it no longer
+        requires native bytes. The registry removes that exact deduplicated row
+        under a context-scoped transaction and returns current immutable state;
+        absent retries are safe. It never infers removal from expiry or compact
+        lineage and performs no payload I/O or deletion. Typed registry failures
+        propagate, and competing policy writers serialize through SQLite.
+        """
+        return self._registry.remove_extraction_reference(
+            execution, artifact_id, reference_id
+        )
+
+    def set_legal_hold(
+        self, execution: ExecutionContext, artifact_id: str, *, enabled: bool
+    ) -> ExtractionRetentionRecord:
+        """Enable or release independent durable legal hold idempotently.
+
+        Authorized governance composition calls this with an explicit boolean.
+        The registry rejects purged artifacts, changes audit metadata only when
+        the value differs, and returns a frozen record whose purge eligibility is
+        derived immediately. Hold does not change reuse state or payload bytes.
+        Typed policy failures propagate; one immediate transaction provides race
+        safety and repeated equal requests have no additional side effect.
+        """
+        return self._registry.set_extraction_legal_hold(
+            execution, artifact_id, enabled=enabled
+        )
+
+    def mark_retention_expired(
+        self, execution: ExecutionContext, artifact_id: str
+    ) -> ExtractionRetentionRecord:
+        """Advance validated metadata to retention-expired without deleting bytes.
+
+        Retention policy orchestration calls this one-way state operation. The
+        registry changes `validated` once, accepts an already-expired retry, and
+        rejects resurrection from `purged` under an immediate transaction. Active
+        references and legal hold remain untouched and continue to protect purge.
+        No Storage, parser, network, provider, or LLM call occurs; typed policy
+        failures propagate and the returned record is immutable.
+        """
+        return self._registry.mark_extraction_retention_expired(
+            execution, artifact_id
+        )
+
+    def plan_purge(self, execution: ExecutionContext) -> ExtractionPurgePlan:
+        """Build a deterministic advisory partition without physical deletion.
+
+        Operators call this after policy updates. Current records are projected by
+        the registry, sorted into eligible and protected tuples, and hashed into a
+        stable plan ID with no payload reads or writes. The snapshot has no future
+        authority: ``finalize_purge`` always rechecks live metadata and Storage.
+        """
+        candidates = self._registry.list_extraction_purge_candidates(execution)
+        eligible = tuple(item for item in candidates if item.eligible)
+        protected = tuple(item for item in candidates if not item.eligible)
+        plan_material = {
+            "context_id": execution.context_id,
+            "eligible": [_candidate_dict(item) for item in eligible],
+            "protected": [_candidate_dict(item) for item in protected],
+        }
+        plan_id = "purge-" + hashlib.sha256(
+            json.dumps(
+                plan_material,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return ExtractionPurgePlan(
+            plan_id=plan_id,
+            context_id=execution.context_id,
+            created_at=_now(),
+            eligible=eligible,
+            protected=protected,
+        )
+
+    def list_events(
+        self,
+        execution: ExecutionContext,
+        *,
+        artifact_id: str | None = None,
+    ) -> tuple[ExtractionRetentionEvent, ...]:
+        """Return ordered context-scoped retention history without payload I/O.
+
+        Audit and operations composition call this read-only service method for all
+        artifacts in a context or one bounded artifact ID. It delegates authority,
+        ordering, strict row validation, and tenant isolation to the registry and
+        returns immutable payload-free events. It does not reconstruct history
+        from current state, call Storage, execute a parser, or mutate audit rows;
+        registry authorization and typed T07 failures pass through unchanged.
+        """
+        return self._registry.list_extraction_retention_events(
+            execution, artifact_id=artifact_id
+        )
+
+    def finalize_purge(
+        self,
+        execution: ExecutionContext,
+        artifact_id: str,
+        deletion_reason: str,
+    ) -> ExtractionRetentionRecord:
+        """Record purged only after descriptor survival and payload absence.
+
+        Storage coordination calls this after an external owner removed the payload.
+        The method reads the immutable descriptor, proves it agrees with catalog
+        facts, attempts a T01 reload, and accepts only the precise case where the
+        payload is absent but the same descriptor can still be read afterward.
+        It then sends a field-bound immutable proof to the registry, which rechecks
+        current expiry/references/hold before writing the compact tombstone and
+        event atomically. A present payload, absent descriptor, corrupt bytes,
+        invalid pointer, stale proof, or backend failure leaves metadata unchanged.
+        This method never invokes delete, unlink, rmtree, parser, provider, LLM,
+        network, or a second Storage client.
+        """
+        record = self._registry.get_extraction_record(execution, artifact_id)
+        absence_proof = self._prove_payload_absent(record)
+        return self._registry._finalize_extraction_purge_after_verified_absence(
+            execution,
+            artifact_id,
+            deletion_reason,
+            absence_proof=absence_proof,
+        )
+
+    def _prove_payload_absent(
+        self, record: ExtractionRetentionRecord
+    ) -> _ExtractionPayloadAbsenceProof:
+        """Prove missing payload and surviving descriptor through one T01 store.
+
+        Finalization calls this read-only gate before acquiring the catalog write
+        lock. It first validates the descriptor against the retention record, then
+        asks ``reload`` for verified bytes. A successful reload proves the payload
+        remains and therefore fails. Only ``NativeArtifactNotFoundError`` advances
+        to a second descriptor read; that read must still succeed and match every
+        immutable fact before the method returns a bounded proof. Missing or
+        corrupt descriptors, hash/pointer failures, and Storage errors become
+        typed finalization failures. The returned underscore-prefixed handoff is
+        internal metadata, not caller evidence and not an independently sufficient
+        absence claim. No payload or descriptor is changed; repeated observations
+        are read-only, and the registry later serializes competing policy writers.
+        """
+        try:
+            descriptor = self._native_artifacts.read(record.artifact_id)
+            self._assert_record_descriptor(record, descriptor)
+        except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
+            raise ExtractionPurgeFinalizationError(
+                "native artifact descriptor failed finalization verification"
+            ) from error
+        try:
+            self._native_artifacts.reload(record.artifact_id)
+        except NativeArtifactNotFoundError:
+            try:
+                surviving = self._native_artifacts.read(record.artifact_id)
+                self._assert_record_descriptor(record, surviving)
+            except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
+                raise ExtractionPurgeFinalizationError(
+                    "native artifact descriptor did not survive payload removal"
+                ) from error
+            return _ExtractionPayloadAbsenceProof(
+                artifact_id=record.artifact_id,
+                extraction_identity=record.extraction_identity,
+                artifact_sha256=record.artifact_sha256,
+                artifact_storage_key=record.artifact_storage_key,
+            )
+        except (NativeArtifactError, ExtractionReuseIntegrityError) as error:
+            raise ExtractionPurgeFinalizationError(
+                "native artifact payload absence could not be proven"
+            ) from error
+        raise ExtractionPurgeFinalizationError(
+            "parser payload still exists in Storage"
+        )
+
+    def _verified_descriptor(
+        self, descriptor: NativeArtifactDescriptor
+    ) -> NativeArtifactDescriptor:
+        """Reload T01 bytes and require caller metadata to equal stored metadata."""
+        if not isinstance(descriptor, NativeArtifactDescriptor):
+            raise ExtractionRetentionConflictError(
+                "descriptor must be a NativeArtifactDescriptor"
+            )
+        try:
+            verified = self._native_artifacts.reload(descriptor.artifact_id).descriptor
+        except NativeArtifactError as error:
+            raise ExtractionReuseIntegrityError(
+                "native artifact failed registration integrity verification"
+            ) from error
+        if verified != descriptor:
+            raise ExtractionRetentionConflictError(
+                "native artifact descriptor does not match retained Storage metadata"
+            )
+        return verified
+
+    @staticmethod
+    def _assert_record_descriptor(
+        record: ExtractionRetentionRecord,
+        descriptor: NativeArtifactDescriptor,
+    ) -> None:
+        """Compare every immutable T07/T01 fact without reading payload content."""
+        if (
+            descriptor.artifact_id != record.artifact_id
+            or descriptor.parser_id != record.identity.parser_id
+            or descriptor.parser_version != record.identity.parser_version
+            or descriptor.sha256 != record.artifact_sha256
+            or descriptor.storage_key != record.artifact_storage_key
+            or descriptor.media_type != record.artifact_media_type
+        ):
+            raise ExtractionReuseIntegrityError(
+                "retention metadata disagrees with native artifact descriptor"
+            )
+
+
+def collect_reference_ids(
+    artifact_id: str,
+    *,
+    canonical_content: CanonicalContentArtifact | None = None,
+    native_descriptors: Mapping[str, NativeArtifactDescriptor] | None = None,
+    segmentation_view_sets: Iterable[
+        tuple[SegmentationViewService, SegmentationViewSet]
+    ] = (),
+    consumer_reference_ids: Iterable[str] = (),
+) -> tuple[str, ...]:
+    """Collect explicit payload users from trusted canonical and T06 records.
+
+    Post-parser composition calls this before registration or explicit reference
+    reconciliation. Canonical content is validated with authoritative T01
+    descriptors before matching ``NativeBinding.artifact_id``. Every supplied T06
+    pair is verified through its bound service's ``validate_view_set`` method, not
+    merely value-level validation, before parser-native views with a matching
+    ``native_artifact_id`` contribute a ``segview-`` SHA-256 reference over exact
+    canonical digest, view ID, and cache identity. Explicit external
+    consumer IDs are included, then results are deduplicated and sorted.
+
+    The helper never interprets T05 observations as payload references, removes a
+    reference, reconstructs source text, mutates records, performs I/O, or calls a
+    parser/network/provider/LLM. Typed canonical/T06/T07 validation errors cross
+    the trust boundary unchanged. Pure local state makes repeated and concurrent
+    calls deterministic.
+    """
+    if not isinstance(artifact_id, str) or not artifact_id:
+        raise ExtractionRetentionConflictError("artifact_id must be nonempty")
+    references = set(_ordered_reference_ids(consumer_reference_ids))
+    if canonical_content is not None:
+        canonical_content.validate(native_descriptors=native_descriptors)
+        references.update(
+            binding.binding_id
+            for binding in canonical_content.native_bindings
+            if binding.artifact_id == artifact_id
+        )
+    for service, view_set in segmentation_view_sets:
+        verified = service.validate_view_set(view_set)
+        references.update(
+            _segmentation_reference_id(view)
+            for view in verified.views
+            if view.strategy == "parser-native-structure"
+            and view.profile is not None
+            and view.profile.get("native_artifact_id") == artifact_id
+        )
+    result = tuple(sorted(set(references)))
+    if any(not isinstance(item, str) or not item for item in result):
+        raise ExtractionRetentionConflictError(
+            "reference IDs must be nonempty strings"
+        )
+    return result
+
+
+def _segmentation_reference_id(view: SegmentationView) -> str:
+    """Derive a collision-safe text-free reference for one validated T06 view.
+
+    ``collect_reference_ids`` calls this only after the owning T06 service has
+    validated its view set. The algorithm hashes compact sorted-key JSON over the
+    exact canonical-content SHA-256, unchanged view ID, and T06 cache identity,
+    then prefixes the digest with ``segview-``. Separate canonical artifacts or
+    separately configured views can therefore reuse a human view ID without
+    sharing a retention reference. The helper copies no source text, performs no
+    I/O, and is deterministic and thread-safe.
+    """
+    material = {
+        "canonical_content_sha256": view.canonical_content_sha256,
+        "view_id": view.view_id,
+        "cache_identity": view.cache_identity,
+    }
+    return "segview-" + hashlib.sha256(
+        json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _candidate_dict(candidate: ExtractionPurgeCandidate) -> dict[str, object]:
+    """Project one validated purge candidate into deterministic plan hash data."""
+    return {
+        "artifact_id": candidate.artifact_id,
+        "extraction_identity": candidate.extraction_identity,
+        "artifact_storage_key": candidate.artifact_storage_key,
+        "artifact_sha256": candidate.artifact_sha256,
+        "eligible": candidate.eligible,
+        "reason": candidate.reason,
+    }
+
+
+def _ordered_reference_ids(values: Iterable[str]) -> tuple[str, ...]:
+    """Validate caller reference iterables before deterministic deduplication.
+
+    Registration and reference collection share this pure trust-boundary helper.
+    It materializes an iterable once, rejects non-string or empty identities with
+    a typed T07 conflict, and returns a sorted unique immutable tuple. It performs
+    no I/O or mutation and is deterministic for equal input values.
+    """
+    materialized = tuple(values)
+    if any(not isinstance(item, str) or not item for item in materialized):
+        raise ExtractionRetentionConflictError(
+            "reference IDs must be nonempty strings"
+        )
+    return tuple(sorted(set(materialized)))
+
+
+def _now() -> str:
+    """Return one sortable UTC audit timestamp for new retention metadata."""
+    return datetime.now(UTC).isoformat()
