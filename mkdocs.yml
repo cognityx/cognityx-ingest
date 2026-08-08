@@ -11,6 +11,7 @@ plugins:
 strict: true
 nav:
   - Overview: index.md
+  - Schema and Object Map: schema-map.md
   - Source Assets: sources.md
   - Contract: contract.md
   - Native Parser Artifacts: native-parser-artifacts.md
