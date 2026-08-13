@@ -136,6 +136,22 @@ explicit configuration when testing profile routing:
 cogni ingest report.pdf --storage-config .cognityx/storage.toml
 ```
 
+Persistent parser and Ingest settings belong to the application-facing SDK,
+not to the compatibility-only `cognityx-ingest` executable. Inspect the files
+actually loaded, their hashes, field sources, final overrides, and validation
+without starting a parser or model:
+
+```bash
+cogni config show --component ingest
+cogni config validate --component ingest
+```
+
+Storage and Resource Context keep their own independent master configurations;
+`cogni config show --component all` presents those owner reports together.
+Inference resolution plans, capability registries, routing plans, segmentation
+evidence, asset IDs, and bundle IDs remain bounded runtime or domain inputs and
+are not added to ambient global discovery.
+
 ## Future Roadmap
 
 The following work is intentionally deferred:

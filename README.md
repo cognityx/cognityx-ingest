@@ -33,6 +33,10 @@ storage (CAS), duplicate-byte reuse, profile routing, and safe blob cleanup.
 See the [documentation](docs/index.md) for lifecycle commands, deletion rules,
 the Python API, compatibility behavior, and the future roadmap.
 
+The SDK owns persistent Ingest settings and their inspection. Use
+`cogni config show --component ingest`; the compatibility-only
+`cognityx-ingest` executable intentionally has no separate config group.
+
 The default parser keeps page text. Optional Docling and PyMuPDF plugins add
 rich structure and PDF-native facts. When an ambiguity remains, an explicitly
 configured Cognityx Inference client may propose a resolution. Ingest validates
