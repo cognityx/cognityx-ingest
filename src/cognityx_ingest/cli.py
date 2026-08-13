@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import argparse
 import base64
-from datetime import timedelta
 import json
 import re
 import sys
 import time
 import warnings
+from datetime import timedelta
+from functools import partial
 from pathlib import Path
 
 from cognityx_jobs import JobRepository
@@ -26,12 +27,13 @@ from cognityx_storage import (
     StorageRuntime,
 )
 
-from cognityx_ingest.management import ARTIFACT_READ_NAMES, IngestManager
 from cognityx_ingest.cleanup import SourceAssetCleanupService
 from cognityx_ingest.context import resolve_execution_context
+from cognityx_ingest.human import render_human
+from cognityx_ingest.management import ARTIFACT_READ_NAMES, IngestManager
+from cognityx_ingest.models import SourceAssetBatchResult
 from cognityx_ingest.service import IngestService
 from cognityx_ingest.source_assets import SourceAssetRegistry
-from cognityx_ingest.models import SourceAssetBatchResult
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -88,14 +90,20 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--follow", action="store_true")
         _add_runtime_arguments(command)
 
-    documents = commands.add_parser("documents", help="Inspect or delete canonical documents.")
+    documents = commands.add_parser(
+        "documents", help="Inspect or delete canonical documents."
+    )
     document_commands = documents.add_subparsers(dest="document_command", required=True)
     for name in ("list", "show", "delete"):
         command = document_commands.add_parser(name)
         if name != "list":
             command.add_argument("document_id")
         if name == "delete":
-            command.add_argument("--yes", action="store_true", help="Confirm irreversible artifact deletion.")
+            command.add_argument(
+                "--yes",
+                action="store_true",
+                help="Confirm irreversible artifact deletion.",
+            )
         _add_runtime_arguments(command)
 
     runs = commands.add_parser("runs", help="Inspect or delete generated ingest runs.")
@@ -108,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--yes", action="store_true")
         _add_runtime_arguments(command)
 
-    artifacts = commands.add_parser("artifacts", help="Read one generated document artifact.")
+    artifacts = commands.add_parser(
+        "artifacts", help="Read one generated document artifact."
+    )
     artifact_commands = artifacts.add_subparsers(dest="artifact_command", required=True)
     read = artifact_commands.add_parser("read")
     read.add_argument("document_id")
@@ -135,7 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         "sources",
         help_text="Compatibility alias for assets.",
     )
-    cleanup = commands.add_parser("cleanup", help="Plan or execute physical Blob cleanup.")
+    cleanup = commands.add_parser(
+        "cleanup", help="Plan or execute physical Blob cleanup."
+    )
     cleanup_commands = cleanup.add_subparsers(dest="cleanup_command", required=True)
     blobs = cleanup_commands.add_parser("blobs")
     blobs.add_argument("--older-than", default="7d")
@@ -145,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(arguments)
     context = _context(args)
+    write = partial(_write, human=args.human)
 
     if args.command in {"doc-bundles", "assets", "bundles", "sources"}:
         runtime = _source_runtime(args)
@@ -156,8 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command in {"bundles", "sources"}:
             replacement = "doc-bundles" if args.command == "bundles" else "assets"
             print(
-                f"'{args.command}' is retained for compatibility; "
-                f"use '{replacement}'.",
+                f"'{args.command}' is retained for compatibility; use '{replacement}'.",
                 file=sys.stderr,
             )
         if args.command in {"doc-bundles", "bundles"}:
@@ -167,17 +179,17 @@ def main(argv: list[str] | None = None) -> int:
                     if canonical
                     else registry.list_bundles(context)
                 )
-                _write([_plain(item) for item in items])
+                write([_plain(item) for item in items])
             elif args.bundle_command == "locate":
                 value = (
                     registry.locate_doc_bundle(context, args.bundle_id)
                     if canonical
                     else registry.locate_bundle(context, args.bundle_id)
                 )
-                _write(value)
+                write(value)
             elif args.bundle_command == "deleted":
                 items = registry.list_deleted_doc_bundles(context)
-                _write([_plain(item) for item in items])
+                write([_plain(item) for item in items])
             elif args.bundle_command == "delete":
                 if not args.yes:
                     raise ValueError("Deleting a DocBundle requires --yes.")
@@ -187,14 +199,14 @@ def main(argv: list[str] | None = None) -> int:
                     recursive=args.recursive,
                     reason=args.reason,
                 )
-                _write(_plain(value))
+                write(_plain(value))
             else:
                 value = (
                     registry.resolve_doc_bundle(context, args.path, create=True)
                     if canonical
                     else registry.resolve_bundle(context, args.path, create=True)
                 )
-                _write(_plain(value))
+                write(_plain(value))
             return 0
         if args.asset_command == "add":
             value = registry.register_path(
@@ -210,42 +222,37 @@ def main(argv: list[str] | None = None) -> int:
                     "inspect the JSON batch items for safe details.",
                     file=sys.stderr,
                 )
-            _write(_asset_plain(value) if canonical else _plain(value))
+            write(_asset_plain(value) if canonical else _plain(value))
         elif args.asset_command == "list":
             items = (
                 registry.list_assets(context, bundle=args.bundle)
                 if canonical
                 else registry.list_sources(context, bundle=args.bundle)
             )
-            _write(
-                [
-                    _asset_plain(item) if canonical else _plain(item)
-                    for item in items
-                ]
-            )
+            write([_asset_plain(item) if canonical else _plain(item) for item in items])
         elif args.asset_command == "show":
             value = (
                 registry.show_asset(context, args.asset_id)
                 if canonical
                 else registry.show_source(context, args.asset_id)
             )
-            _write(_asset_plain(value) if canonical else _plain(value))
+            write(_asset_plain(value) if canonical else _plain(value))
         elif args.asset_command == "deleted":
-            _write([_asset_plain(item) for item in registry.list_deleted_assets(context)])
+            write(
+                [_asset_plain(item) for item in registry.list_deleted_assets(context)]
+            )
         elif args.asset_command == "delete":
             if not args.yes:
                 raise ValueError("Deleting a SourceAsset requires --yes.")
-            value = registry.delete_asset(
-                context, args.asset_id, reason=args.reason
-            )
-            _write(_plain(value))
+            value = registry.delete_asset(context, args.asset_id, reason=args.reason)
+            write(_plain(value))
         else:
             value = (
                 registry.locate_asset(context, args.asset_id)
                 if canonical
                 else registry.locate_source(context, args.asset_id)
             )
-            _write(_asset_plain(value) if canonical else _plain(value))
+            write(_asset_plain(value) if canonical else _plain(value))
         return 0
 
     if args.command == "cleanup":
@@ -259,16 +266,12 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "Physical cleanup requires --yes; use --dry-run to plan only."
             )
-        service = SourceAssetCleanupService(
-            registry=registry, storage_runtime=runtime
-        )
-        plan = service.plan_blobs(
-            context, older_than=_parse_duration(args.older_than)
-        )
+        service = SourceAssetCleanupService(registry=registry, storage_runtime=runtime)
+        plan = service.plan_blobs(context, older_than=_parse_duration(args.older_than))
         if args.dry_run:
-            _write(plan.to_dict())
+            write(plan.to_dict())
         else:
-            _write(service.execute_blobs(context, plan).to_dict())
+            write(service.execute_blobs(context, plan).to_dict())
         return 0
 
     if args.command == "ingest":
@@ -277,9 +280,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime=runtime, catalog_path=args.catalog_path
         )
         storage, repository = _runtime(args, runtime=runtime)
-        service = IngestService(
-            storage, jobs=repository, registry=registry
-        )
+        service = IngestService(storage, jobs=repository, registry=registry)
         if args.asset:
             asset = registry.show_asset(context, args.asset)
             result = service.ingest_assets(
@@ -298,55 +299,58 @@ def main(argv: list[str] | None = None) -> int:
                 context=context,
                 registry=registry,
             )
-        _write(_run_result_json(result))
+        write(_run_result_json(result))
         return 0
 
     storage, repository = _runtime(args)
     manager = IngestManager(storage, repository)
     if args.command == "jobs":
         if args.job_command == "list":
-            _write(manager.list_jobs(context, owner_id=args.owner_id))
+            write(manager.list_jobs(context, owner_id=args.owner_id))
         elif args.job_command == "show":
-            _write(manager.show_job(context, args.job_id, owner_id=args.owner_id))
+            write(manager.show_job(context, args.job_id, owner_id=args.owner_id))
         elif args.job_command == "events":
             if args.follow:
                 _follow_job_events(
-                    manager, context, args.job_id, owner_id=args.owner_id
+                    manager,
+                    context,
+                    args.job_id,
+                    owner_id=args.owner_id,
+                    human=args.human,
                 )
             else:
-                _write(
-                    manager.job_events(
-                        context, args.job_id, owner_id=args.owner_id
-                    )
-                )
+                write(manager.job_events(context, args.job_id, owner_id=args.owner_id))
         else:
-            _write(manager.request_cancel(context, args.job_id, owner_id=args.owner_id))
+            write(manager.request_cancel(context, args.job_id, owner_id=args.owner_id))
         return 0
     if args.command == "documents":
         if args.document_command == "list":
-            _write(manager.list_documents(context))
+            write(manager.list_documents(context))
         elif args.document_command == "show":
-            _write(manager.show_document(context, args.document_id))
+            write(manager.show_document(context, args.document_id))
         else:
             if not args.yes:
                 parser.error("documents delete requires --yes.")
             manager.delete_document(context, args.document_id)
-            _write({"deleted_document_id": args.document_id})
+            write({"deleted_document_id": args.document_id})
         return 0
     if args.command == "runs":
         if args.run_command == "list":
-            _write(manager.list_runs(context))
+            write(manager.list_runs(context))
         elif args.run_command == "show":
-            _write(manager.show_run(context, args.run_id))
+            write(manager.show_run(context, args.run_id))
         else:
             if not args.yes:
                 parser.error("runs delete requires --yes.")
             manager.delete_run(context, args.run_id)
-            _write({"deleted_run_id": args.run_id})
+            write({"deleted_run_id": args.run_id})
         return 0
 
     payload = manager.read_artifact(context, args.document_id, args.name)
-    _write(_artifact_json(args.name, payload))
+    if args.human:
+        _write_artifact_human(args.name, payload)
+    else:
+        _write(_artifact_json(args.name, payload), human=False)
     return 0
 
 
@@ -392,9 +396,7 @@ def _add_asset_commands(
     recursion.add_argument(
         "--recursive", dest="recursive", action="store_true", default=True
     )
-    recursion.add_argument(
-        "--no-recursive", dest="recursive", action="store_false"
-    )
+    recursion.add_argument("--no-recursive", dest="recursive", action="store_false")
     _add_runtime_arguments(add, source_storage=True)
     listing = subcommands.add_parser("list")
     listing.add_argument("--bundle")
@@ -418,18 +420,29 @@ def _add_runtime_arguments(
     parser: argparse.ArgumentParser, *, source_storage: bool = False
 ) -> None:
     selection = parser.add_mutually_exclusive_group()
-    selection.add_argument("--storage-config", help="Advanced Storage Runtime TOML override.")
-    selection.add_argument("--storage-root", help="Deprecated local storage-root override.")
+    selection.add_argument(
+        "--storage-config", help="Advanced Storage Runtime TOML override."
+    )
+    selection.add_argument(
+        "--storage-root", help="Deprecated local storage-root override."
+    )
     parser.add_argument("--catalog-path", help="Advanced SourceAsset catalog override.")
-    parser.add_argument("--jobs-database", help="Advanced SQLite jobs database override.")
-    parser.add_argument("--owner-id", default="local", help="Owner scope for lifecycle commands.")
-    parser.add_argument("--context", help="JSON file defining the base Cognityx context.")
+    parser.add_argument(
+        "--jobs-database", help="Advanced SQLite jobs database override."
+    )
+    parser.add_argument(
+        "--owner-id", default="local", help="Owner scope for lifecycle commands."
+    )
+    parser.add_argument(
+        "--context", help="JSON file defining the base Cognityx context."
+    )
     parser.add_argument("--context-type", choices=("user", "system"))
     parser.add_argument("--principal-id")
     parser.add_argument("--tenant-id")
     parser.add_argument("--project-id")
     parser.add_argument("--workspace-id")
     parser.add_argument("--scope", action="append", default=[], metavar="KEY=VALUE")
+    parser.add_argument("--human", action="store_true")
 
 
 def _runtime(
@@ -437,12 +450,8 @@ def _runtime(
 ) -> tuple[object, JobRepository]:
     selected = runtime or _source_runtime(args)
     storage = selected.for_role("artifact")
-    default_database = selected.for_role("catalog").native_path(
-        "ingest/jobs.sqlite3"
-    )
-    database = (
-        Path(args.jobs_database) if args.jobs_database else default_database
-    )
+    default_database = selected.for_role("catalog").native_path("ingest/jobs.sqlite3")
+    database = Path(args.jobs_database) if args.jobs_database else default_database
     database.parent.mkdir(parents=True, exist_ok=True)
     return storage, JobRepository(str(database))
 
@@ -468,10 +477,15 @@ def _context(args: argparse.Namespace):
             raise ValueError("--scope must use KEY=VALUE.")
         scopes[key] = value
     return resolve_execution_context(
-        context_file=args.context, context_type=args.context_type,
-        principal_id=args.principal_id if args.principal_id is not None else (args.owner_id if args.command in {"jobs", "ingest"} else None),
-        tenant_id=args.tenant_id, project_id=args.project_id,
-        workspace_id=args.workspace_id, scopes=scopes,
+        context_file=args.context,
+        context_type=args.context_type,
+        principal_id=args.principal_id
+        if args.principal_id is not None
+        else (args.owner_id if args.command in {"jobs", "ingest"} else None),
+        tenant_id=args.tenant_id,
+        project_id=args.project_id,
+        workspace_id=args.workspace_id,
+        scopes=scopes,
     )
 
 
@@ -489,7 +503,10 @@ def _result_json(result: object) -> dict[str, object]:
         "job_id": result.job_id,
         "document_id": result.document.document_id,
         "manifest_key": result.manifest_key,
-        "artifacts": [{"artifact_id": artifact.artifact_id, "uri": artifact.uri} for artifact in result.artifacts],
+        "artifacts": [
+            {"artifact_id": artifact.artifact_id, "uri": artifact.uri}
+            for artifact in result.artifacts
+        ],
     }
 
 
@@ -512,18 +529,16 @@ def _follow_job_events(
     job_id: str,
     *,
     owner_id: str,
+    human: bool,
 ) -> None:
     after = 0
     while True:
-        events = manager.job_events(
-            context, job_id, owner_id=owner_id, after=after
-        )
+        events = manager.job_events(context, job_id, owner_id=owner_id, after=after)
         for event in events:
-            print(json.dumps(event, sort_keys=True), flush=True)
+            output = render_human(event) if human else json.dumps(event, sort_keys=True)
+            print(output, flush=True)
             after = int(event["sequence"])
-        state = manager.show_job(
-            context, job_id, owner_id=owner_id
-        )["job"]["state"]
+        state = manager.show_job(context, job_id, owner_id=owner_id)["job"]["state"]
         if state in {"completed", "failed", "cancelled", "interrupted"}:
             return
         time.sleep(0.25)
@@ -531,13 +546,37 @@ def _follow_job_events(
 
 def _artifact_json(name: str, payload: bytes) -> dict[str, object]:
     try:
-        return {"artifact": name, "encoding": "utf-8", "content": payload.decode("utf-8")}
+        return {
+            "artifact": name,
+            "encoding": "utf-8",
+            "content": payload.decode("utf-8"),
+        }
     except UnicodeDecodeError:
-        return {"artifact": name, "encoding": "base64", "content": base64.b64encode(payload).decode("ascii")}
+        return {
+            "artifact": name,
+            "encoding": "base64",
+            "content": base64.b64encode(payload).decode("ascii"),
+        }
 
 
-def _write(value: object) -> None:
-    print(json.dumps(value, indent=2, sort_keys=True))
+def _write(value: object, *, human: bool) -> None:
+    if human:
+        print(render_human(value))
+    else:
+        print(json.dumps(value, indent=2, sort_keys=True))
+
+
+def _write_artifact_human(name: str, payload: bytes) -> None:
+    try:
+        encoding = "utf-8"
+        content = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        encoding = "base64"
+        content = base64.b64encode(payload).decode("ascii")
+    sys.stdout.write(f"Artifact: {name}\nEncoding: {encoding}\nContent:\n")
+    sys.stdout.write(content)
+    if not content.endswith("\n"):
+        sys.stdout.write("\n")
 
 
 def _plain(value: object) -> object:

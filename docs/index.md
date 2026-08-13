@@ -152,6 +152,25 @@ Inference resolution plans, capability registries, routing plans, segmentation
 evidence, asset IDs, and bundle IDs remain bounded runtime or domain inputs and
 are not added to ambient global discovery.
 
+## Compatibility CLI output
+
+The installed `cognityx-ingest` compatibility command keeps JSON as its
+unchanged default. Add `--human` to eligible finite results or to `jobs events
+--follow` for an incremental readable stream. The flag changes only presentation
+after the same Ingest operation has produced its safe payload.
+
+```bash
+cognityx-ingest jobs list --human
+cognityx-ingest documents show <document-id> --human
+cognityx-ingest jobs events <job-id> --follow --human
+cognityx-ingest artifacts read <document-id> provenance --human
+```
+
+Human artifact reads label the encoding and emit UTF-8 content verbatim. Binary
+content remains labelled base64. Warnings and partial-failure diagnostics stay
+on standard error. Historical bare-path invocation and all aliases remain
+available; this compatibility executable gains no configuration group.
+
 ## Future Roadmap
 
 The following work is intentionally deferred:
